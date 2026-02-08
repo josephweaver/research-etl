@@ -1,60 +1,72 @@
 # Project Status (2026-02-08)
 
-## What's implemented
-- Plugin contract and loader (`etl/plugins/base.py`) with metadata + optional validate/cleanup hooks.
-- Pipeline parsing/templating/validation (`etl/pipeline.py`) with `vars`, `dirs`, `when`, `foreach`, and `parallel_with`.
-- Local runner (`etl/runner.py`) with script parsing, param coercion, per-step env, per-step workdirs, and timestamped artifact paths:
-  - `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>/`
-- Local executor (`etl/executors/local.py`) with run tracking.
-- SLURM executor (`etl/executors/slurm.py`) with setup + chained batch/array submission and SSH remote submission support.
-- Remote secret bootstrap for DB URL:
-  - ensures `~/.secrets/etl` with secure permissions
-  - writes/updates `export ETL_DATABASE_URL=...` when available
-  - batch scripts source `~/.secrets/etl`
-- Batch runner (`etl/run_batch.py`) for subset execution with run-level status/event updates.
-- Tracking:
-  - JSONL: `.runs/runs.jsonl`
-  - Database (when `ETL_DATABASE_URL` is set): `etl_runs`, `etl_run_steps`, `etl_run_step_attempts`, `etl_run_events`
-- DB migration bootstrap (`etl/db.py`) from `db/ddl/*.sql` with checksum enforcement and version tables:
-  - `etl_schema_versions`
-  - `etl_schema_state`
-- Initial DDL scripts:
-  - `001_core_tables.sql`
-  - `002_config_and_catalog_tables.sql`
-  - `003_step_attempts.sql` (retry-ready attempts table)
-- CLI (`cli.py`) commands:
-  - `plugins list`
-  - `validate`
-  - `run`
-  - `runs list/show`
-- Test suite (pytest) with CI:
-  - migration bootstrap tests
-  - tracking DB write tests
-  - timestamped run path tests
-  - GitHub Actions workflow at `.github/workflows/tests.yml`
+## Current state
+- CLI/package baseline is in place (`pyproject.toml`, `etl` entrypoint, editable install flow, GitHub Actions tests).
+- Core pipeline engine supports `when`, `foreach`, `parallel_with`, retries, and resume.
+- Execution backends:
+  - `local` executor (`etl/executors/local.py`)
+  - `slurm` executor (`etl/executors/slurm.py`) with setup + dependent batch/array planning and SSH submission support.
+- SLURM batch execution uses `etl/run_batch.py` and emits event-driven status transitions (`batch_started`, `batch_completed`, `batch_failed`, `run_completed`).
+- DB migration bootstrap is active (`etl/db.py`, `db/ddl/*.sql`) with checksum/version enforcement.
+- Tracking is persisted to JSONL and DB (when `ETL_DATABASE_URL` is set):
+  - `etl_runs`
+  - `etl_run_steps`
+  - `etl_run_step_attempts`
+  - `etl_run_events`
+- Provenance is persisted on all run paths (local/slurm/run_batch/resume):
+  - git fields, CLI command, pipeline/config checksums, plugin checksums.
+- Diagnostics:
+  - failure reports written to `.runs/error_reports/*.json`
+  - `etl diagnostics latest [--show]` available.
+- Web UI/API is scaffolded and functional:
+  - `etl web --host 127.0.0.1 --port 8000 --reload`
+  - list/detail views, filters, resume action (local-only), artifact tree + text file viewer.
 
-## Known gaps / TODO
-- SLURM lifecycle is event-driven from submitted jobs; no central reconciliation of missing/late events yet.
-- Retry execution policy is not implemented yet (schema supports attempts, runtime still writes attempt `1` by default).
-- No resume-from-step orchestration yet.
-- No strict schema validation for pipeline files/plugins beyond current checks.
-- No structured logging backend yet (logs primarily stdout + Slurm files).
-- DB writes are integrated for runs/steps/events; config/pipeline/plugin catalog tables are not yet populated by runtime.
+## Recent additions
+- Standardized plugin logging + per-step artifact logs:
+  - plugins can call `ctx.log(...)`, `ctx.info(...)`, `ctx.warn(...)`, `ctx.error(...)`
+  - runner writes `<step_workdir>/step.log`.
+- Executor-owned artifact retrieval hooks:
+  - `artifact_tree(...)`
+  - `artifact_file(...)`
+  - web API now routes artifact browsing through executor behavior.
+- Test fixtures for controlled failure:
+  - `plugins/fail_always.py`
+  - `pipelines/sample_fail.yml`
 
-## Next recommended steps
-1) Implement retry policy (max attempts/backoff) and write attempt numbers >1 into `etl_run_step_attempts`.
-2) Add resume support using DB state (restart from failed/incomplete steps).
-3) Populate `etl_global_configs`, `etl_execution_configs`, `etl_pipelines`, and `etl_plugin_catalog` snapshots at run start.
-4) Add more tests:
-   - `run_batch` failure transitions
-   - SLURM path generation and secret bootstrap edge cases
-   - migration checksum drift + concurrent startup
-5) Add lightweight observability fields (host, git SHA, config hash, plugin versions) into run records.
+## Test status
+- Current local run: `38 passed, 6 skipped` (`python -m pytest -q`).
+- Integration coverage includes:
+  - DB migration bootstrap
+  - tracking write paths
+  - SLURM event transitions (success + failed)
+  - resume from partial success
+  - retry attempts with `attempt_no > 1`
+  - run_batch event payload checks
+
+## Known gaps / risks
+- Web resume currently supports `local` executor only (SLURM resume still via CLI).
+- SLURM artifact browsing supports only paths visible to the local UI host; remote-only cluster paths need SSH-based retrieval.
+- No central reconciliation loop for missing/late SLURM events.
+- No auth/authorization on web UI (dev/local usage model currently).
+- Config/pipeline/plugin catalog tables are not yet populated by runtime snapshots.
+- Some pycache artifacts may appear during local runs/tests.
+
+## Suggested next steps
+1) Add SSH-backed remote artifact retrieval for SLURM paths in web API.
+2) Add web-side “run action” (validate/run/resume) with explicit executor config form.
+3) Add auth guard for web UI if multi-user exposure is planned.
+4) Persist config/catalog snapshots into DB catalog tables at run start.
+5) Add offline event buffering strategy for runs executed without DB connectivity.
 
 ## Quick commands
-- Validate sample: `etl validate pipelines/sample.yml`
-- Run local dry-run: `etl run pipelines/sample.yml --dry-run`
-- Run remote SLURM sample: `etl run pipelines/sample.yml --executor slurm --execution-config config/execution.yml --env hpcc_msu --verbose`
+- Install/editable dev env: `python -m pip install -e ".[dev]"`
+- Validate pipeline: `etl validate pipelines/sample.yml`
+- Run local success: `etl run pipelines/sample.yml --executor local`
+- Run local failure: `etl run pipelines/sample_fail.yml --executor local`
+- Run SLURM dry-run (queue-style records): `etl run pipelines/sample_parallel.yml --executor slurm --dry-run`
 - List runs: `etl runs list`
 - Show run: `etl runs show <run_id>`
-- Run tests: `python -m pytest -q`
+- Latest diagnostics: `etl diagnostics latest --show`
+- Start web UI: `etl web --host 127.0.0.1 --port 8000 --reload`
+- Test suite: `python -m pytest -q`
