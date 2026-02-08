@@ -52,9 +52,9 @@
 5) Add lightweight observability fields (host, git SHA, config hash, plugin versions) into run records.
 
 ## Quick commands
-- Validate sample: `python cli.py validate pipelines/sample.yml`
-- Run local dry-run: `python cli.py run pipelines/sample.yml --dry-run`
-- Run remote SLURM sample: `python cli.py run pipelines/sample.yml --executor slurm --execution-config config/execution.yml --env hpcc_msu --verbose`
-- List runs: `python cli.py runs list`
-- Show run: `python cli.py runs show <run_id>`
+- Validate sample: `etl validate pipelines/sample.yml`
+- Run local dry-run: `etl run pipelines/sample.yml --dry-run`
+- Run remote SLURM sample: `etl run pipelines/sample.yml --executor slurm --execution-config config/execution.yml --env hpcc_msu --verbose`
+- List runs: `etl runs list`
+- Show run: `etl runs show <run_id>`
 - Run tests: `python -m pytest -q`

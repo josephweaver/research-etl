@@ -143,15 +143,21 @@ An interface that lets you call the pipeline scripts one by one, recording each 
 
 ## Quickstart (local)
 
-1) Install deps (Python 3.10+): `pip install -r requirements.txt` (`pyyaml`, `psycopg[binary]`, `pytest`).  
-2) Add a plugin under `plugins/` (see `plugins/echo.py`).  
-3) Create a pipeline YAML (see `pipelines/sample.yml`).  
-4) (Optional) Create global config `config/global.yml` using `config/global.example.yml` and reference with `{global.data}` etc.  
-5) (Optional) Define execution environments in `config/execution.yml` (see `config/execution.example.yml`) and pick one with `--execution-config ... --env hpcc_alpha`.  
-6) Run: `python cli.py validate pipelines/sample.yml --global-config config/global.yml` then `python cli.py run pipelines/sample.yml --global-config config/global.yml --execution-config config/execution.yml --env hpcc_alpha`.  
-7) Inspect runs: `python cli.py runs list` and `python cli.py runs show <run_id>`.
+Detailed platform install steps: `docs/install.md`.
+
+1) Create and activate a virtual environment (Python 3.10+).  
+2) Install package + dev tools: `pip install -e ".[dev]"`.  
+3) Confirm CLI install: `etl --version`.  
+4) Add a plugin under `plugins/` (see `plugins/echo.py`).  
+5) Create a pipeline YAML (see `pipelines/sample.yml`).  
+6) (Optional) Create global config `config/global.yml` using `config/global.example.yml` and reference with `{global.data}` etc.  
+7) (Optional) Define execution environments in `config/execution.yml` (see `config/execution.example.yml`) and pick one with `--execution-config ... --env hpcc_alpha`.  
+8) Run: `etl validate pipelines/sample.yml --global-config config/global.yml` then `etl run pipelines/sample.yml --global-config config/global.yml --execution-config config/execution.yml --env hpcc_alpha`.  
+9) Inspect runs: `etl runs list` and `etl runs show <run_id>`.
 
 Defaults: plugins in `plugins/`, run artifacts in `.runs/`, run records in `.runs/runs.jsonl`.
+
+Windows note: if `etl` is not found, use `python -m cli ...` or add your user scripts path (for example `%APPDATA%\Python\Python310\Scripts`) to `PATH`.
 
 ## Database DDL bootstrap
 
@@ -210,12 +216,12 @@ Select with `--execution-config config/execution.yml --env hpcc_alpha`.
 
 Run the sample pipeline on the remote SLURM target:
 ```powershell
-python cli.py run pipelines/sample.yml --executor slurm --execution-config config/execution.yml --env hpcc_msu --verbose
+etl run pipelines/sample.yml --executor slurm --execution-config config/execution.yml --env hpcc_msu --verbose
 ```
 
 Preview submission without executing jobs:
 ```powershell
-python cli.py run pipelines/sample.yml --executor slurm --execution-config config/execution.yml --env hpcc_msu --verbose --dry-run
+etl run pipelines/sample.yml --executor slurm --execution-config config/execution.yml --env hpcc_msu --verbose --dry-run
 ```
 
 On remote submissions, the SLURM executor ensures `~/.secrets/etl` exists on the login host with `chmod 600`, writes/updates `export ETL_DATABASE_URL=...` in that file when local `ETL_DATABASE_URL` is available, and generated batch scripts source `~/.secrets/etl` so jobs inherit the DB URL. If the current shell does not contain the variable, Windows `setx` values are also checked from User/Machine environment entries. If neither local nor remote secret value exists, submission fails with a clear error.
