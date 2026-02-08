@@ -74,6 +74,7 @@ class LocalExecutor(Executor):
             self.workdir / "runs.jsonl",
             executor=self.name,
             artifact_dir=getattr(run_result, "artifact_dir", None),
+            provenance=context.get("provenance"),
         )
         return SubmissionResult(run_id=run_result.run_id, message=status.message)
 

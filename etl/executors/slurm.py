@@ -120,6 +120,7 @@ class SlurmExecutor(Executor):
     def submit(self, pipeline_path: str, context: Dict[str, Any]) -> SubmissionResult:
         pipeline_path = Path(pipeline_path).as_posix()
         resume_run_id = context.get("resume_run_id")
+        provenance = context.get("provenance")
         run_id = context.get("run_id")
         if not run_id:
             import uuid
@@ -239,6 +240,7 @@ class SlurmExecutor(Executor):
             message=status.message,
             executor=self.name,
             artifact_dir=remote_workdir,
+            provenance=provenance,
             event_type="run_queued",
             event_details={"job_ids": submission_records},
         )

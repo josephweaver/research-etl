@@ -58,19 +58,33 @@ def _upsert_run_db(
     *,
     executor: Optional[str] = None,
     artifact_dir: Optional[str] = None,
+    provenance: Optional[Dict[str, Any]] = None,
 ) -> None:
     db_url = get_database_url()
     if not db_url:
         return
+
+    provenance = provenance or {}
+    git_commit_sha = provenance.get("git_commit_sha")
+    git_branch = provenance.get("git_branch")
+    git_tag = provenance.get("git_tag")
+    git_is_dirty = provenance.get("git_is_dirty")
+    cli_command = provenance.get("cli_command")
+    pipeline_checksum = provenance.get("pipeline_checksum")
+    global_config_checksum = provenance.get("global_config_checksum")
+    execution_config_checksum = provenance.get("execution_config_checksum")
+    plugin_checksums_json = json.dumps(provenance.get("plugin_checksums_json")) if provenance.get("plugin_checksums_json") is not None else None
 
     with psycopg.connect(db_url) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO etl_runs (
-                    run_id, pipeline, success, status, started_at, ended_at, message, executor, artifact_dir
+                    run_id, pipeline, success, status, started_at, ended_at, message, executor, artifact_dir,
+                    git_commit_sha, git_branch, git_tag, git_is_dirty, cli_command, pipeline_checksum,
+                    global_config_checksum, execution_config_checksum, plugin_checksums_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (run_id)
                 DO UPDATE SET
                     pipeline = EXCLUDED.pipeline,
@@ -80,7 +94,16 @@ def _upsert_run_db(
                     ended_at = GREATEST(etl_runs.ended_at, EXCLUDED.ended_at),
                     message = EXCLUDED.message,
                     executor = EXCLUDED.executor,
-                    artifact_dir = EXCLUDED.artifact_dir
+                    artifact_dir = EXCLUDED.artifact_dir,
+                    git_commit_sha = COALESCE(EXCLUDED.git_commit_sha, etl_runs.git_commit_sha),
+                    git_branch = COALESCE(EXCLUDED.git_branch, etl_runs.git_branch),
+                    git_tag = COALESCE(EXCLUDED.git_tag, etl_runs.git_tag),
+                    git_is_dirty = COALESCE(EXCLUDED.git_is_dirty, etl_runs.git_is_dirty),
+                    cli_command = COALESCE(EXCLUDED.cli_command, etl_runs.cli_command),
+                    pipeline_checksum = COALESCE(EXCLUDED.pipeline_checksum, etl_runs.pipeline_checksum),
+                    global_config_checksum = COALESCE(EXCLUDED.global_config_checksum, etl_runs.global_config_checksum),
+                    execution_config_checksum = COALESCE(EXCLUDED.execution_config_checksum, etl_runs.execution_config_checksum),
+                    plugin_checksums_json = COALESCE(EXCLUDED.plugin_checksums_json, etl_runs.plugin_checksums_json)
                 """,
                 (
                     rec.run_id,
@@ -92,6 +115,15 @@ def _upsert_run_db(
                     rec.message,
                     executor,
                     artifact_dir,
+                    git_commit_sha,
+                    git_branch,
+                    git_tag,
+                    git_is_dirty,
+                    cli_command,
+                    pipeline_checksum,
+                    global_config_checksum,
+                    execution_config_checksum,
+                    plugin_checksums_json,
                 ),
             )
 
@@ -221,12 +253,24 @@ def upsert_run_status(
     message: str = "",
     executor: Optional[str] = None,
     artifact_dir: Optional[str] = None,
+    provenance: Optional[Dict[str, Any]] = None,
     event_type: Optional[str] = None,
     event_details: Optional[Dict[str, Any]] = None,
 ) -> None:
     db_url = get_database_url()
     if not db_url:
         return
+
+    provenance = provenance or {}
+    git_commit_sha = provenance.get("git_commit_sha")
+    git_branch = provenance.get("git_branch")
+    git_tag = provenance.get("git_tag")
+    git_is_dirty = provenance.get("git_is_dirty")
+    cli_command = provenance.get("cli_command")
+    pipeline_checksum = provenance.get("pipeline_checksum")
+    global_config_checksum = provenance.get("global_config_checksum")
+    execution_config_checksum = provenance.get("execution_config_checksum")
+    plugin_checksums_json = json.dumps(provenance.get("plugin_checksums_json")) if provenance.get("plugin_checksums_json") is not None else None
 
     started = started_at or _now_iso()
     ended = ended_at or _now_iso()
@@ -235,9 +279,11 @@ def upsert_run_status(
             cur.execute(
                 """
                 INSERT INTO etl_runs (
-                    run_id, pipeline, success, status, started_at, ended_at, message, executor, artifact_dir
+                    run_id, pipeline, success, status, started_at, ended_at, message, executor, artifact_dir,
+                    git_commit_sha, git_branch, git_tag, git_is_dirty, cli_command, pipeline_checksum,
+                    global_config_checksum, execution_config_checksum, plugin_checksums_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (run_id)
                 DO UPDATE SET
                     pipeline = EXCLUDED.pipeline,
@@ -247,9 +293,37 @@ def upsert_run_status(
                     ended_at = GREATEST(etl_runs.ended_at, EXCLUDED.ended_at),
                     message = EXCLUDED.message,
                     executor = EXCLUDED.executor,
-                    artifact_dir = EXCLUDED.artifact_dir
+                    artifact_dir = EXCLUDED.artifact_dir,
+                    git_commit_sha = COALESCE(EXCLUDED.git_commit_sha, etl_runs.git_commit_sha),
+                    git_branch = COALESCE(EXCLUDED.git_branch, etl_runs.git_branch),
+                    git_tag = COALESCE(EXCLUDED.git_tag, etl_runs.git_tag),
+                    git_is_dirty = COALESCE(EXCLUDED.git_is_dirty, etl_runs.git_is_dirty),
+                    cli_command = COALESCE(EXCLUDED.cli_command, etl_runs.cli_command),
+                    pipeline_checksum = COALESCE(EXCLUDED.pipeline_checksum, etl_runs.pipeline_checksum),
+                    global_config_checksum = COALESCE(EXCLUDED.global_config_checksum, etl_runs.global_config_checksum),
+                    execution_config_checksum = COALESCE(EXCLUDED.execution_config_checksum, etl_runs.execution_config_checksum),
+                    plugin_checksums_json = COALESCE(EXCLUDED.plugin_checksums_json, etl_runs.plugin_checksums_json)
                 """,
-                (run_id, pipeline, success, status, started, ended, message, executor, artifact_dir),
+                (
+                    run_id,
+                    pipeline,
+                    success,
+                    status,
+                    started,
+                    ended,
+                    message,
+                    executor,
+                    artifact_dir,
+                    git_commit_sha,
+                    git_branch,
+                    git_tag,
+                    git_is_dirty,
+                    cli_command,
+                    pipeline_checksum,
+                    global_config_checksum,
+                    execution_config_checksum,
+                    plugin_checksums_json,
+                ),
             )
             if event_type:
                 details_json = json.dumps(event_details or {})
@@ -351,6 +425,7 @@ def record_run(
     *,
     executor: Optional[str] = None,
     artifact_dir: Optional[str] = None,
+    provenance: Optional[Dict[str, Any]] = None,
 ) -> RunRecord:
     store.parent.mkdir(parents=True, exist_ok=True)
     started = getattr(run_result, "started_at", None) or _now_iso()
@@ -367,7 +442,7 @@ def record_run(
     with store.open("a", encoding="utf-8") as f:
         f.write(json.dumps(asdict(rec)) + "\n")
 
-    _upsert_run_db(rec, executor=executor, artifact_dir=artifact_dir)
+    _upsert_run_db(rec, executor=executor, artifact_dir=artifact_dir, provenance=provenance)
     return rec
 
 

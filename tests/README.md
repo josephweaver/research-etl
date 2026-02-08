@@ -35,6 +35,10 @@ This folder contains the automated test suite for the ETL project.
   - Confirms previously successful steps can be skipped.
   - Confirms prior outputs are injected so downstream `when` conditions still evaluate correctly.
 
+- `tests/test_provenance.py`
+  - Verifies provenance collection payload shape from `etl/provenance.py`.
+  - Confirms pipeline and plugin checksums are captured.
+
 ## Notes
 
 - Tests are executed with `pytest`.

@@ -21,6 +21,7 @@ from etl.config import load_global_config, ConfigError
 from etl.db import ensure_database_schema, DatabaseError
 from etl.executors import LocalExecutor, SlurmExecutor
 from etl.pipeline import PipelineError, parse_pipeline
+from etl.provenance import collect_run_provenance
 from etl.plugins.base import describe_plugin, discover_plugins, PluginLoadError
 from etl.tracking import load_runs, find_run
 from etl.execution_config import (
@@ -54,6 +55,8 @@ def cmd_plugins_list(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     pipeline_path = Path(args.pipeline)
+    plugins_dir_path = Path(args.plugins_dir)
+    repo_root = Path(".").resolve()
     global_vars = {}
     exec_env = {}
     if args.global_config:
@@ -87,12 +90,22 @@ def cmd_run(args: argparse.Namespace) -> int:
     except (PipelineError, FileNotFoundError) as exc:
         print(f"Invalid pipeline: {exc}", file=sys.stderr)
         return 1
+    cli_command = "python cli.py " + " ".join(getattr(args, "_raw_argv", []))
+    provenance = collect_run_provenance(
+        repo_root=repo_root,
+        pipeline_path=pipeline_path,
+        global_config_path=Path(args.global_config) if args.global_config else None,
+        execution_config_path=Path(args.execution_config) if args.execution_config else None,
+        plugin_dir=plugins_dir_path,
+        pipeline=pipeline,
+        cli_command=cli_command,
+    )
 
     if args.executor == "slurm":
         executor = SlurmExecutor(
             env_config=exec_env,
-            repo_root=Path(".").resolve(),
-            plugins_dir=Path(args.plugins_dir),
+            repo_root=repo_root,
+            plugins_dir=plugins_dir_path,
             workdir=Path(args.workdir),
             global_config=Path(args.global_config) if args.global_config else None,
             execution_config=Path(args.execution_config) if args.execution_config else None,
@@ -102,7 +115,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
     else:
         executor = LocalExecutor(
-            plugin_dir=Path(args.plugins_dir),
+            plugin_dir=plugins_dir_path,
             workdir=Path(args.workdir),
             dry_run=args.dry_run,
             max_retries=max_retries,
@@ -115,6 +128,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "pipeline": pipeline,
                 "execution_env": exec_env,
                 "resume_run_id": args.resume_run_id,
+                "provenance": provenance,
             },
         )
     except Exception as exc:  # noqa: BLE001
@@ -245,6 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    args._raw_argv = argv if argv is not None else sys.argv[1:]
     try:
         ensure_database_schema(Path("db/ddl"))
     except DatabaseError as exc:
