@@ -5,10 +5,10 @@
 - [x] `P0` Retry/resume edge cases verified for `parallel_with`, `foreach`, and SLURM array batches.
 - [x] `P0` Error handling pass: classify common failures and return clear actionable messages.
 - [x] `P0` Provenance completeness check: all run paths (local/slurm/run_batch/resume) persist Git+checksum metadata.
-- [ ] `P0` Integration tests for:
+- [x] `P0` Integration tests for:
   - [x] `P0` SLURM event transitions (`queued -> running -> completed/failed`).
   - [x] `P0` Resume from partial success.
-  - [ ] `P0` Retry attempts persisted with `attempt_no > 1`.
+  - [x] `P0` Retry attempts persisted with `attempt_no > 1`.
 
 ## Week 2 - Minimal product interface (P0/P1)
 - [ ] `P0` Build thin interface (CLI wizard or minimal web UI) for:

@@ -365,3 +365,72 @@ def test_integration_resume_from_partial_success_local(tmp_path: Path) -> None:
             )
             s2_attempts = cur.fetchone()[0]
             assert s2_attempts == 1
+
+
+def test_integration_retry_attempts_persisted_with_attempt_no_gt_1(tmp_path: Path) -> None:
+    url = _db_url()
+    ensure_database_schema()
+
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    (plugins_dir / "fail_once_retry.py").write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "meta = {'name': 'fail_once_retry', 'version': '0.1.0', 'description': 'integration'}",
+                "def run(args, ctx):",
+                "    marker = Path(__file__).with_name('.retry_once_marker')",
+                "    if not marker.exists():",
+                "        marker.write_text('1', encoding='utf-8')",
+                "        raise RuntimeError('retry-once')",
+                "    return {'ok': True}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline_path = tmp_path / "pipeline_retry.yml"
+    pipeline_path.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: retry_step",
+                "    script: fail_once_retry.py",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    ex = LocalExecutor(
+        plugin_dir=plugins_dir,
+        workdir=tmp_path / ".runs",
+        max_retries=1,
+    )
+    submit = ex.submit(
+        str(pipeline_path),
+        context={"provenance": {"git_commit_sha": "it"}},
+    )
+    status = ex.status(submit.run_id)
+    assert str(status.state) == "RunState.SUCCEEDED"
+
+    with psycopg.connect(url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT attempt_no, success, error
+                FROM etl_run_step_attempts
+                WHERE run_id = %s AND step_name = 'retry_step'
+                ORDER BY attempt_no
+                """,
+                (submit.run_id,),
+            )
+            attempts = cur.fetchall()
+            assert len(attempts) == 2
+            assert attempts[0][0] == 1 and attempts[0][1] is False
+            assert attempts[1][0] == 2 and attempts[1][1] is True
+
+            cur.execute(
+                "SELECT status, success FROM etl_runs WHERE run_id = %s",
+                (submit.run_id,),
+            )
+            row = cur.fetchone()
+            assert row == ("succeeded", True)
