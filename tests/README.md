@@ -54,6 +54,16 @@ This folder contains the automated test suite for the ETL project.
   - Confirms success path emits `batch_completed` and final `run_completed` with correct `step_attempts` payload.
   - Confirms failure path emits `batch_failed` with final error details in `step_attempts`.
 
+- `tests/test_error_messages.py`
+  - Verifies CLI error classification returns actionable messages for common failures.
+  - Covers resume-without-DB, missing `sbatch`, and remote secret bootstrap SLURM errors.
+  - Verifies negative retry argument validation and execution env override integer validation.
+
+- `tests/test_diagnostics.py`
+  - Verifies portable diagnostic reports are written with traceback and frame metadata.
+  - Verifies `cli.py` prints the saved diagnostic report path when a run submission fails.
+  - Verifies diagnostic discovery via `find_latest_error_report(...)` and `etl diagnostics latest`.
+
 ## Notes
 
 - Tests are executed with `pytest`.

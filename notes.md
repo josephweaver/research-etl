@@ -3,7 +3,7 @@
 ## Week 1 - Core hardening (P0)
 - [x] `P0` Packaging/install flow complete (`pyproject.toml`, `etl` console entrypoint, install docs validated).
 - [x] `P0` Retry/resume edge cases verified for `parallel_with`, `foreach`, and SLURM array batches.
-- [ ] `P0` Error handling pass: classify common failures and return clear actionable messages.
+- [x] `P0` Error handling pass: classify common failures and return clear actionable messages.
 - [ ] `P0` Provenance completeness check: all run paths (local/slurm/run_batch/resume) persist Git+checksum metadata.
 - [ ] `P0` Integration tests for:
   - [ ] `P0` SLURM event transitions (`queued -> running -> completed/failed`).

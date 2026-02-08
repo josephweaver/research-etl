@@ -45,11 +45,20 @@ def apply_execution_env_overrides(env: Dict[str, Any]) -> Dict[str, Any]:
     """
     out = dict(env)
     if "ETL_SLURM_JOB_LIMIT" in os.environ:
-        out["job_limit"] = int(os.environ["ETL_SLURM_JOB_LIMIT"])
+        try:
+            out["job_limit"] = int(os.environ["ETL_SLURM_JOB_LIMIT"])
+        except ValueError as exc:
+            raise ExecutionConfigError("ETL_SLURM_JOB_LIMIT must be an integer.") from exc
     if "ETL_SLURM_ARRAY_LIMIT" in os.environ:
-        out["array_task_limit"] = int(os.environ["ETL_SLURM_ARRAY_LIMIT"])
+        try:
+            out["array_task_limit"] = int(os.environ["ETL_SLURM_ARRAY_LIMIT"])
+        except ValueError as exc:
+            raise ExecutionConfigError("ETL_SLURM_ARRAY_LIMIT must be an integer.") from exc
     if "ETL_MAX_PARALLEL" in os.environ:
-        out["max_parallel"] = int(os.environ["ETL_MAX_PARALLEL"])
+        try:
+            out["max_parallel"] = int(os.environ["ETL_MAX_PARALLEL"])
+        except ValueError as exc:
+            raise ExecutionConfigError("ETL_MAX_PARALLEL must be an integer.") from exc
     return out
 
 

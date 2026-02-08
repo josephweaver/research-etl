@@ -13,13 +13,16 @@ execution wiring will be layered in later.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
 from etl import __version__
 from etl.config import load_global_config, ConfigError
 from etl.db import ensure_database_schema, DatabaseError
+from etl.diagnostics import write_error_report, find_latest_error_report
 from etl.executors import LocalExecutor, SlurmExecutor
+from etl.executors.slurm import SlurmSubmitError
 from etl.pipeline import PipelineError, parse_pipeline
 from etl.provenance import collect_run_provenance
 from etl.plugins.base import describe_plugin, discover_plugins, PluginLoadError
@@ -32,6 +35,72 @@ from etl.execution_config import (
 
 
 DEFAULT_PLUGIN_DIR = Path("plugins")
+
+
+def _format_run_submission_error(exc: Exception, args: argparse.Namespace) -> str:
+    text = str(exc).strip()
+    if "ETL_DATABASE_URL is required for --resume-run-id" in text:
+        return (
+            "Resume failed: --resume-run-id requires ETL_DATABASE_URL so prior step state can be loaded from DB. "
+            "Set ETL_DATABASE_URL (and reopen your shell on Windows if you used setx), or run without --resume-run-id."
+        )
+    if isinstance(exc, SlurmSubmitError):
+        if "Could not initialize remote DB secret" in text:
+            return (
+                "SLURM submission failed while preparing remote DB secret. "
+                "Set local ETL_DATABASE_URL or ensure remote ~/.secrets/etl contains "
+                "'export ETL_DATABASE_URL=...'."
+            )
+        return (
+            f"SLURM submission failed: {text} "
+            "Check SSH connectivity, remote paths, and that sbatch is available on the login host."
+        )
+    if isinstance(exc, FileNotFoundError):
+        missing = getattr(exc, "filename", None) or text
+        if "ssh" in str(missing).lower():
+            return "Required command 'ssh' was not found. Install OpenSSH client and ensure it is on PATH."
+        if "scp" in str(missing).lower():
+            return "Required command 'scp' was not found. Install OpenSSH client and ensure it is on PATH."
+        if "sbatch" in str(missing).lower():
+            return (
+                "Required command 'sbatch' was not found. For local SLURM mode, run on a host with SLURM client tools; "
+                "for remote SLURM mode, verify ssh_host and remote sbatch availability."
+            )
+        return f"Required command not found: {missing}"
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return (
+            f"Operation timed out while executing '{exc.cmd}'. "
+            "Increase ssh_timeout/scp_timeout in execution config or check cluster/login-node responsiveness."
+        )
+    return f"Run failed before submission/execution: {text}"
+
+
+def _format_database_init_error(exc: DatabaseError) -> str:
+    text = str(exc).strip()
+    if "not a valid URL" in text:
+        return (
+            "Database initialization error: ETL_DATABASE_URL is set but invalid. "
+            "Use a full DSN like postgresql://user:pass@host:5432/dbname."
+        )
+    if "DDL directory not found" in text or "No .sql DDL scripts found" in text:
+        return f"Database initialization error: {text} Check db/ddl migration files."
+    return f"Database initialization error: {text}"
+
+
+def _emit_error_with_report(message: str, exc: Exception, args: argparse.Namespace) -> None:
+    print(message, file=sys.stderr)
+    try:
+        report_path = write_error_report(
+            exc=exc,
+            command="etl",
+            argv=getattr(args, "_raw_argv", []) or [],
+            workdir=Path(".runs"),
+            repo_root=Path(".").resolve(),
+        )
+        print(f"Diagnostic report saved: {report_path}", file=sys.stderr)
+    except Exception:
+        # Keep user-facing failure path robust even if diagnostics fail.
+        pass
 
 
 def cmd_plugins_list(args: argparse.Namespace) -> int:
@@ -82,6 +151,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         if args.retry_delay_seconds is not None
         else float(exec_env.get("step_retry_delay_seconds", 0.0) or 0.0)
     )
+    if max_retries < 0:
+        print("Invalid --max-retries: must be >= 0.", file=sys.stderr)
+        return 1
+    if retry_delay_seconds < 0:
+        print("Invalid --retry-delay-seconds: must be >= 0.", file=sys.stderr)
+        return 1
     # Ensure SLURM path inherits explicit CLI overrides even when execution config is used.
     exec_env["step_max_retries"] = max_retries
     exec_env["step_retry_delay_seconds"] = retry_delay_seconds
@@ -132,7 +207,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             },
         )
     except Exception as exc:  # noqa: BLE001
-        print(f"Run failed before submission/execution: {exc}", file=sys.stderr)
+        _emit_error_with_report(_format_run_submission_error(exc, args), exc, args)
         return 1
     status = executor.status(result.run_id)
     job_info = f" (jobs: {result.job_ids})" if getattr(result, "job_ids", None) else ""
@@ -140,24 +215,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     if status.state in ("succeeded", "queued", "running"):
         return 0
     return 1
-
-
-    pipeline_path = Path(args.pipeline)
-    try:
-        pipeline = parse_pipeline(pipeline_path)
-    except (PipelineError, FileNotFoundError) as exc:
-        print(f"Invalid pipeline: {exc}", file=sys.stderr)
-        return 1
-
-    executor = LocalExecutor(
-        plugin_dir=Path(args.plugins_dir),
-        workdir=Path(args.workdir),
-        dry_run=args.dry_run,
-    )
-    result = executor.submit(str(pipeline_path), context={"pipeline": pipeline})
-    status = executor.status(result.run_id)
-    print(f"Run {result.run_id} -> {status.state}")
-    return 0 if status.state == "succeeded" else 1
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -205,6 +262,21 @@ def cmd_runs_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_diagnostics_latest(args: argparse.Namespace) -> int:
+    latest = find_latest_error_report(Path(args.workdir))
+    if not latest:
+        print(f"No diagnostic reports found under {Path(args.workdir) / 'error_reports'}.", file=sys.stderr)
+        return 1
+    print(latest)
+    if args.show:
+        try:
+            print(latest.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"Failed to read diagnostic report: {exc}", file=sys.stderr)
+            return 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="etl", description="ETL pipeline runner")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -248,6 +320,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_runs_show.add_argument("--store", default=".runs/runs.jsonl", help="Run record store path")
     p_runs_show.set_defaults(func=cmd_runs_show)
 
+    p_diag = subparsers.add_parser("diagnostics", help="Inspect generated diagnostic reports")
+    diag_sub = p_diag.add_subparsers(dest="diagnostics_command", required=True)
+
+    p_diag_latest = diag_sub.add_parser("latest", help="Print path to most recent diagnostic report")
+    p_diag_latest.add_argument("--workdir", default=".runs", help="Base run artifact directory")
+    p_diag_latest.add_argument("--show", action="store_true", help="Also print report JSON contents")
+    p_diag_latest.set_defaults(func=cmd_diagnostics_latest)
+
     p_validate = subparsers.add_parser("validate", help="Validate a pipeline file")
     p_validate.add_argument("pipeline", help="Path to pipeline YAML")
     p_validate.add_argument("--global-config", help="Path to global config YAML", default=None)
@@ -263,9 +343,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         ensure_database_schema(Path("db/ddl"))
     except DatabaseError as exc:
-        print(f"Database initialization error: {exc}", file=sys.stderr)
+        _emit_error_with_report(_format_database_init_error(exc), exc, args)
         return 1
-    return args.func(args)
+    try:
+        return args.func(args)
+    except Exception as exc:  # noqa: BLE001
+        _emit_error_with_report(f"Unhandled error: {exc}", exc, args)
+        return 1
 
 
 if __name__ == "__main__":

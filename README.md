@@ -178,6 +178,12 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
   - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in execution config or env vars.  
 - `etl runs list [--store .runs/runs.jsonl]` â€“ show recent recorded runs.  
 - `etl runs show <run_id> [--store ...]` â€“ show details for a specific run.
+- `etl diagnostics latest [--workdir .runs] [--show]` - print latest diagnostic report path; optional `--show` prints JSON contents.
+
+### Error reports
+
+- On command failures, the CLI writes a portable diagnostic JSON report under `.runs/error_reports/`.
+- Share that report file when reporting issues; it includes traceback and local code excerpts around failing frames.
 
 ## Local runner behavior
 
