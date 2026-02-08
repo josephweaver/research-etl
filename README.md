@@ -166,7 +166,7 @@ Defaults: plugins in `plugins/`, run artifacts in `.runs/`, run records in `.run
 
 - `etl plugins list [-d plugins/]` â€“ list discovered plugins.  
 - `etl validate <pipeline.yml> [--global-config config/global.yml]` â€“ parse and validate pipeline syntax/templating.  
-- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --execution-config ... --env name --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S]` - run locally or submit SLURM jobs.  
+- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --execution-config ... --env name --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id>]` - run locally or submit SLURM jobs.  
   - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in execution config or env vars.  
 - `etl runs list [--store .runs/runs.jsonl]` â€“ show recent recorded runs.  
 - `etl runs show <run_id> [--store ...]` â€“ show details for a specific run.

@@ -32,6 +32,14 @@ class RunRecord:
     steps: List[Dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass
+class RunStepState:
+    step_name: str
+    success: bool
+    skipped: bool
+    outputs: Dict[str, Any] = field(default_factory=dict)
+
+
 def _step_to_dict(step_result: StepResult) -> Dict[str, Any]:
     return {
         "name": step_result.step.name,
@@ -384,11 +392,46 @@ def find_run(store: Path, run_id: str) -> Optional[RunRecord]:
     return None
 
 
+def load_run_step_states(run_id: str) -> Dict[str, RunStepState]:
+    """
+    Load latest step states for a run from DB tracking tables.
+    """
+    db_url = get_database_url()
+    if not db_url:
+        raise RuntimeError(
+            "ETL_DATABASE_URL is required for --resume-run-id because step state is loaded from DB."
+        )
+
+    states: Dict[str, RunStepState] = {}
+    with psycopg.connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT step_name, success, skipped, COALESCE(outputs_json, '{}'::jsonb)
+                FROM etl_run_steps
+                WHERE run_id = %s
+                """,
+                (run_id,),
+            )
+            for step_name, success, skipped, outputs in cur.fetchall():
+                if isinstance(outputs, str):
+                    outputs = json.loads(outputs or "{}")
+                states[step_name] = RunStepState(
+                    step_name=step_name,
+                    success=bool(success),
+                    skipped=bool(skipped),
+                    outputs=outputs or {},
+                )
+    return states
+
+
 __all__ = [
     "RunRecord",
+    "RunStepState",
     "record_run",
     "load_runs",
     "find_run",
+    "load_run_step_states",
     "upsert_run_status",
     "upsert_step_attempt",
 ]

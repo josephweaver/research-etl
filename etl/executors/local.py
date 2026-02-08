@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 from .base import Executor, RunState, RunStatus, SubmissionResult
 from ..pipeline import Pipeline, parse_pipeline, PipelineError
 from ..runner import run_pipeline, RunResult
-from ..tracking import record_run
+from ..tracking import record_run, load_run_step_states
 
 
 class LocalExecutor(Executor):
@@ -44,6 +44,13 @@ class LocalExecutor(Executor):
             pipeline: Pipeline = context.get("pipeline") or parse_pipeline(Path(pipeline_path))
         except PipelineError as exc:
             raise RuntimeError(f"Pipeline parse failed: {exc}") from exc
+        resume_run_id = context.get("resume_run_id")
+        resume_succeeded_steps = None
+        prior_step_outputs = None
+        if resume_run_id:
+            states = load_run_step_states(str(resume_run_id))
+            resume_succeeded_steps = {name for name, st in states.items() if st.success}
+            prior_step_outputs = {name: st.outputs for name, st in states.items()}
 
         run_result = run_pipeline(
             pipeline,
@@ -52,6 +59,8 @@ class LocalExecutor(Executor):
             dry_run=self.dry_run,
             max_retries=self.max_retries,
             retry_delay_seconds=self.retry_delay_seconds,
+            resume_succeeded_steps=resume_succeeded_steps,
+            prior_step_outputs=prior_step_outputs,
             log_func=context.get("log"),
         )
         # attach timestamps

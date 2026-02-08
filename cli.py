@@ -108,7 +108,18 @@ def cmd_run(args: argparse.Namespace) -> int:
             max_retries=max_retries,
             retry_delay_seconds=retry_delay_seconds,
         )
-    result = executor.submit(str(pipeline_path), context={"pipeline": pipeline, "execution_env": exec_env})
+    try:
+        result = executor.submit(
+            str(pipeline_path),
+            context={
+                "pipeline": pipeline,
+                "execution_env": exec_env,
+                "resume_run_id": args.resume_run_id,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Run failed before submission/execution: {exc}", file=sys.stderr)
+        return 1
     status = executor.status(result.run_id)
     job_info = f" (jobs: {result.job_ids})" if getattr(result, "job_ids", None) else ""
     print(f"Run {result.run_id} -> {status.state}{job_info}")
@@ -205,6 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--dry-run", action="store_true", help="Parse and plan without executing plugins")
     p_run.add_argument("--max-retries", type=int, default=None, help="Max retries per step after first failure")
     p_run.add_argument("--retry-delay-seconds", type=float, default=None, help="Delay between retries in seconds")
+    p_run.add_argument("--resume-run-id", default=None, help="Resume by skipping steps that succeeded in a prior run_id")
     p_run.add_argument("--executor", choices=["local", "slurm"], default="local", help="Execution backend")
     p_run.add_argument("--verbose", action="store_true", help="Verbose executor output (e.g., show SSH commands)")
     p_run.set_defaults(func=cmd_run)

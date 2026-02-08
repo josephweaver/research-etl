@@ -24,7 +24,7 @@ from etl.execution_config import (
 )
 from etl.pipeline import parse_pipeline, PipelineError
 from etl.runner import run_pipeline, RunResult
-from etl.tracking import upsert_run_status, upsert_step_attempt
+from etl.tracking import upsert_run_status, upsert_step_attempt, load_run_step_states
 
 
 def load_context(path: Path) -> dict:
@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workdir", default=".runs", help="Work directory base")
     parser.add_argument("--context-file", help="JSON file to load/save shared context", default=None)
     parser.add_argument("--run-id", help="Existing run_id (for chained batches)", default=None)
+    parser.add_argument("--resume-run-id", default=None, help="Prior run_id to resume from (skip successful steps)")
     parser.add_argument("--max-retries", type=int, default=0, help="Max step retries after first failure")
     parser.add_argument("--retry-delay-seconds", type=float, default=0.0, help="Delay between retries")
     parser.add_argument("--global-config", help="Path to global config YAML", default=None)
@@ -112,6 +113,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     pipeline = full_pipeline
     pipeline.steps = [full_pipeline.steps[i] for i in indices]
+    resume_succeeded_steps: set[str] = set()
+    prior_step_outputs: dict[str, dict] = {}
+    if args.resume_run_id:
+        states = load_run_step_states(str(args.resume_run_id))
+        resume_succeeded_steps = {name for name, st in states.items() if st.success}
+        prior_step_outputs = {name: st.outputs for name, st in states.items()}
+    for step in pipeline.steps:
+        if step.output_var and step.name in prior_step_outputs:
+            ctx[step.output_var] = prior_step_outputs.get(step.name, {})
     total_steps = len(full_pipeline.steps)
     batch_started_at = datetime.utcnow().isoformat() + "Z"
     upsert_run_status(
@@ -136,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=False,
         max_retries=args.max_retries,
         retry_delay_seconds=args.retry_delay_seconds,
+        resume_succeeded_steps=resume_succeeded_steps,
+        prior_step_outputs=prior_step_outputs,
         log_func=None,
     )
     batch_ended_at = datetime.utcnow().isoformat() + "Z"
@@ -197,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Batch succeeded event.
     step_attempts = _build_step_attempt_summary(result)
+    all_skipped = bool(step_attempts) and all(bool(s.get("skipped")) for s in step_attempts)
     upsert_run_status(
         run_id=run_id,
         pipeline=args.pipeline,
@@ -207,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         message=f"batch completed for steps {indices}",
         executor="slurm",
         artifact_dir=str(args.workdir),
-        event_type="batch_completed",
+        event_type="batch_skipped" if all_skipped else "batch_completed",
         event_details={"step_indices": indices, "step_attempts": step_attempts},
     )
 

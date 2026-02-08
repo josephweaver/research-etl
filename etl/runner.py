@@ -183,6 +183,8 @@ def run_pipeline(
     dry_run: bool = False,
     max_retries: int = 0,
     retry_delay_seconds: float = 0.0,
+    resume_succeeded_steps: Optional[set[str]] = None,
+    prior_step_outputs: Optional[Dict[str, Dict[str, Any]]] = None,
     log_func=None,
 ) -> RunResult:
     run_id = run_id or uuid.uuid4().hex
@@ -201,6 +203,7 @@ def run_pipeline(
     step_results: List[StepResult] = []
     ctx_vars: Dict[str, Any] = dict(pipeline.vars)
     ctx_vars.update(pipeline.dirs)
+    prior_step_outputs = prior_step_outputs or {}
 
     expanded_steps: List[Step] = []
     for step in pipeline.steps:
@@ -225,6 +228,29 @@ def run_pipeline(
             expanded_steps.append(step)
 
     batches = _batch_steps(expanded_steps)
+    if resume_succeeded_steps:
+        filtered_batches: List[List[Step]] = []
+        for batch in batches:
+            kept: List[Step] = []
+            for step in batch:
+                if step.name in resume_succeeded_steps:
+                    log(f"[{run_id}] step {step.name} skipped (resume from prior success)")
+                    if step.output_var and step.name in prior_step_outputs:
+                        ctx_vars[step.output_var] = prior_step_outputs.get(step.name, {})
+                    step_results.append(
+                        StepResult(
+                            step=step,
+                            success=True,
+                            skipped=True,
+                            attempt_no=0,
+                            attempts=[],
+                        )
+                    )
+                else:
+                    kept.append(step)
+            if kept:
+                filtered_batches.append(kept)
+        batches = filtered_batches
 
     for batch_idx, batch in enumerate(batches):
         if len(batch) == 1:

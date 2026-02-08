@@ -119,6 +119,7 @@ class SlurmExecutor(Executor):
 
     def submit(self, pipeline_path: str, context: Dict[str, Any]) -> SubmissionResult:
         pipeline_path = Path(pipeline_path).as_posix()
+        resume_run_id = context.get("resume_run_id")
         run_id = context.get("run_id")
         if not run_id:
             import uuid
@@ -204,7 +205,7 @@ class SlurmExecutor(Executor):
                 label = step_name
                 step_workdir = (remote_workdir_root / step_name).as_posix()
                 step_logdir = (base_logdir / jobname / step_name / run_date / run_fs_id).as_posix()
-                script_text = self._render_batch_script(run_id, checkout_root, pipeline_remote, steps, step_indices, context_file, step_workdir, plugins_remote, step_logdir, venv_path, req_path, python_bin, array_index=False)
+                script_text = self._render_batch_script(run_id, checkout_root, pipeline_remote, steps, step_indices, context_file, step_workdir, plugins_remote, step_logdir, venv_path, req_path, python_bin, resume_run_id=resume_run_id, array_index=False)
                 jobid = self._submit_script(script_text, run_id, label=label, prev_dependency=prev_jobid, remote_dest_dir=step_workdir)
                 prev_jobid = jobid
                 submission_records.append(jobid)
@@ -220,7 +221,7 @@ class SlurmExecutor(Executor):
                     label = f"{first_name}_array{batch_idx}_chunk{start}"
                     step_workdir = (remote_workdir_root / label).as_posix()
                     step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
-                    script_text = self._render_batch_script(run_id, checkout_root, pipeline_remote, chunk_steps, chunk_indices, context_file, step_workdir, plugins_remote, step_logdir, venv_path, req_path, python_bin, array_index=True)
+                    script_text = self._render_batch_script(run_id, checkout_root, pipeline_remote, chunk_steps, chunk_indices, context_file, step_workdir, plugins_remote, step_logdir, venv_path, req_path, python_bin, resume_run_id=resume_run_id, array_index=True)
                     jobid = self._submit_script(script_text, run_id, label=label, prev_dependency=prev_jobid, array_bounds=(0, len(chunk)-1), remote_dest_dir=step_workdir)
                     prev_jobid = jobid
                     submission_records.append(jobid)
@@ -347,6 +348,7 @@ class SlurmExecutor(Executor):
         venv_path: str,
         req_path: str,
         python_bin: str,
+        resume_run_id: Optional[str] = None,
         array_index: bool = False,
     ) -> str:
         logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
@@ -407,6 +409,8 @@ class SlurmExecutor(Executor):
         ]
         cmd += ["--context-file", context_file]
         cmd += ["--run-id", run_id]
+        if resume_run_id:
+            cmd += ["--resume-run-id", str(resume_run_id)]
         cmd += ["--max-retries", str(self.step_max_retries)]
         cmd += ["--retry-delay-seconds", str(self.step_retry_delay_seconds)]
         if self.global_config:

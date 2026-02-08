@@ -1,0 +1,11 @@
+{
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": [
+    "-q",
+    "tests"
+  ],
+  "python.testing.cwd": "${workspaceFolder}",
+  "python.envFile": "${workspaceFolder}/.env",
+  "testing.automaticallyOpenTestResults": "neverOpen"
+}
