@@ -16,6 +16,7 @@ This project has moved from a local prototype toward an operational research run
   - `etl_run_step_attempts` (retry-ready)
   - `etl_run_events`
 - Provenance: run records capture Git and snapshot context (commit/branch/tag/dirty state, CLI command, and checksums for pipeline/config/plugins).
+- Git is the source of truth for pipeline/config content; DB stores checksums and run provenance only (no full pipeline/config text blobs).
 - Schema management: migration bootstrap from `db/ddl/*.sql` with checksum/version tracking (`etl_schema_versions`, `etl_schema_state`).
 - Artifacts: timestamp-first run paths for easier debugging:
   - `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>/`
