@@ -277,6 +277,19 @@ def cmd_diagnostics_latest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn  # type: ignore
+    except ImportError:
+        print(
+            "Web UI requires uvicorn/fastapi. Install with: pip install \"research-etl[web]\"",
+            file=sys.stderr,
+        )
+        return 1
+    uvicorn.run("etl.web_api:app", host=args.host, port=args.port, reload=bool(args.reload))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="etl", description="ETL pipeline runner")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -332,6 +345,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate.add_argument("pipeline", help="Path to pipeline YAML")
     p_validate.add_argument("--global-config", help="Path to global config YAML", default=None)
     p_validate.set_defaults(func=cmd_validate)
+
+    p_web = subparsers.add_parser("web", help="Run the minimal web UI/API server")
+    p_web.add_argument("--host", default="127.0.0.1", help="Bind host")
+    p_web.add_argument("--port", type=int, default=8000, help="Bind port")
+    p_web.add_argument("--reload", action="store_true", help="Auto-reload on code changes")
+    p_web.set_defaults(func=cmd_web)
 
     return parser
 

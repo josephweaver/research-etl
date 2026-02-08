@@ -82,3 +82,39 @@ class LocalExecutor(Executor):
         if run_id not in self._statuses:
             return RunStatus(run_id=run_id, state=RunState.FAILED, message="Unknown run_id")
         return self._statuses[run_id]
+
+    def artifact_tree(self, artifact_dir: str) -> Dict[str, Any]:
+        root = Path(artifact_dir).expanduser()
+        if not root.is_absolute():
+            root = (Path(".").resolve() / root).resolve()
+        if not root.exists() or not root.is_dir():
+            raise RuntimeError(f"Artifact directory not found: {root}")
+
+        def walk(path: Path, rel: str) -> Dict[str, Any]:
+            if path.is_dir():
+                children = []
+                for child in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+                    child_rel = f"{rel}/{child.name}" if rel else child.name
+                    children.append(walk(child, child_rel))
+                return {"name": path.name or ".", "path": rel, "type": "dir", "children": children}
+            size = path.stat().st_size if path.exists() else 0
+            return {"name": path.name, "path": rel, "type": "file", "size": size}
+
+        return walk(root, "")
+
+    def artifact_file(self, artifact_dir: str, relative_path: str, max_bytes: int = 256 * 1024) -> Dict[str, Any]:
+        root = Path(artifact_dir).expanduser()
+        if not root.is_absolute():
+            root = (Path(".").resolve() / root).resolve()
+        rel = (relative_path or "").strip().lstrip("/").replace("\\", "/")
+        candidate = (root / rel).resolve()
+        if root not in candidate.parents and candidate != root:
+            raise RuntimeError("Invalid artifact path")
+        if not candidate.exists() or not candidate.is_file():
+            raise RuntimeError(f"Artifact file not found: {relative_path}")
+        data = candidate.read_bytes()[:max_bytes]
+        text = data.decode("utf-8", errors="replace")
+        truncated = candidate.stat().st_size > max_bytes
+        if truncated:
+            text += "\n\n...[truncated]"
+        return {"path": rel, "content": text, "truncated": truncated}

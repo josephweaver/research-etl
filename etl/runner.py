@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .pipeline import Pipeline, Step
+from .logging import CompositeLogSink, ConsoleLogSink, FileLogSink, StepLogger
 from .plugins.base import (
     PluginContext,
     PluginDefinition,
@@ -194,11 +195,14 @@ def run_pipeline(
     base_workdir = workdir / date_dir / run_dir
     base_workdir.mkdir(parents=True, exist_ok=True)
 
-    def log(msg: str) -> None:
+    def log(msg: str, level: str = "INFO") -> None:
         if log_func:
-            log_func(msg)
+            try:
+                log_func(msg, level)
+            except TypeError:
+                log_func(f"[{level}] {msg}")
         else:
-            print(msg)
+            print(f"[{run_id}] [{level}] {msg}")
 
     step_results: List[StepResult] = []
     ctx_vars: Dict[str, Any] = dict(pipeline.vars)
@@ -313,10 +317,10 @@ def _execute_step(
     log,
     ctx_vars: Dict[str, Any],
 ) -> StepResult:
-    log(f"[{run_id}] step {step.name}")
+    log(f"step {step.name}")
 
     if not _eval_when(step.when, ctx_vars):
-        log(f"[{run_id}] step {step.name} skipped (when={step.when})")
+        log(f"step {step.name} skipped (when={step.when})")
         return StepResult(step=step, success=True, skipped=True, attempt_no=0, attempts=[])
 
     plugin_ref, arg_tokens = _parse_script(step.script)
@@ -333,10 +337,18 @@ def _execute_step(
     step_workdir = base_workdir / step.name
     step_workdir.mkdir(parents=True, exist_ok=True)
 
-    ctx = PluginContext(run_id=run_id, workdir=step_workdir, log=log)
+    step_logger = StepLogger(
+        CompositeLogSink(
+            [
+                ConsoleLogSink(run_id, step.name),
+                FileLogSink(step_workdir / "step.log"),
+            ]
+        )
+    )
+    ctx = PluginContext(run_id=run_id, workdir=step_workdir, log=step_logger)
 
     if dry_run:
-        log(f"[{run_id}] dry-run -> {plugin_path} args={args}")
+        log(f"dry-run -> {plugin_path} args={args}")
         started = datetime.utcnow().isoformat() + "Z"
         ended = datetime.utcnow().isoformat() + "Z"
         return StepResult(
@@ -380,7 +392,7 @@ def _execute_step(
                 }
             )
             if attempt_no > 1:
-                log(f"[{run_id}] step {step.name} succeeded on attempt {attempt_no}")
+                log(f"step {step.name} succeeded on attempt {attempt_no}")
             return StepResult(
                 step=step,
                 success=True,
@@ -403,9 +415,7 @@ def _execute_step(
                 }
             )
             if attempt_no < max_attempts:
-                log(
-                    f"[{run_id}] step {step.name} attempt {attempt_no}/{max_attempts} failed: {err}; retrying"
-                )
+                log(f"step {step.name} attempt {attempt_no}/{max_attempts} failed: {err}; retrying", "WARN")
                 if retry_delay_seconds > 0:
                     time.sleep(retry_delay_seconds)
             else:

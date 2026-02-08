@@ -43,6 +43,10 @@ This folder contains the automated test suite for the ETL project.
   - Confirms expanded foreach steps retry independently and succeed.
   - Confirms resume skips expanded foreach step names (`fan_0`, `fan_1`) while downstream steps continue using prior outputs.
 
+- `tests/test_plugin_logging.py`
+  - Verifies standardized plugin logging calls (`ctx.log`, `ctx.info`, `ctx.warn`, `ctx.error`) work.
+  - Verifies per-step `step.log` artifact files are written.
+
 - `tests/test_provenance.py`
   - Verifies provenance collection payload shape from `etl/provenance.py`.
   - Confirms pipeline and plugin checksums are captured.
@@ -71,6 +75,16 @@ This folder contains the automated test suite for the ETL project.
   - Verifies portable diagnostic reports are written with traceback and frame metadata.
   - Verifies `cli.py` prints the saved diagnostic report path when a run submission fails.
   - Verifies diagnostic discovery via `find_latest_error_report(...)` and `etl diagnostics latest`.
+
+- `tests/test_web_queries.py`
+  - Verifies web-query helpers return run list/detail payloads from tracking tables.
+  - Verifies query-side filtering (`status`, `executor`, `q`) is applied.
+  - Verifies missing DB configuration raises a clear `WebQueryError`.
+
+- `tests/test_web_api.py`
+  - Verifies FastAPI UI API endpoints for `/api/runs` and `/api/runs/{run_id}`.
+  - Verifies resume endpoint behavior (`POST /api/runs/{run_id}/resume`, local-only guard).
+  - Skips when FastAPI dependencies are not importable.
 
 ## Notes
 

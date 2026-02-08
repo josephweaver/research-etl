@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import List, Protocol
+
+
+class LogSink(Protocol):
+    def emit(self, level: str, message: str) -> None:
+        ...
+
+
+class ConsoleLogSink:
+    def __init__(self, run_id: str, step_name: str):
+        self.run_id = run_id
+        self.step_name = step_name
+
+    def emit(self, level: str, message: str) -> None:
+        print(f"[{self.run_id}] [{self.step_name}] [{level}] {message}")
+
+
+class FileLogSink:
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def emit(self, level: str, message: str) -> None:
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(f"[{level}] {message}\n")
+
+
+class CompositeLogSink:
+    def __init__(self, sinks: List[LogSink]):
+        self.sinks = sinks
+
+    def emit(self, level: str, message: str) -> None:
+        for sink in self.sinks:
+            sink.emit(level, message)
+
+
+class StepLogger:
+    """
+    Standard plugin-facing logger.
+    Plugins can call:
+      ctx.log("message")
+      ctx.log("message", "WARN")
+      ctx.info(...), ctx.warn(...), ctx.error(...)
+    """
+
+    def __init__(self, sink: LogSink):
+        self.sink = sink
+
+    def __call__(self, message: str, level: str = "INFO") -> None:
+        self.sink.emit(str(level).upper(), str(message))
+
+    def info(self, message: str) -> None:
+        self.sink.emit("INFO", str(message))
+
+    def warn(self, message: str) -> None:
+        self.sink.emit("WARN", str(message))
+
+    def error(self, message: str) -> None:
+        self.sink.emit("ERROR", str(message))
+

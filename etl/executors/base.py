@@ -59,3 +59,11 @@ class Executor(ABC):
     def cancel(self, run_id: str) -> RunStatus:
         """Attempt to cancel a run if supported."""
         raise NotImplementedError("cancel not implemented for this executor")
+
+    def artifact_tree(self, artifact_dir: str) -> Dict[str, Any]:
+        """Return a JSON-like artifact tree rooted at artifact_dir."""
+        raise NotImplementedError("artifact tree retrieval not implemented for this executor")
+
+    def artifact_file(self, artifact_dir: str, relative_path: str, max_bytes: int = 256 * 1024) -> Dict[str, Any]:
+        """Return file content payload for a relative path under artifact_dir."""
+        raise NotImplementedError("artifact file retrieval not implemented for this executor")

@@ -179,11 +179,35 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 - `etl runs list [--store .runs/runs.jsonl]` â€“ show recent recorded runs.  
 - `etl runs show <run_id> [--store ...]` â€“ show details for a specific run.
 - `etl diagnostics latest [--workdir .runs] [--show]` - print latest diagnostic report path; optional `--show` prints JSON contents.
+- `etl web [--host 127.0.0.1 --port 8000 --reload]` - run minimal FastAPI UI/API for runs and details.
 
 ### Error reports
 
 - On command failures, the CLI writes a portable diagnostic JSON report under `.runs/error_reports/`.
 - Share that report file when reporting issues; it includes traceback and local code excerpts around failing frames.
+
+### Web UI quickstart
+
+1) Install web dependencies: `pip install "research-etl[web]"` (or `pip install -r requirements-dev.txt`).
+2) Start server: `etl web --host 127.0.0.1 --port 8000 --reload`
+3) Open: `http://127.0.0.1:8000`
+4) Use Status/Executor/Search filters in the UI run list.
+5) Select a failed run and click `Resume Selected` (currently local executor only). Optional UI overrides:
+   - `plugins_dir`
+   - `workdir`
+   - `max_retries`
+   - `retry_delay_seconds`
+   - executor override (`local`/`slurm`)
+
+API endpoints:
+- `GET /api/health`
+- `GET /api/runs?limit=50&status=failed&executor=local&q=sample`
+- `GET /api/runs/{run_id}`
+- `POST /api/runs/{run_id}/resume`
+- `GET /api/runs/{run_id}/files`
+- `GET /api/runs/{run_id}/file?path=logs/job.out`
+
+Artifact browsing uses executor-specific retrieval methods. `local` reads local filesystem artifacts directly. `slurm` currently supports local-visible artifact paths and returns a clear message when only remote cluster paths are available.
 
 ## Local runner behavior
 
@@ -197,6 +221,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 - Each step gets its own workdir under `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>`.  
 - Validation hook runs after `run` if provided; failures stop the pipeline.  
 - Run results are appended to `.runs/runs.jsonl` (JSONL records).
+- Plugins can use standardized logging via `ctx.log("msg")`, `ctx.log("msg", "WARN")`, `ctx.info(...)`, `ctx.warn(...)`, and `ctx.error(...)`; per-step logs are written to `<step_workdir>/step.log`.
 - When `ETL_DATABASE_URL` is configured, run tracking is also persisted to DB tables: `etl_runs`, `etl_run_steps`, `etl_run_step_attempts`, and `etl_run_events`.
 - For SLURM execution, completion is event-driven from `run_batch.py` (no polling): batches emit `batch_started`/`batch_completed`/`batch_failed`, and the last batch emits `run_completed`.
 
