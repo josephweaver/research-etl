@@ -111,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     if not indices:
         print("No step indices provided")
         return 1
+    total_steps = len(full_pipeline.steps)
     pipeline = full_pipeline
     pipeline.steps = [full_pipeline.steps[i] for i in indices]
     resume_succeeded_steps: set[str] = set()
@@ -122,7 +123,6 @@ def main(argv: list[str] | None = None) -> int:
     for step in pipeline.steps:
         if step.output_var and step.name in prior_step_outputs:
             ctx[step.output_var] = prior_step_outputs.get(step.name, {})
-    total_steps = len(full_pipeline.steps)
     batch_started_at = datetime.utcnow().isoformat() + "Z"
     upsert_run_status(
         run_id=run_id,

@@ -35,9 +35,24 @@ This folder contains the automated test suite for the ETL project.
   - Confirms previously successful steps can be skipped.
   - Confirms prior outputs are injected so downstream `when` conditions still evaluate correctly.
 
+- `tests/test_runner_edge_cases.py`
+  - Verifies retry + `foreach` + `parallel_with` interaction in `etl/runner.py`.
+  - Confirms expanded foreach steps retry independently and succeed.
+  - Confirms resume skips expanded foreach step names (`fan_0`, `fan_1`) while downstream steps continue using prior outputs.
+
 - `tests/test_provenance.py`
   - Verifies provenance collection payload shape from `etl/provenance.py`.
   - Confirms pipeline and plugin checksums are captured.
+
+- `tests/test_slurm_executor.py`
+  - Verifies SLURM submission planning for parallel batches (array job generation).
+  - Confirms chained dependencies between setup and subsequent jobs.
+  - Confirms `--resume-run-id`, `--max-retries`, and `--retry-delay-seconds` are propagated to `run_batch.py` commands.
+
+- `tests/test_run_batch_events.py`
+  - Executes `etl/run_batch.py` via `main(...)` and validates tracking event emissions.
+  - Confirms success path emits `batch_completed` and final `run_completed` with correct `step_attempts` payload.
+  - Confirms failure path emits `batch_failed` with final error details in `step_attempts`.
 
 ## Notes
 
