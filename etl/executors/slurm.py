@@ -50,6 +50,8 @@ class SlurmEnv:
     venv: Optional[str] = None
     requirements: Optional[str] = None
     python: Optional[str] = None
+    step_max_retries: Optional[int] = None
+    step_retry_delay_seconds: Optional[float] = None
 
 
 class SlurmExecutor(Executor):
@@ -72,7 +74,7 @@ class SlurmExecutor(Executor):
             "partition", "account", "time", "cpus_per_task", "mem",
             "logdir", "workdir", "modules", "conda_env", "sbatch_extra",
             "ssh_host", "ssh_user", "ssh_jump", "remote_repo", "sync",
-            "venv", "requirements", "python"
+            "venv", "requirements", "python", "step_max_retries", "step_retry_delay_seconds"
         }}
         self.env = SlurmEnv(**env_kwargs)
         # Limits/concurrency hints; used by future array/dependency planner.
@@ -81,6 +83,8 @@ class SlurmExecutor(Executor):
         self.max_parallel = int(env_config.get("max_parallel", 50))
         self.ssh_timeout = int(env_config.get("ssh_timeout", 120))
         self.scp_timeout = int(env_config.get("scp_timeout", 300))
+        self.step_max_retries = int(env_config.get("step_max_retries", 0))
+        self.step_retry_delay_seconds = float(env_config.get("step_retry_delay_seconds", 0.0))
         self.local_repo_name = Path(repo_root).name
         self.remote_base = Path(env_config.get("remote_repo") or repo_root)
         self.repo_root = self.remote_base / self.local_repo_name
@@ -313,6 +317,8 @@ class SlurmExecutor(Executor):
         ]
         cmd += ["--context-file", context_file]
         cmd += ["--run-id", run_id]
+        cmd += ["--max-retries", str(self.step_max_retries)]
+        cmd += ["--retry-delay-seconds", str(self.step_retry_delay_seconds)]
         if self.global_config:
             gc_path = Path(self.global_config)
             gc_arg = ((Path(checkout_root) / gc_path).as_posix() if not gc_path.is_absolute() else gc_path.as_posix())
@@ -401,6 +407,8 @@ class SlurmExecutor(Executor):
         ]
         cmd += ["--context-file", context_file]
         cmd += ["--run-id", run_id]
+        cmd += ["--max-retries", str(self.step_max_retries)]
+        cmd += ["--retry-delay-seconds", str(self.step_retry_delay_seconds)]
         if self.global_config:
             gc_path = Path(self.global_config)
             gc_arg = ((Path(checkout_root) / gc_path).as_posix() if not gc_path.is_absolute() else gc_path.as_posix())

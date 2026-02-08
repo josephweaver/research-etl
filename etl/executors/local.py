@@ -17,10 +17,19 @@ from ..tracking import record_run
 class LocalExecutor(Executor):
     name = "local"
 
-    def __init__(self, plugin_dir: Path = Path("plugins"), workdir: Path = Path(".runs"), dry_run: bool = False):
+    def __init__(
+        self,
+        plugin_dir: Path = Path("plugins"),
+        workdir: Path = Path(".runs"),
+        dry_run: bool = False,
+        max_retries: int = 0,
+        retry_delay_seconds: float = 0.0,
+    ):
         self.plugin_dir = plugin_dir
         self.workdir = workdir
         self.dry_run = dry_run
+        self.max_retries = max_retries
+        self.retry_delay_seconds = retry_delay_seconds
         self._statuses: Dict[str, RunStatus] = {}
 
     def _record_status(self, run_result: RunResult, message: str = "") -> RunStatus:
@@ -41,6 +50,8 @@ class LocalExecutor(Executor):
             plugin_dir=self.plugin_dir,
             workdir=self.workdir,
             dry_run=self.dry_run,
+            max_retries=self.max_retries,
+            retry_delay_seconds=self.retry_delay_seconds,
             log_func=context.get("log"),
         )
         # attach timestamps

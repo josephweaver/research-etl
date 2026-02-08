@@ -40,6 +40,8 @@ def _step_to_dict(step_result: StepResult) -> Dict[str, Any]:
         "skipped": step_result.skipped,
         "error": step_result.error,
         "outputs": step_result.outputs,
+        "attempt_no": step_result.attempt_no,
+        "attempts": step_result.attempts,
     }
 
 
@@ -116,39 +118,72 @@ def _upsert_run_db(
                         outputs_json,
                     ),
                 )
-                # Retry-ready table: each execution attempt gets its own row.
-                # Current runner writes attempt_no=1; future retries can write
-                # attempt_no > 1 without schema changes.
-                cur.execute(
-                    """
-                    INSERT INTO etl_run_step_attempts (
-                        run_id, step_name, attempt_no, script, success, skipped, error, outputs_json, started_at, ended_at, updated_at
+                attempts = step.get("attempts") or []
+                if attempts:
+                    for att in attempts:
+                        att_outputs_json = json.dumps(att.get("outputs") or {}, default=str)
+                        cur.execute(
+                            """
+                            INSERT INTO etl_run_step_attempts (
+                                run_id, step_name, attempt_no, script, success, skipped, error, outputs_json, started_at, ended_at, updated_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
+                            ON CONFLICT (run_id, step_name, attempt_no)
+                            DO UPDATE SET
+                                script = EXCLUDED.script,
+                                success = EXCLUDED.success,
+                                skipped = EXCLUDED.skipped,
+                                error = EXCLUDED.error,
+                                outputs_json = EXCLUDED.outputs_json,
+                                started_at = EXCLUDED.started_at,
+                                ended_at = EXCLUDED.ended_at,
+                                updated_at = NOW()
+                            """,
+                            (
+                                rec.run_id,
+                                step_name,
+                                int(att.get("attempt_no", step.get("attempt_no", 1))),
+                                step_script,
+                                bool(att.get("success", step_success)),
+                                bool(att.get("skipped", step_skipped)),
+                                att.get("error", step_error),
+                                att_outputs_json,
+                                att.get("started_at", rec.started_at),
+                                att.get("ended_at", rec.ended_at),
+                            ),
+                        )
+                elif int(step.get("attempt_no", 0) or 0) > 0:
+                    # Backward-compatible fallback when attempt history is not present.
+                    cur.execute(
+                        """
+                        INSERT INTO etl_run_step_attempts (
+                            run_id, step_name, attempt_no, script, success, skipped, error, outputs_json, started_at, ended_at, updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
+                        ON CONFLICT (run_id, step_name, attempt_no)
+                        DO UPDATE SET
+                            script = EXCLUDED.script,
+                            success = EXCLUDED.success,
+                            skipped = EXCLUDED.skipped,
+                            error = EXCLUDED.error,
+                            outputs_json = EXCLUDED.outputs_json,
+                            started_at = EXCLUDED.started_at,
+                            ended_at = EXCLUDED.ended_at,
+                            updated_at = NOW()
+                        """,
+                        (
+                            rec.run_id,
+                            step_name,
+                            int(step.get("attempt_no", 1)),
+                            step_script,
+                            step_success,
+                            step_skipped,
+                            step_error,
+                            outputs_json,
+                            rec.started_at,
+                            rec.ended_at,
+                        ),
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
-                    ON CONFLICT (run_id, step_name, attempt_no)
-                    DO UPDATE SET
-                        script = EXCLUDED.script,
-                        success = EXCLUDED.success,
-                        skipped = EXCLUDED.skipped,
-                        error = EXCLUDED.error,
-                        outputs_json = EXCLUDED.outputs_json,
-                        started_at = EXCLUDED.started_at,
-                        ended_at = EXCLUDED.ended_at,
-                        updated_at = NOW()
-                    """,
-                    (
-                        rec.run_id,
-                        step_name,
-                        1,
-                        step_script,
-                        step_success,
-                        step_skipped,
-                        step_error,
-                        outputs_json,
-                        rec.started_at,
-                        rec.ended_at,
-                    ),
-                )
 
             event_details = json.dumps(
                 {

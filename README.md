@@ -166,7 +166,7 @@ Defaults: plugins in `plugins/`, run artifacts in `.runs/`, run records in `.run
 
 - `etl plugins list [-d plugins/]` â€“ list discovered plugins.  
 - `etl validate <pipeline.yml> [--global-config config/global.yml]` â€“ parse and validate pipeline syntax/templating.  
-- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --execution-config ... --env name --plugins-dir plugins --workdir .runs --dry-run]` - run locally or submit SLURM jobs.  
+- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --execution-config ... --env name --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S]` - run locally or submit SLURM jobs.  
   - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in execution config or env vars.  
 - `etl runs list [--store .runs/runs.jsonl]` â€“ show recent recorded runs.  
 - `etl runs show <run_id> [--store ...]` â€“ show details for a specific run.
@@ -179,6 +179,7 @@ Defaults: plugins in `plugins/`, run artifacts in `.runs/`, run records in `.run
 - `when` expressions run in a restricted eval against the pipeline vars/dirs and previously stored outputs; falsey â†’ step skipped (recorded as skipped).  
 - `foreach` fans out a step over a list variable; each item gets its own step instance. `{item}` placeholders in script/env are filled per item; `output_var` is suffixed with the item index.  
 - `parallel_with`: consecutive steps sharing the same value are executed in parallel within a batch.  
+- Step retries are supported: `--max-retries` and `--retry-delay-seconds` apply per-step retry behavior (also configurable in execution env via `step_max_retries` and `step_retry_delay_seconds`).
 - Each step gets its own workdir under `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>`.  
 - Validation hook runs after `run` if provided; failures stop the pipeline.  
 - Run results are appended to `.runs/runs.jsonl` (JSONL records).

@@ -12,6 +12,8 @@ environments:
     job_limit: 1000
     array_task_limit: 1000
     max_parallel: 50
+    step_max_retries: 1
+    step_retry_delay_seconds: 2.0
   hpcc_beta:
     host: beta.login.univ.edu
     partition: highmem

@@ -73,6 +73,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         except ExecutionConfigError as exc:
             print(f"Execution config error: {exc}", file=sys.stderr)
             return 1
+    max_retries = args.max_retries if args.max_retries is not None else int(exec_env.get("step_max_retries", 0) or 0)
+    retry_delay_seconds = (
+        args.retry_delay_seconds
+        if args.retry_delay_seconds is not None
+        else float(exec_env.get("step_retry_delay_seconds", 0.0) or 0.0)
+    )
+    # Ensure SLURM path inherits explicit CLI overrides even when execution config is used.
+    exec_env["step_max_retries"] = max_retries
+    exec_env["step_retry_delay_seconds"] = retry_delay_seconds
     try:
         pipeline = parse_pipeline(pipeline_path, global_vars=global_vars)
     except (PipelineError, FileNotFoundError) as exc:
@@ -96,6 +105,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             plugin_dir=Path(args.plugins_dir),
             workdir=Path(args.workdir),
             dry_run=args.dry_run,
+            max_retries=max_retries,
+            retry_delay_seconds=retry_delay_seconds,
         )
     result = executor.submit(str(pipeline_path), context={"pipeline": pipeline, "execution_env": exec_env})
     status = executor.status(result.run_id)
@@ -192,6 +203,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--plugins-dir", default="plugins", help="Directory containing plugins")
     p_run.add_argument("--workdir", default=".runs", help="Directory to store run artifacts")
     p_run.add_argument("--dry-run", action="store_true", help="Parse and plan without executing plugins")
+    p_run.add_argument("--max-retries", type=int, default=None, help="Max retries per step after first failure")
+    p_run.add_argument("--retry-delay-seconds", type=float, default=None, help="Delay between retries in seconds")
     p_run.add_argument("--executor", choices=["local", "slurm"], default="local", help="Execution backend")
     p_run.add_argument("--verbose", action="store_true", help="Verbose executor output (e.g., show SSH commands)")
     p_run.set_defaults(func=cmd_run)

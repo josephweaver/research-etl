@@ -40,6 +40,25 @@ def save_context(path: Path, ctx: dict) -> None:
         json.dump(ctx, f)
 
 
+def _build_step_attempt_summary(result: RunResult) -> list[dict]:
+    summary: list[dict] = []
+    for step_res in result.steps:
+        attempts = step_res.attempts or []
+        final_error = step_res.error
+        if attempts:
+            final_error = attempts[-1].get("error", final_error)
+        summary.append(
+            {
+                "step_name": step_res.step.name,
+                "attempts": int(step_res.attempt_no),
+                "success": bool(step_res.success),
+                "skipped": bool(step_res.skipped),
+                "final_error": final_error,
+            }
+        )
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a batch of pipeline steps")
     parser.add_argument("pipeline", help="Pipeline YAML path")
@@ -48,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workdir", default=".runs", help="Work directory base")
     parser.add_argument("--context-file", help="JSON file to load/save shared context", default=None)
     parser.add_argument("--run-id", help="Existing run_id (for chained batches)", default=None)
+    parser.add_argument("--max-retries", type=int, default=0, help="Max step retries after first failure")
+    parser.add_argument("--retry-delay-seconds", type=float, default=0.0, help="Delay between retries")
     parser.add_argument("--global-config", help="Path to global config YAML", default=None)
     parser.add_argument("--execution-config", help="Path to execution env config YAML", default=None)
     parser.add_argument("--env", help="Execution environment name (from execution config)", default=None)
@@ -113,22 +134,40 @@ def main(argv: list[str] | None = None) -> int:
         workdir=Path(args.workdir),
         run_id=run_id,
         dry_run=False,
+        max_retries=args.max_retries,
+        retry_delay_seconds=args.retry_delay_seconds,
         log_func=None,
     )
     batch_ended_at = datetime.utcnow().isoformat() + "Z"
     for step_res in result.steps:
-        upsert_step_attempt(
-            run_id=run_id,
-            step_name=step_res.step.name,
-            attempt_no=1,
-            script=step_res.step.script,
-            success=step_res.success,
-            skipped=step_res.skipped,
-            error=step_res.error,
-            outputs=step_res.outputs,
-            started_at=batch_started_at,
-            ended_at=batch_ended_at,
-        )
+        attempts = step_res.attempts or []
+        if attempts:
+            for att in attempts:
+                upsert_step_attempt(
+                    run_id=run_id,
+                    step_name=step_res.step.name,
+                    attempt_no=int(att.get("attempt_no", step_res.attempt_no)),
+                    script=step_res.step.script,
+                    success=bool(att.get("success", step_res.success)),
+                    skipped=bool(att.get("skipped", step_res.skipped)),
+                    error=att.get("error", step_res.error),
+                    outputs=att.get("outputs", step_res.outputs),
+                    started_at=att.get("started_at", batch_started_at),
+                    ended_at=att.get("ended_at", batch_ended_at),
+                )
+        elif step_res.attempt_no > 0:
+            upsert_step_attempt(
+                run_id=run_id,
+                step_name=step_res.step.name,
+                attempt_no=step_res.attempt_no,
+                script=step_res.step.script,
+                success=step_res.success,
+                skipped=step_res.skipped,
+                error=step_res.error,
+                outputs=step_res.outputs,
+                started_at=batch_started_at,
+                ended_at=batch_ended_at,
+            )
 
     # merge outputs into ctx (simple overwrite)
     for step_res in result.steps:
@@ -140,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # If a batch fails, mark the full run failed immediately.
     if not result.success:
+        step_attempts = _build_step_attempt_summary(result)
         upsert_run_status(
             run_id=run_id,
             pipeline=args.pipeline,
@@ -151,11 +191,12 @@ def main(argv: list[str] | None = None) -> int:
             executor="slurm",
             artifact_dir=str(args.workdir),
             event_type="batch_failed",
-            event_details={"step_indices": indices},
+            event_details={"step_indices": indices, "step_attempts": step_attempts},
         )
         return 1
 
     # Batch succeeded event.
+    step_attempts = _build_step_attempt_summary(result)
     upsert_run_status(
         run_id=run_id,
         pipeline=args.pipeline,
@@ -167,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         executor="slurm",
         artifact_dir=str(args.workdir),
         event_type="batch_completed",
-        event_details={"step_indices": indices},
+        event_details={"step_indices": indices, "step_attempts": step_attempts},
     )
 
     # No polling: mark run complete when the last planned step index completes.
@@ -183,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             executor="slurm",
             artifact_dir=str(args.workdir),
             event_type="run_completed",
-            event_details={"step_indices": indices},
+            event_details={"step_indices": indices, "step_attempts": step_attempts},
         )
 
     return 0

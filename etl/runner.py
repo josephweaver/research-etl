@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import time
 import uuid
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -45,6 +46,8 @@ class StepResult:
     outputs: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     skipped: bool = False
+    attempt_no: int = 1
+    attempts: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -178,6 +181,8 @@ def run_pipeline(
     workdir: Path,
     run_id: Optional[str] = None,
     dry_run: bool = False,
+    max_retries: int = 0,
+    retry_delay_seconds: float = 0.0,
     log_func=None,
 ) -> RunResult:
     run_id = run_id or uuid.uuid4().hex
@@ -230,6 +235,8 @@ def run_pipeline(
                 plugin_dir,
                 base_workdir,
                 dry_run,
+                max_retries,
+                retry_delay_seconds,
                 log,
                 ctx_vars,
             )
@@ -251,6 +258,8 @@ def run_pipeline(
                             plugin_dir,
                             base_workdir,
                             dry_run,
+                            max_retries,
+                            retry_delay_seconds,
                             log,
                             dict(ctx_vars),  # snapshot
                         )
@@ -273,6 +282,8 @@ def _execute_step(
     plugin_dir: Path,
     base_workdir: Path,
     dry_run: bool,
+    max_retries: int,
+    retry_delay_seconds: float,
     log,
     ctx_vars: Dict[str, Any],
 ) -> StepResult:
@@ -280,7 +291,7 @@ def _execute_step(
 
     if not _eval_when(step.when, ctx_vars):
         log(f"[{run_id}] step {step.name} skipped (when={step.when})")
-        return StepResult(step=step, success=True, skipped=True)
+        return StepResult(step=step, success=True, skipped=True, attempt_no=0, attempts=[])
 
     plugin_ref, arg_tokens = _parse_script(step.script)
     try:
@@ -300,20 +311,88 @@ def _execute_step(
 
     if dry_run:
         log(f"[{run_id}] dry-run -> {plugin_path} args={args}")
-        return StepResult(step=step, success=True, outputs={})
+        started = datetime.utcnow().isoformat() + "Z"
+        ended = datetime.utcnow().isoformat() + "Z"
+        return StepResult(
+            step=step,
+            success=True,
+            outputs={},
+            attempt_no=1,
+            attempts=[
+                {
+                    "attempt_no": 1,
+                    "success": True,
+                    "skipped": False,
+                    "error": None,
+                    "outputs": {},
+                    "started_at": started,
+                    "ended_at": ended,
+                }
+            ],
+        )
 
-    original_env = os.environ.copy()
-    try:
-        os.environ.update({str(k): str(v) for k, v in step.env.items()})
-        outputs = plugin.run(args, ctx)
-        if plugin.validate:
-            plugin.validate(args, outputs, ctx)
-        return StepResult(step=step, success=True, outputs=outputs)
-    except Exception as exc:  # noqa: BLE001
-        return StepResult(step=step, success=False, error=str(exc))
-    finally:
-        os.environ.clear()
-        os.environ.update(original_env)
+    attempt_history: List[Dict[str, Any]] = []
+    max_attempts = max(1, int(max_retries) + 1)
+    for attempt_no in range(1, max_attempts + 1):
+        original_env = os.environ.copy()
+        started = datetime.utcnow().isoformat() + "Z"
+        try:
+            os.environ.update({str(k): str(v) for k, v in step.env.items()})
+            outputs = plugin.run(args, ctx)
+            if plugin.validate:
+                plugin.validate(args, outputs, ctx)
+            ended = datetime.utcnow().isoformat() + "Z"
+            attempt_history.append(
+                {
+                    "attempt_no": attempt_no,
+                    "success": True,
+                    "skipped": False,
+                    "error": None,
+                    "outputs": outputs,
+                    "started_at": started,
+                    "ended_at": ended,
+                }
+            )
+            if attempt_no > 1:
+                log(f"[{run_id}] step {step.name} succeeded on attempt {attempt_no}")
+            return StepResult(
+                step=step,
+                success=True,
+                outputs=outputs,
+                attempt_no=attempt_no,
+                attempts=attempt_history,
+            )
+        except Exception as exc:  # noqa: BLE001
+            ended = datetime.utcnow().isoformat() + "Z"
+            err = str(exc)
+            attempt_history.append(
+                {
+                    "attempt_no": attempt_no,
+                    "success": False,
+                    "skipped": False,
+                    "error": err,
+                    "outputs": {},
+                    "started_at": started,
+                    "ended_at": ended,
+                }
+            )
+            if attempt_no < max_attempts:
+                log(
+                    f"[{run_id}] step {step.name} attempt {attempt_no}/{max_attempts} failed: {err}; retrying"
+                )
+                if retry_delay_seconds > 0:
+                    time.sleep(retry_delay_seconds)
+            else:
+                return StepResult(
+                    step=step,
+                    success=False,
+                    error=err,
+                    attempt_no=attempt_no,
+                    attempts=attempt_history,
+                )
+        finally:
+            os.environ.clear()
+            os.environ.update(original_env)
 
 
 __all__ = ["run_pipeline", "RunResult", "StepResult", "RunError"]
