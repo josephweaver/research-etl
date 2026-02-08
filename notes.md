@@ -6,8 +6,8 @@
 - [x] `P0` Error handling pass: classify common failures and return clear actionable messages.
 - [x] `P0` Provenance completeness check: all run paths (local/slurm/run_batch/resume) persist Git+checksum metadata.
 - [ ] `P0` Integration tests for:
-  - [ ] `P0` SLURM event transitions (`queued -> running -> completed/failed`).
-  - [ ] `P0` Resume from partial success.
+  - [x] `P0` SLURM event transitions (`queued -> running -> completed/failed`).
+  - [x] `P0` Resume from partial success.
   - [ ] `P0` Retry attempts persisted with `attempt_no > 1`.
 
 ## Week 2 - Minimal product interface (P0/P1)
@@ -51,3 +51,4 @@
 - [ ] `P0` Failed run recovery works via resume without manual DB edits.
 - [ ] `P0` Every run has reproducibility metadata (Git + checksums).
 - [ ] `P0` CI is green for unit + integration test lanes.
+- [ ] `P0` Offline mode, allow the batch script to run regardless of the its abliity to connect to the database. Then the next time you run it attempts to add what is missing.

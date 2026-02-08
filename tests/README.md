@@ -18,6 +18,8 @@ This folder contains the automated test suite for the ETL project.
   - Real Postgres integration tests (marked `integration`).
   - Verifies migration bootstrap against a real DB.
   - Verifies run/step/attempt/event writes in actual database tables.
+  - Verifies SLURM event transitions persisted through DB (`run_queued -> batch_started -> batch_completed -> run_completed`, and failed path with `batch_failed`).
+  - Verifies local resume from partial success persists skipped/success states correctly (`s1` skipped, `s2` executed).
   - Skips automatically when `ETL_DATABASE_URL` is not set.
 
 - `tests/test_runner_paths.py`
