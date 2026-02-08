@@ -1,0 +1,9 @@
+vars:
+  jobname: sample
+  message: "Hello Midwest"
+dirs:
+  workdir: "data/{jobname}"
+steps:
+  - name: echo
+    script: 'echo.py message="{message}"'
+    when: "True"

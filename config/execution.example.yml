@@ -1,0 +1,24 @@
+environments:
+  hpcc_msu:
+    host: hpcc.msu.edu
+    partition: scavenger
+    account: weave151
+    time: "04:00:00"
+    cpus_per_task: 2
+    mem: "8G"
+    logdir: /mnt/scratch/logs
+    workdir: /mnt/scratch/work
+    modules: ["gdal", "python/3.11"]
+    job_limit: 1000
+    array_task_limit: 1000
+    max_parallel: 50
+  hpcc_beta:
+    host: beta.login.univ.edu
+    partition: highmem
+    account: proj456
+    time: "08:00:00"
+    cpus_per_task: 16
+    mem: "64G"
+    logdir: /hpcc/logs
+    workdir: /hpcc/work
+    conda_env: etl

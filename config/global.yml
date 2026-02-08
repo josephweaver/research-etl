@@ -1,0 +1,3 @@
+data: /data
+bin: /opt/etl/bin
+log: /data/logs

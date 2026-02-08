@@ -1,0 +1,23 @@
+environments:
+  hpcc_msu:
+    host: hpcc.msu.edu
+    # partition: scavenger # optional: specify valid
+    # account: weave151  # optional: specify valid allocation if required
+    time: "01:00:00"
+    cpus_per_task: 2
+    mem: "8G"
+
+    modules: [ "Python/3.11.3-GCCcore-12.3.0"]
+    job_limit: 1000
+    array_task_limit: 1000
+    max_parallel: 50
+    ssh_timeout: 120
+    scp_timeout: 300
+    ssh_host: dev-amd24.passwordless
+    ssh_user: weave151
+    remote_repo: /mnt/gs21/scratch/weave151/jobs
+    workdir: /mnt/gs21/scratch/weave151/jobs/work
+    logdir: /mnt/gs21/scratch/weave151/jobs/logs
+    venv:    /mnt/gs21/scratch/weave151/jobs/etl/.venv   # optional
+    requirements: /mnt/gs21/scratch/weave151/jobs/etl/requirements.txt  # optional
+    sync: true

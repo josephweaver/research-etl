@@ -1,0 +1,16 @@
+vars:
+  jobname: sample_foreach
+  targets:
+    - a
+    - b
+    - c
+dirs:
+  workdir: "data/{jobname}"
+steps:
+  - name: fetch_item
+    foreach: targets
+    parallel_with: targets
+    script: 'echo.py message="processing {item}"'
+    output_var: item_out
+  - name: summarize
+    script: 'echo.py message="all items done"'

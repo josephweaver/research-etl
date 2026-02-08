@@ -1,0 +1,20 @@
+vars:
+  jobname: sample_parallel
+  message_a: "Hi A"
+  message_b: "Hi B"
+  message_c: "Hi C"
+dirs:
+  workdir: "data/{jobname}"
+steps:
+  - name: fetch_a
+    script: 'echo.py message="{message_a}"'
+    parallel_with: group1
+  - name: fetch_b
+    script: 'echo.py message="{message_b}"'
+    parallel_with: group1
+  - name: fetch_c
+    script: 'echo.py message="{message_c}"'
+    parallel_with: group1
+  - name: summarize
+    script: 'echo.py message="Done with parallel group"'
+    when: "True"
