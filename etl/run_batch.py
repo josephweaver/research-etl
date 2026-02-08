@@ -23,6 +23,7 @@ from etl.execution_config import (
     ExecutionConfigError,
 )
 from etl.pipeline import parse_pipeline, PipelineError
+from etl.provenance import collect_run_provenance
 from etl.runner import run_pipeline, RunResult
 from etl.tracking import upsert_run_status, upsert_step_attempt, load_run_step_states
 
@@ -103,6 +104,15 @@ def main(argv: list[str] | None = None) -> int:
     except PipelineError as exc:
         print(f"Pipeline error: {exc}")
         return 1
+    provenance = collect_run_provenance(
+        repo_root=Path(".").resolve(),
+        pipeline_path=Path(args.pipeline),
+        global_config_path=Path(args.global_config) if args.global_config else None,
+        execution_config_path=Path(args.execution_config) if args.execution_config else None,
+        plugin_dir=Path(args.plugins_dir),
+        pipeline=full_pipeline,
+        cli_command="python etl/run_batch.py " + " ".join(argv or []),
+    )
 
     ctx = load_context(Path(args.context_file)) if args.context_file else {}
 
@@ -134,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         message=f"running steps {indices}",
         executor="slurm",
         artifact_dir=str(args.workdir),
+        provenance=provenance,
         event_type="batch_started",
         event_details={"step_indices": indices},
     )
@@ -202,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             message=f"batch failed for steps {indices}",
             executor="slurm",
             artifact_dir=str(args.workdir),
+            provenance=provenance,
             event_type="batch_failed",
             event_details={"step_indices": indices, "step_attempts": step_attempts},
         )
@@ -220,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         message=f"batch completed for steps {indices}",
         executor="slurm",
         artifact_dir=str(args.workdir),
+        provenance=provenance,
         event_type="batch_skipped" if all_skipped else "batch_completed",
         event_details={"step_indices": indices, "step_attempts": step_attempts},
     )
@@ -236,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
             message="all batches completed",
             executor="slurm",
             artifact_dir=str(args.workdir),
+            provenance=provenance,
             event_type="run_completed",
             event_details={"step_indices": indices, "step_attempts": step_attempts},
         )

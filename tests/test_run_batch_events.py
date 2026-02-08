@@ -30,8 +30,10 @@ def test_run_batch_emits_completed_and_run_completed_events(monkeypatch, tmp_pat
 
     status_calls = []
     attempt_calls = []
+    provenance = {"git_commit_sha": "abc123", "pipeline_checksum": "pchk"}
     monkeypatch.setattr(run_batch, "upsert_run_status", lambda **kw: status_calls.append(kw))
     monkeypatch.setattr(run_batch, "upsert_step_attempt", lambda **kw: attempt_calls.append(kw))
+    monkeypatch.setattr(run_batch, "collect_run_provenance", lambda **kw: provenance)
 
     result = RunResult(
         run_id="run123",
@@ -73,6 +75,7 @@ def test_run_batch_emits_completed_and_run_completed_events(monkeypatch, tmp_pat
 
     event_types = [c["event_type"] for c in status_calls]
     assert event_types == ["batch_started", "batch_completed", "run_completed"]
+    assert all(c.get("provenance") == provenance for c in status_calls)
     assert len(attempt_calls) == 3
 
     completed_payload = status_calls[1]["event_details"]
@@ -101,8 +104,10 @@ def test_run_batch_emits_failed_event_with_attempt_summary(monkeypatch, tmp_path
 
     status_calls = []
     attempt_calls = []
+    provenance = {"git_commit_sha": "abc123", "pipeline_checksum": "pchk"}
     monkeypatch.setattr(run_batch, "upsert_run_status", lambda **kw: status_calls.append(kw))
     monkeypatch.setattr(run_batch, "upsert_step_attempt", lambda **kw: attempt_calls.append(kw))
+    monkeypatch.setattr(run_batch, "collect_run_provenance", lambda **kw: provenance)
 
     result = RunResult(
         run_id="run999",
@@ -137,6 +142,7 @@ def test_run_batch_emits_failed_event_with_attempt_summary(monkeypatch, tmp_path
 
     event_types = [c["event_type"] for c in status_calls]
     assert event_types == ["batch_started", "batch_failed"]
+    assert all(c.get("provenance") == provenance for c in status_calls)
     assert len(attempt_calls) == 2
 
     failed_payload = status_calls[1]["event_details"]

@@ -44,6 +44,10 @@ This folder contains the automated test suite for the ETL project.
   - Verifies provenance collection payload shape from `etl/provenance.py`.
   - Confirms pipeline and plugin checksums are captured.
 
+- `tests/test_provenance_paths.py`
+  - Verifies `cli.py run` passes provenance into both Local and SLURM executor submission contexts.
+  - Verifies resume path (`--resume-run-id`) still carries provenance metadata.
+
 - `tests/test_slurm_executor.py`
   - Verifies SLURM submission planning for parallel batches (array job generation).
   - Confirms chained dependencies between setup and subsequent jobs.
@@ -53,6 +57,7 @@ This folder contains the automated test suite for the ETL project.
   - Executes `etl/run_batch.py` via `main(...)` and validates tracking event emissions.
   - Confirms success path emits `batch_completed` and final `run_completed` with correct `step_attempts` payload.
   - Confirms failure path emits `batch_failed` with final error details in `step_attempts`.
+  - Confirms batch/run status updates include provenance metadata.
 
 - `tests/test_error_messages.py`
   - Verifies CLI error classification returns actionable messages for common failures.
