@@ -1,6 +1,24 @@
-# ETL
+﻿# ETL
+
+[![Tests](https://github.com/<OWNER>/<REPO>/actions/workflows/tests.yml/badge.svg)](https://github.com/<OWNER>/<REPO>/actions/workflows/tests.yml)
 
 A lightweight ETL tool to construct new pipelines from modular Python "plugin" scripts and to track runs and validation. In the future this may also call ChatGPT to write data dictionary entries.
+
+## Current direction
+
+This project has moved from a local prototype toward an operational research runner:
+
+- Execution: local + remote SLURM (setup + dependent batch/array jobs).
+- Completion tracking: event-driven from `etl/run_batch.py` (`batch_started`, `batch_completed`, `batch_failed`, `run_completed`), without scheduler polling.
+- Persistence: JSONL (`.runs/runs.jsonl`) plus Postgres tables when `ETL_DATABASE_URL` is configured:
+  - `etl_runs`
+  - `etl_run_steps`
+  - `etl_run_step_attempts` (retry-ready)
+  - `etl_run_events`
+- Schema management: migration bootstrap from `db/ddl/*.sql` with checksum/version tracking (`etl_schema_versions`, `etl_schema_state`).
+- Artifacts: timestamp-first run paths for easier debugging:
+  - `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>/`
+- Quality: pytest suite + GitHub Actions test workflow.
 
 ## Plugin Script
 
@@ -123,7 +141,7 @@ An interface that lets you call the pipeline scripts one by one, recording each 
 
 ## Quickstart (local)
 
-1) Install deps (Python 3.10+; currently no external deps besides PyYAML).  
+1) Install deps (Python 3.10+): `pip install -r requirements.txt` (`pyyaml`, `psycopg[binary]`, `pytest`).  
 2) Add a plugin under `plugins/` (see `plugins/echo.py`).  
 3) Create a pipeline YAML (see `pipelines/sample.yml`).  
 4) (Optional) Create global config `config/global.yml` using `config/global.example.yml` and reference with `{global.data}` etc.  
@@ -146,19 +164,19 @@ Defaults: plugins in `plugins/`, run artifacts in `.runs/`, run records in `.run
 
 ## CLI
 
-- `etl plugins list [-d plugins/]` – list discovered plugins.  
-- `etl validate <pipeline.yml> [--global-config config/global.yml]` – parse and validate pipeline syntax/templating.  
-- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --execution-config ... --env name --plugins-dir plugins --workdir .runs --dry-run]` – run locally or submit a SLURM job (current SLURM executor runs the full pipeline in one job).  
-  - SLURM executor now submits batches/arrays with `parallel_with`/`foreach` respected; job/array limits can be set in execution config or env vars.  
-- `etl runs list [--store .runs/runs.jsonl]` – show recent recorded runs.  
-- `etl runs show <run_id> [--store ...]` – show details for a specific run.
+- `etl plugins list [-d plugins/]` â€“ list discovered plugins.  
+- `etl validate <pipeline.yml> [--global-config config/global.yml]` â€“ parse and validate pipeline syntax/templating.  
+- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --execution-config ... --env name --plugins-dir plugins --workdir .runs --dry-run]` - run locally or submit SLURM jobs.  
+  - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in execution config or env vars.  
+- `etl runs list [--store .runs/runs.jsonl]` â€“ show recent recorded runs.  
+- `etl runs show <run_id> [--store ...]` â€“ show details for a specific run.
 
 ## Local runner behavior
 
 - Step `script` is tokenized with `shlex`; first token resolves to a plugin file (relative to plugins dir, `.py` implied). Remaining tokens are parsed as `key=value` params plus positional `args`.  
 - Params are type-coerced using plugin `meta.params` (`type`: int/float/bool/str) and defaults applied.  
 - Step `env` entries are applied to process env for the step only.  
-- `when` expressions run in a restricted eval against the pipeline vars/dirs and previously stored outputs; falsey → step skipped (recorded as skipped).  
+- `when` expressions run in a restricted eval against the pipeline vars/dirs and previously stored outputs; falsey â†’ step skipped (recorded as skipped).  
 - `foreach` fans out a step over a list variable; each item gets its own step instance. `{item}` placeholders in script/env are filled per item; `output_var` is suffixed with the item index.  
 - `parallel_with`: consecutive steps sharing the same value are executed in parallel within a batch.  
 - Each step gets its own workdir under `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>`.  
@@ -183,7 +201,7 @@ environments:
     workdir: /scratch/work
     modules: ["gdal", "python/3.11"]
 ```
-Select with `--execution-config config/execution.yml --env hpcc_alpha`. (Currently forwarded for future SLURM executor; safe to use now.)
+Select with `--execution-config config/execution.yml --env hpcc_alpha`.
 
 ### Remote execution (SLURM)
 
@@ -204,7 +222,7 @@ On remote submissions, the SLURM executor ensures `~/.secrets/etl` exists on the
 - Repository and data paths must be visible on the cluster filesystem (no code shipping yet).
 - Auth: use your existing SSH keys (or Kerberos if required) to reach the login node; do not embed credentials in configs.
 - Set `logdir` and `workdir` to cluster-visible paths; logs default to `<logdir>/etl-<run_id>-%j.out`.
-- The current SLURM executor submits a single job that runs the whole pipeline via the local runner on the compute node.
+- The current SLURM executor submits a setup job plus one or more dependent batch/array jobs that execute `etl/run_batch.py`.
 - Limits/concurrency overrides: config supports `job_limit`, `array_task_limit`, `max_parallel`; environment variables `ETL_SLURM_JOB_LIMIT`, `ETL_SLURM_ARRAY_LIMIT`, `ETL_MAX_PARALLEL` override at runtime.
 - Remote submission: set `ssh_host` (and optional `ssh_user`, `ssh_jump` for bastion/ProxyJump, `remote_repo`) in the execution config to submit `sbatch` via SSH to the cluster login node.
 - Optional repo sync: set `sync: true` and `remote_repo` in execution config to scp the current repo to the cluster before submission (requires `scp` and may be slow for large repos).
@@ -215,7 +233,7 @@ On remote submissions, the SLURM executor ensures `~/.secrets/etl` exists on the
 - Core engine: loads plugin metadata, resolves vars/deps, orchestrates steps with retry/resume/dry-run; serial or bounded-parallel execution.
 - Config: global YAML for shared dirs/creds; pipeline YAML with vars + templating; env vars override; config hash recorded per run.
 - Plugin contract: each plugin exposes `run(args, ctx)` and `meta` (inputs, outputs, version, idempotent flag, deps, resource hints); optional validation hook; lives in `plugins/`.
-- Storage layout: `data/<pipeline>/<run_id>/...`, `logs/<pipeline>/<run_id>.log`, `runs/` (SQLite/JSONL) for run metadata; artifacts named by step.
+- Storage layout: run artifacts under `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/...`; run metadata in JSONL (`.runs/runs.jsonl`) and Postgres tables when `ETL_DATABASE_URL` is set.
 - Validation: pluggable checks that can block downstream steps; results saved with the run record.
 - Run tracking: records config hash, git SHA, plugin versions, inputs/outputs, timings, status, logs; immutable `run_id`; supports resume-from-step.
 - Interfaces: CLI `etl init|validate|run <pipeline.yaml> [--dry-run --from step --parallel N]`; planned FastAPI REST + lightweight web UI for status/history and plugin catalog.
@@ -249,3 +267,4 @@ Goal: trigger ETL when a pipeline YAML is committed, but run heavy geospatial wo
 - Status return: the Action captures the SLURM job ID and can comment on the PR or fail the workflow on non-zero exit.
 - If SSH is blocked: use a campus-hosted webhook/queue or a cron poller on HPCC to submit `sbatch` for new pipeline commits.
 - Security: use read-only deploy key, minimal privileges; avoid moving data through GitHub - compute and storage stay on HPCC.
+
