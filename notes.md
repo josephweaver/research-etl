@@ -21,7 +21,7 @@ Last updated: 2026-02-09
   - [x] scoped run history
   - [x] scoped validate/run actions
   - [x] provenance summary
-- [ ] `Task 4 (P0)` Add operations dashboard on `/` for failed/running first view.
+- [x] `Task 4 (P0)` Add operations dashboard on `/` for failed/running first view.
 - [ ] `Task 5 (P0)` Add live run status API + UI (`/runs/{run_id}/live`) with event timeline.
 - [ ] `Task 6 (P1)` Add draft pipeline builder (new/edit/test-step flow).
 
@@ -45,7 +45,7 @@ Last updated: 2026-02-09
   - [ ] validation history for selected pipeline
   - [x] embedded run form (executor/env/retries/config)
   - [x] provenance summary per run
-- [ ] `P0` Add operations landing page (failed/running triage + quick actions).
+- [x] `P0` Add operations landing page (failed/running triage + quick actions).
 - [ ] `P0` Add live run view (event timeline + currently active step + log tail).
 - [ ] `P1` Add data dictionary draft generator path (LLM-backed; can be template-first).
 
@@ -69,7 +69,7 @@ Last updated: 2026-02-09
   - [ ] demo screenshots/video
 
 ## Pipeline-centric web IA (v1 target)
-- [ ] `P0` Route: `/` -> Operations dashboard (failed/running runs + quick resume/retry).
+- [x] `P0` Route: `/` -> Operations dashboard (failed/running runs + quick resume/retry).
 - [ ] `P0` Route: `/pipelines` -> pipeline catalog with search and status badges.
 - [x] `P0` Route: `/pipelines/{pipeline_id}` -> pipeline detail + run/validate actions.
 - [ ] `P0` Route: `/runs/{run_id}` -> run detail + artifacts + attempts/events.

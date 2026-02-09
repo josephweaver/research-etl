@@ -72,6 +72,22 @@ INDEX_HTML = """<!doctype html>
     <div class="grid">
       <section class="panel">
         <h3 id="left_title">Recent Runs</h3>
+        <div id="ops_panel">
+          <div class="controls">
+            <button id="btn_ops_refresh">Refresh Ops</button>
+            <span class="muted">Failed/running triage inbox</span>
+          </div>
+          <div class="filesplit">
+            <div class="filetree">
+              <div class="muted"><b>Failed Runs</b></div>
+              <div id="ops_failed" class="muted">Loading...</div>
+            </div>
+            <div class="viewer">
+              <div class="muted"><b>Running Runs</b></div>
+              <div id="ops_running" class="muted">Loading...</div>
+            </div>
+          </div>
+        </div>
         <div id="pipelines_panel" style="display:none;">
           <div class="controls">
             <input id="p_q" placeholder="Search pipeline path" />
@@ -154,6 +170,7 @@ INDEX_HTML = """<!doctype html>
     let selected = null;
     let selectedPipeline = null;
     const isPipelinesView = window.location.pathname.startsWith("/pipelines");
+    const isOperationsView = window.location.pathname === "/";
     const isPipelineDetailView = isPipelinesView && window.location.pathname.length > "/pipelines/".length;
     const pipelineFromPath = isPipelineDetailView
       ? decodeURIComponent(window.location.pathname.slice("/pipelines/".length))
@@ -178,8 +195,13 @@ INDEX_HTML = """<!doctype html>
     }
     function esc(v){return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")}
     function initViewMode(){
+      if(isOperationsView){
+        document.getElementById("page_title").textContent = "Research ETL Operations";
+        document.getElementById("left_title").textContent = "Operations Inbox";
+      }
       if(isPipelinesView){
         document.getElementById("page_title").textContent = "Research ETL Pipelines";
+        document.getElementById("ops_panel").style.display = "none";
       }
       if(isPipelinesView && !isPipelineDetailView){
         document.getElementById("left_title").textContent = "Pipelines";
@@ -193,6 +215,79 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("pipeline_summary").style.display = "block";
         document.getElementById("a_pipeline").value = selectedPipeline;
         document.getElementById("f_q").value = selectedPipeline;
+      }
+    }
+    function renderOpsRows(rows, mode){
+      if(!rows || !rows.length){
+        return `<div class="muted">None</div>`;
+      }
+      return rows.map(r => {
+        const resumeBtn = mode === "failed" ? `<button data-op="resume" data-id="${esc(r.run_id)}">Resume</button>` : "";
+        return `
+          <div class="node file" data-op="view" data-id="${esc(r.run_id)}">
+            <div><b>${esc(r.run_id)}</b> <span class="${r.success ? "ok" : "bad"}">${esc(r.status)}</span></div>
+            <div class="muted">${esc(r.pipeline)} | ${esc(r.executor)}</div>
+            <div class="controls">
+              <button data-op="view" data-id="${esc(r.run_id)}">View</button>
+              ${resumeBtn}
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+    async function quickResume(runId){
+      const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/resume`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: "{}",
+      });
+      if(!res.ok){
+        return await readMessage(res);
+      }
+      const payload = await res.json();
+      selected = payload.run_id;
+      return `Resumed as ${payload.run_id}`;
+    }
+    async function loadOps(){
+      if(!isOperationsView) return;
+      const failedEl = document.getElementById("ops_failed");
+      const runningEl = document.getElementById("ops_running");
+      const [failedRes, runningRes] = await Promise.all([
+        fetch(`/api/runs?status=failed&limit=20`),
+        fetch(`/api/runs?status=running&limit=20`),
+      ]);
+      if(!failedRes.ok){
+        failedEl.innerHTML = `<div>${esc(await readMessage(failedRes))}</div>`;
+      } else {
+        failedEl.innerHTML = renderOpsRows(await failedRes.json(), "failed");
+      }
+      if(!runningRes.ok){
+        runningEl.innerHTML = `<div>${esc(await readMessage(runningRes))}</div>`;
+      } else {
+        runningEl.innerHTML = renderOpsRows(await runningRes.json(), "running");
+      }
+      for (const holder of [failedEl, runningEl]){
+        [...holder.querySelectorAll("button[data-op='view']")].forEach(btn => {
+          btn.onclick = async (ev) => {
+            ev.stopPropagation();
+            selected = btn.dataset.id;
+            await loadDetail();
+          };
+        });
+        [...holder.querySelectorAll("button[data-op='resume']")].forEach(btn => {
+          btn.onclick = async (ev) => {
+            ev.stopPropagation();
+            const msg = await quickResume(btn.dataset.id);
+            document.getElementById("resume_msg").textContent = msg;
+            await tick();
+          };
+        });
+        [...holder.querySelectorAll("div[data-op='view']")].forEach(card => {
+          card.onclick = async () => {
+            selected = card.dataset.id;
+            await loadDetail();
+          };
+        });
       }
     }
     async function readMessage(res){
@@ -401,6 +496,7 @@ INDEX_HTML = """<!doctype html>
       await tick();
     }
     async function tick(){
+      await loadOps();
       await loadPipelines();
       await loadPipelineSummary();
       await loadRuns();
@@ -408,6 +504,7 @@ INDEX_HTML = """<!doctype html>
     }
     initViewMode();
     document.getElementById("btn_apply").onclick = tick;
+    document.getElementById("btn_ops_refresh").onclick = tick;
     document.getElementById("btn_pipelines").onclick = tick;
     document.getElementById("btn_validate").onclick = validateAction;
     document.getElementById("btn_run").onclick = runAction;

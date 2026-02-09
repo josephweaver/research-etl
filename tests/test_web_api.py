@@ -37,6 +37,10 @@ def test_web_api_endpoints(monkeypatch):
     monkeypatch.setattr(web_api, "fetch_run_detail", lambda run_id: {"run_id": run_id, "status": "succeeded"})
 
     client = TestClient(web_api.app)
+    r0 = client.get("/")
+    assert r0.status_code == 200
+    assert "Failed/running triage inbox" in r0.text
+
     r1 = client.get("/api/runs")
     assert r1.status_code == 200
     assert r1.json()[0]["run_id"] == "r1"
