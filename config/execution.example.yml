@@ -14,6 +14,16 @@ environments:
     max_parallel: 50
     step_max_retries: 1
     step_retry_delay_seconds: 2.0
+    # Source provisioning for execution code:
+    # execution_source: auto|git_remote|git_bundle|snapshot|workspace
+    # auto tries: git_remote -> git_bundle -> snapshot -> workspace (if allowed)
+    execution_source: auto
+    # Optional offline fallback assets:
+    # - for remote SLURM via ssh_host, local files are staged to the run workspace
+    source_bundle: C:/path/to/repo.bundle
+    source_snapshot: C:/path/to/repo_snapshot.tar.gz
+    # Workspace mode is last-resort and least reproducible.
+    allow_workspace_source: false
   hpcc_beta:
     host: beta.login.univ.edu
     partition: highmem

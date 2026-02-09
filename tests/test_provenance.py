@@ -38,6 +38,8 @@ def test_collect_run_provenance_returns_expected_keys(tmp_path: Path) -> None:
         "git_commit_sha",
         "git_branch",
         "git_tag",
+        "git_origin_url",
+        "git_repo_name",
         "git_is_dirty",
         "cli_command",
         "pipeline_checksum",

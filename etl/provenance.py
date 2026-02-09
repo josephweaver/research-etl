@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .pipeline import Pipeline
+from .git_checkout import infer_repo_name
 
 
 def _sha256_file(path: Optional[Path]) -> Optional[str]:
@@ -48,6 +49,10 @@ def _git_is_dirty(repo_root: Path) -> Optional[bool]:
         return None
 
 
+def _git_origin_url(repo_root: Path) -> Optional[str]:
+    return _git_out(["config", "--get", "remote.origin.url"], repo_root)
+
+
 def _collect_plugin_checksums(plugin_dir: Path, pipeline: Pipeline) -> Dict[str, str]:
     checksums: Dict[str, str] = {}
     for step in pipeline.steps:
@@ -80,10 +85,13 @@ def collect_run_provenance(
     cli_command: Optional[str],
 ) -> Dict[str, Any]:
     plugin_checksums = _collect_plugin_checksums(plugin_dir, pipeline)
+    origin_url = _git_origin_url(repo_root)
     return {
         "git_commit_sha": _git_out(["rev-parse", "HEAD"], repo_root),
         "git_branch": _git_out(["rev-parse", "--abbrev-ref", "HEAD"], repo_root),
         "git_tag": _git_out(["describe", "--tags", "--exact-match"], repo_root),
+        "git_origin_url": origin_url,
+        "git_repo_name": infer_repo_name(origin_url or ""),
         "git_is_dirty": _git_is_dirty(repo_root),
         "cli_command": cli_command,
         "pipeline_checksum": _sha256_file(pipeline_path),

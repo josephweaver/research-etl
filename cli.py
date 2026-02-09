@@ -187,6 +187,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             env_name=args.env,
             dry_run=args.dry_run,
             verbose=args.verbose,
+            enforce_git_checkout=True,
+            require_clean_git=not bool(args.allow_dirty_git),
+            execution_source=args.execution_source or exec_env.get("execution_source"),
+            source_bundle=args.source_bundle or exec_env.get("source_bundle"),
+            source_snapshot=args.source_snapshot or exec_env.get("source_snapshot"),
+            allow_workspace_source=bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False)),
         )
     else:
         executor = LocalExecutor(
@@ -195,6 +201,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             max_retries=max_retries,
             retry_delay_seconds=retry_delay_seconds,
+            enforce_git_checkout=True,
+            require_clean_git=not bool(args.allow_dirty_git),
+            execution_source=args.execution_source or exec_env.get("execution_source", "auto"),
+            source_bundle=args.source_bundle or exec_env.get("source_bundle"),
+            source_snapshot=args.source_snapshot or exec_env.get("source_snapshot"),
+            allow_workspace_source=bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False)),
         )
     try:
         result = executor.submit(
@@ -204,6 +216,12 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "execution_env": exec_env,
                 "resume_run_id": args.resume_run_id,
                 "provenance": provenance,
+                "repo_root": repo_root,
+                "global_vars": global_vars,
+                "execution_source": args.execution_source or exec_env.get("execution_source", "auto"),
+                "source_bundle": args.source_bundle or exec_env.get("source_bundle"),
+                "source_snapshot": args.source_snapshot or exec_env.get("source_snapshot"),
+                "allow_workspace_source": bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False)),
             },
         )
     except Exception as exc:  # noqa: BLE001
@@ -317,6 +335,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--retry-delay-seconds", type=float, default=None, help="Delay between retries in seconds")
     p_run.add_argument("--resume-run-id", default=None, help="Resume by skipping steps that succeeded in a prior run_id")
     p_run.add_argument("--executor", choices=["local", "slurm"], default="local", help="Execution backend")
+    p_run.add_argument("--allow-dirty-git", action="store_true", help="Allow strict git checkout runs from a dirty local worktree")
+    p_run.add_argument(
+        "--execution-source",
+        choices=["auto", "git_remote", "git_bundle", "snapshot", "workspace"],
+        default=None,
+        help="Source mode for run code checkout (default from execution config or auto).",
+    )
+    p_run.add_argument("--source-bundle", default=None, help="Path to git bundle file for offline checkout fallback.")
+    p_run.add_argument("--source-snapshot", default=None, help="Path to tar/zip snapshot for offline checkout fallback.")
+    p_run.add_argument(
+        "--allow-workspace-source",
+        action="store_true",
+        help="Allow execution_source=workspace (runs directly from existing repo path).",
+    )
     p_run.add_argument("--verbose", action="store_true", help="Verbose executor output (e.g., show SSH commands)")
     p_run.set_defaults(func=cmd_run)
 

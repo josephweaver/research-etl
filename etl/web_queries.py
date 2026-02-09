@@ -91,6 +91,225 @@ def fetch_runs(
     return out
 
 
+def fetch_pipelines(
+    limit: int = 100,
+    *,
+    q: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit), 500))
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                where_sql = ""
+                params: List[Any] = []
+                if q:
+                    where_sql = "WHERE pipeline ILIKE %s"
+                    params.append(f"%{q}%")
+                cur.execute(
+                    f"""
+                    WITH grouped AS (
+                        SELECT
+                            pipeline,
+                            COUNT(*) AS total_runs,
+                            SUM(CASE WHEN status = 'failed' OR NOT success THEN 1 ELSE 0 END) AS failed_runs,
+                            MAX(started_at) AS last_started_at
+                        FROM etl_runs
+                        {where_sql}
+                        GROUP BY pipeline
+                    )
+                    SELECT
+                        g.pipeline,
+                        g.total_runs,
+                        g.failed_runs,
+                        g.last_started_at,
+                        r.status AS last_status,
+                        r.executor AS last_executor
+                    FROM grouped g
+                    LEFT JOIN LATERAL (
+                        SELECT status, executor
+                        FROM etl_runs rr
+                        WHERE rr.pipeline = g.pipeline
+                        ORDER BY rr.started_at DESC NULLS LAST, rr.run_id DESC
+                        LIMIT 1
+                    ) r ON TRUE
+                    ORDER BY g.last_started_at DESC NULLS LAST, g.pipeline
+                    LIMIT %s
+                    """,
+                    (*params, limit),
+                )
+                rows = cur.fetchall()
+    except WebQueryError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise WebQueryError(f"Failed to fetch pipelines: {exc}") from exc
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        total_runs = int(row[1] or 0)
+        failed_runs = int(row[2] or 0)
+        failure_rate = (failed_runs / total_runs) if total_runs else 0.0
+        out.append(
+            {
+                "pipeline": row[0],
+                "total_runs": total_runs,
+                "failed_runs": failed_runs,
+                "failure_rate": failure_rate,
+                "last_started_at": row[3].isoformat() if row[3] is not None else None,
+                "last_status": row[4],
+                "last_executor": row[5],
+            }
+        )
+    return out
+
+
+def fetch_pipeline_detail(pipeline: str) -> Optional[Dict[str, Any]]:
+    pipeline = (pipeline or "").strip()
+    if not pipeline:
+        return None
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH stats AS (
+                        SELECT
+                            pipeline,
+                            COUNT(*) AS total_runs,
+                            SUM(CASE WHEN status = 'failed' OR NOT success THEN 1 ELSE 0 END) AS failed_runs,
+                            MAX(started_at) AS last_started_at
+                        FROM etl_runs
+                        WHERE pipeline = %s
+                        GROUP BY pipeline
+                    )
+                    SELECT
+                        s.pipeline,
+                        s.total_runs,
+                        s.failed_runs,
+                        s.last_started_at,
+                        r.run_id,
+                        r.status,
+                        r.executor,
+                        r.started_at,
+                        r.ended_at,
+                        r.git_commit_sha,
+                        r.git_branch,
+                        r.git_tag,
+                        r.git_is_dirty,
+                        r.cli_command,
+                        r.pipeline_checksum,
+                        r.global_config_checksum,
+                        r.execution_config_checksum,
+                        r.plugin_checksums_json
+                    FROM stats s
+                    LEFT JOIN LATERAL (
+                        SELECT
+                            run_id, status, executor, started_at, ended_at,
+                            git_commit_sha, git_branch, git_tag, git_is_dirty, cli_command,
+                            pipeline_checksum, global_config_checksum, execution_config_checksum, plugin_checksums_json
+                        FROM etl_runs rr
+                        WHERE rr.pipeline = s.pipeline
+                        ORDER BY rr.started_at DESC NULLS LAST, rr.run_id DESC
+                        LIMIT 1
+                    ) r ON TRUE
+                    """,
+                    (pipeline,),
+                )
+                row = cur.fetchone()
+    except WebQueryError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise WebQueryError(f"Failed to fetch pipeline detail: {exc}") from exc
+
+    if not row:
+        return None
+    total_runs = int(row[1] or 0)
+    failed_runs = int(row[2] or 0)
+    failure_rate = (failed_runs / total_runs) if total_runs else 0.0
+    return {
+        "pipeline": row[0],
+        "total_runs": total_runs,
+        "failed_runs": failed_runs,
+        "failure_rate": failure_rate,
+        "last_started_at": row[3].isoformat() if row[3] is not None else None,
+        "latest_run": {
+            "run_id": row[4],
+            "status": row[5],
+            "executor": row[6],
+            "started_at": row[7].isoformat() if row[7] is not None else None,
+            "ended_at": row[8].isoformat() if row[8] is not None else None,
+        },
+        "latest_provenance": {
+            "git_commit_sha": row[9],
+            "git_branch": row[10],
+            "git_tag": row[11],
+            "git_is_dirty": row[12],
+            "cli_command": row[13],
+            "pipeline_checksum": row[14],
+            "global_config_checksum": row[15],
+            "execution_config_checksum": row[16],
+            "plugin_checksums_json": _jsonify(row[17]),
+        },
+    }
+
+
+def fetch_pipeline_runs(
+    pipeline: str,
+    limit: int = 50,
+    *,
+    status: Optional[str] = None,
+    executor: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    pipeline = (pipeline or "").strip()
+    if not pipeline:
+        return []
+    limit = max(1, min(int(limit), 500))
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                where_parts = ["pipeline = %s"]
+                params: List[Any] = [pipeline]
+                if status:
+                    where_parts.append("status = %s")
+                    params.append(status)
+                if executor:
+                    where_parts.append("executor = %s")
+                    params.append(executor)
+                cur.execute(
+                    f"""
+                    SELECT
+                        run_id, pipeline, status, success, started_at, ended_at,
+                        message, executor, artifact_dir
+                    FROM etl_runs
+                    WHERE {' AND '.join(where_parts)}
+                    ORDER BY started_at DESC
+                    LIMIT %s
+                    """,
+                    (*params, limit),
+                )
+                rows = cur.fetchall()
+    except WebQueryError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise WebQueryError(f"Failed to fetch pipeline runs: {exc}") from exc
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "run_id": row[0],
+                "pipeline": row[1],
+                "status": row[2],
+                "success": bool(row[3]),
+                "started_at": row[4].isoformat() if row[4] is not None else None,
+                "ended_at": row[5].isoformat() if row[5] is not None else None,
+                "message": row[6],
+                "executor": row[7],
+                "artifact_dir": row[8],
+            }
+        )
+    return out
+
+
 def fetch_run_header(run_id: str) -> Optional[Dict[str, Any]]:
     try:
         with _connect() as conn:
@@ -241,4 +460,12 @@ def fetch_run_detail(run_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
-__all__ = ["WebQueryError", "fetch_runs", "fetch_run_header", "fetch_run_detail"]
+__all__ = [
+    "WebQueryError",
+    "fetch_runs",
+    "fetch_pipelines",
+    "fetch_pipeline_detail",
+    "fetch_pipeline_runs",
+    "fetch_run_header",
+    "fetch_run_detail",
+]

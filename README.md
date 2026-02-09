@@ -188,7 +188,8 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 
 ### Web UI quickstart
 
-1) Install web dependencies: `pip install "research-etl[web]"` (or `pip install -r requirements-dev.txt`).
+0) run .\.venv\Scripts\Activate.ps1
+1) Install web dependencies: `python -m pip install -e ".[web]"`
 2) Start server: `etl web --host 127.0.0.1 --port 8000 --reload`
 3) Open: `http://127.0.0.1:8000`
 4) Use Status/Executor/Search filters in the UI run list.
