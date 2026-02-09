@@ -22,8 +22,8 @@ Last updated: 2026-02-09
   - [x] scoped validate/run actions
   - [x] provenance summary
 - [x] `Task 4 (P0)` Add operations dashboard on `/` for failed/running first view.
-- [ ] `Task 5 (P0)` Add live run status API + UI (`/runs/{run_id}/live`) with event timeline.
-- [ ] `Task 6 (P1)` Add draft pipeline builder (new/edit/test-step flow).
+- [x] `Task 5 (P0)` Add live run status API + UI (`/runs/{run_id}/live`) with event timeline.
+- [x] `Task 6 (P1)` Add draft pipeline builder (new/edit/test-step flow).
 
 ## Week 1 - Core hardening (P0)
 - [x] `P0` Packaging/install flow complete (`pyproject.toml`, `etl` console entrypoint, install docs validated).
@@ -46,7 +46,7 @@ Last updated: 2026-02-09
   - [x] embedded run form (executor/env/retries/config)
   - [x] provenance summary per run
 - [x] `P0` Add operations landing page (failed/running triage + quick actions).
-- [ ] `P0` Add live run view (event timeline + currently active step + log tail).
+- [x] `P0` Add live run view (event timeline + currently active step + log tail).
 - [ ] `P1` Add data dictionary draft generator path (LLM-backed; can be template-first).
 
 ## Week 3 - Demo + validation + release prep (P0/P1)
@@ -73,8 +73,8 @@ Last updated: 2026-02-09
 - [ ] `P0` Route: `/pipelines` -> pipeline catalog with search and status badges.
 - [x] `P0` Route: `/pipelines/{pipeline_id}` -> pipeline detail + run/validate actions.
 - [ ] `P0` Route: `/runs/{run_id}` -> run detail + artifacts + attempts/events.
-- [ ] `P1` Route: `/pipelines/new` and `/pipelines/{pipeline_id}/edit` -> draft builder with step test execution.
-- [ ] `P1` Route: `/runs/{run_id}/live` -> active run visualization.
+- [x] `P1` Route: `/pipelines/new` and `/pipelines/{pipeline_id}/edit` -> draft builder with step test execution.
+- [x] `P0` Route: `/runs/{run_id}/live` -> active run visualization.
 
 ## API backlog for web IA
 - [ ] `P0` `GET /api/pipelines` (catalog + last status + failure rate window).
@@ -83,8 +83,9 @@ Last updated: 2026-02-09
 - [ ] `P0` `GET /api/pipelines/{id}/validations` (latest and historical validation results).
 - [x] `P0` `POST /api/pipelines/{id}/validate` (pipeline-scoped validate endpoint alias).
 - [x] `P0` `POST /api/pipelines/{id}/run` (pipeline-scoped run endpoint alias).
-- [ ] `P0` `GET /api/runs/{id}/live` (polling or SSE payload for timeline/status).
+- [x] `P0` `GET /api/runs/{id}/live` (polling or SSE payload for timeline/status).
 - [ ] `P1` `POST /api/pipelines` + `PUT /api/pipelines/{id}` for draft/save flows.
+- [x] `P1` `GET /api/builder/source` + `POST /api/builder/validate` + `POST /api/builder/test-step` for draft authoring loop.
 
 ## Cut list if schedule slips (defer first)
 - [ ] `P2` Advanced UI styling

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -10,8 +11,9 @@ from .config import ConfigError, load_global_config
 from .execution_config import ExecutionConfigError, apply_execution_env_overrides, load_execution_config
 from .executors.local import LocalExecutor
 from .executors.slurm import SlurmExecutor
-from .pipeline import parse_pipeline, PipelineError
+from .pipeline import Pipeline, Step, parse_pipeline, PipelineError
 from .provenance import collect_run_provenance
+from .runner import run_pipeline
 from .web_queries import (
     WebQueryError,
     fetch_pipeline_detail,
@@ -38,6 +40,14 @@ INDEX_HTML = """<!doctype html>
     :root { --bg:#f5f7fb; --panel:#ffffff; --ink:#13223a; --muted:#5f6e86; --ok:#0a8f57; --bad:#b42318; --line:#dbe2ef; }
     body { margin:0; font-family:"Segoe UI",Tahoma,sans-serif; color:var(--ink); background:linear-gradient(160deg,#eef3ff,#f9fbff); }
     .wrap { max-width:1200px; margin:24px auto; padding:0 16px; }
+    .topnav { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; padding:6px 8px; background:#f7f9ff; border:1px solid var(--line); border-radius:8px; }
+    .topnav .links { display:flex; gap:6px; flex-wrap:wrap; }
+    .topnav a { text-decoration:none; color:#274066; border:1px solid var(--line); border-radius:999px; padding:3px 8px; font-size:12px; line-height:1.2; background:#fff; }
+    .topnav a.active { background:#0d3b8e; color:#fff; border-color:#0d3b8e; }
+    .topnav a.context { background:#eef3ff; border-style:dashed; }
+    .topnav .jump { display:flex; gap:6px; align-items:center; }
+    .topnav .jump input { width:180px; padding:4px 6px; font-size:12px; }
+    .topnav .jump button { padding:4px 8px; font-size:12px; }
     .head { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; gap:10px; flex-wrap:wrap; }
     h1 { margin:0; font-size:24px; }
     .muted { color:var(--muted); font-size:13px; }
@@ -65,6 +75,18 @@ INDEX_HTML = """<!doctype html>
 </head>
 <body>
   <div class="wrap">
+    <nav class="topnav">
+      <div class="links">
+        <a id="nav_ops" href="/">Operations</a>
+        <a id="nav_pipelines" href="/pipelines">Pipelines</a>
+        <a id="nav_new_pipeline" href="/pipelines/new">New Pipeline</a>
+        <a id="nav_context_back" class="context" href="#" style="display:none;">Back</a>
+      </div>
+      <div class="jump">
+        <input id="nav_live_id" placeholder="run id for live view" />
+        <button id="btn_nav_live">Live</button>
+      </div>
+    </nav>
     <div class="head">
       <h1 id="page_title">Research ETL Runs</h1>
       <div class="muted">Auto-refresh every 12s</div>
@@ -122,6 +144,29 @@ INDEX_HTML = """<!doctype html>
       <section class="panel">
         <h3 id="right_title">Run Detail</h3>
         <div id="pipeline_summary" class="muted" style="display:none;"></div>
+        <div id="builder_panel" style="display:none;">
+          <div class="controls">
+            <input id="b_pipeline_path" placeholder="pipeline file path (for edit/new context)" />
+            <button id="btn_builder_load">Load</button>
+            <button id="btn_builder_validate">Validate Draft</button>
+            <button id="btn_builder_test_step">Test Step</button>
+            <span id="builder_msg" class="muted"></span>
+          </div>
+          <div class="controls">
+            <input id="b_step_name" placeholder="step name to test (default: first step)" />
+            <input id="b_global_config" placeholder="global_config (optional)" />
+            <input id="b_plugins_dir" placeholder="plugins_dir (default: plugins)" />
+            <input id="b_workdir" placeholder="workdir (default: .runs/builder)" />
+            <label class="muted"><input type="checkbox" id="b_dry_run" /> dry_run</label>
+          </div>
+          <div class="controls">
+            <input id="b_max_retries" placeholder="max_retries (default: 0)" />
+            <input id="b_retry_delay" placeholder="retry_delay_seconds (default: 0.0)" />
+          </div>
+          <textarea id="b_yaml" style="width:100%; min-height:260px; font-family:Consolas,monospace; font-size:12px;"></textarea>
+          <h4>Builder Output</h4>
+          <pre id="builder_output">No draft action yet.</pre>
+        </div>
         <div class="controls">
           <input id="a_pipeline" placeholder="pipeline path (e.g. pipelines/sample.yml)" />
           <select id="a_executor">
@@ -171,10 +216,19 @@ INDEX_HTML = """<!doctype html>
     let selectedPipeline = null;
     const isPipelinesView = window.location.pathname.startsWith("/pipelines");
     const isOperationsView = window.location.pathname === "/";
+    const liveMatch = window.location.pathname.match(/^\/runs\/(.+)\/live$/);
+    const isLiveRunView = !!liveMatch;
+    const liveRunIdFromPath = isLiveRunView ? decodeURIComponent(liveMatch[1]) : null;
+    const isBuilderNewView = window.location.pathname === "/pipelines/new";
+    const builderEditMatch = window.location.pathname.match(/^\/pipelines\/(.+)\/edit$/);
+    const isBuilderEditView = !!builderEditMatch;
+    const isBuilderView = isBuilderNewView || isBuilderEditView;
+    const builderPipelineFromPath = isBuilderEditView ? decodeURIComponent(builderEditMatch[1]) : "";
     const isPipelineDetailView = isPipelinesView && window.location.pathname.length > "/pipelines/".length;
     const pipelineFromPath = isPipelineDetailView
       ? decodeURIComponent(window.location.pathname.slice("/pipelines/".length))
       : null;
+    let builderLoaded = false;
     function qp(){
       const p = new URLSearchParams();
       const s = document.getElementById("f_status").value;
@@ -194,6 +248,34 @@ INDEX_HTML = """<!doctype html>
       return p.toString();
     }
     function esc(v){return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")}
+    function setActiveNav(){
+      const path = window.location.pathname;
+      const ops = document.getElementById("nav_ops");
+      const pipes = document.getElementById("nav_pipelines");
+      const newp = document.getElementById("nav_new_pipeline");
+      const back = document.getElementById("nav_context_back");
+      [ops, pipes, newp].forEach(el => el.classList.remove("active"));
+      back.style.display = "none";
+      if (path === "/") {
+        ops.classList.add("active");
+      } else if (path === "/pipelines/new") {
+        newp.classList.add("active");
+      } else if (path.startsWith("/pipelines")) {
+        pipes.classList.add("active");
+      }
+      if (isBuilderEditView && builderPipelineFromPath) {
+        back.style.display = "inline-block";
+        back.textContent = "Back to Pipeline";
+        back.href = `/pipelines/${encodeURIComponent(builderPipelineFromPath)}`;
+      } else if (isLiveRunView) {
+        back.style.display = "inline-block";
+        back.textContent = "Back to Pipelines";
+        back.href = "/pipelines";
+      }
+      if (isLiveRunView && liveRunIdFromPath) {
+        document.getElementById("nav_live_id").value = liveRunIdFromPath;
+      }
+    }
     function initViewMode(){
       if(isOperationsView){
         document.getElementById("page_title").textContent = "Research ETL Operations";
@@ -203,11 +285,32 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("page_title").textContent = "Research ETL Pipelines";
         document.getElementById("ops_panel").style.display = "none";
       }
-      if(isPipelinesView && !isPipelineDetailView){
+      if(isBuilderView){
+        document.getElementById("page_title").textContent = isBuilderNewView ? "Research ETL Pipeline Builder" : "Research ETL Pipeline Editor";
+        document.getElementById("left_title").textContent = "Builder Context";
+        document.getElementById("right_title").textContent = "Draft Builder";
+        document.getElementById("ops_panel").style.display = "none";
+        document.getElementById("pipelines_panel").style.display = "none";
+        document.getElementById("pipeline_summary").style.display = "none";
+        document.getElementById("builder_panel").style.display = "block";
+        document.getElementById("detail").style.display = "none";
+        if (builderPipelineFromPath) {
+          document.getElementById("b_pipeline_path").value = builderPipelineFromPath;
+        }
+      }
+      if(isLiveRunView){
+        selected = liveRunIdFromPath;
+        document.getElementById("page_title").textContent = "Research ETL Live Run";
+        document.getElementById("left_title").textContent = "Recent Runs";
+        document.getElementById("right_title").textContent = "Live Run View";
+        document.getElementById("ops_panel").style.display = "none";
+        document.getElementById("detail").textContent = "Loading live run status...";
+      }
+      if(isPipelinesView && !isPipelineDetailView && !isBuilderView){
         document.getElementById("left_title").textContent = "Pipelines";
         document.getElementById("pipelines_panel").style.display = "block";
       }
-      if(isPipelineDetailView){
+      if(isPipelineDetailView && !isBuilderView){
         selectedPipeline = pipelineFromPath;
         document.getElementById("page_title").textContent = "Research ETL Pipeline Detail";
         document.getElementById("left_title").textContent = "Pipeline Runs";
@@ -322,6 +425,79 @@ INDEX_HTML = """<!doctype html>
       body.verbose = document.getElementById("a_verbose").checked;
       return body;
     }
+    function builderPayload(){
+      const body = {
+        yaml_text: document.getElementById("b_yaml").value || "",
+      };
+      const pipeline = document.getElementById("b_pipeline_path").value.trim();
+      const stepName = document.getElementById("b_step_name").value.trim();
+      const globalConfig = document.getElementById("b_global_config").value.trim();
+      const pluginsDir = document.getElementById("b_plugins_dir").value.trim();
+      const workdir = document.getElementById("b_workdir").value.trim();
+      const retries = document.getElementById("b_max_retries").value.trim();
+      const delay = document.getElementById("b_retry_delay").value.trim();
+      if (pipeline) body.pipeline = pipeline;
+      if (stepName) body.step_name = stepName;
+      if (globalConfig) body.global_config = globalConfig;
+      if (pluginsDir) body.plugins_dir = pluginsDir;
+      if (workdir) body.workdir = workdir;
+      if (retries) body.max_retries = Number(retries);
+      if (delay) body.retry_delay_seconds = Number(delay);
+      body.dry_run = document.getElementById("b_dry_run").checked;
+      return body;
+    }
+    async function loadBuilderSource(){
+      if(!isBuilderView || builderLoaded) return;
+      const pipeline = document.getElementById("b_pipeline_path").value.trim();
+      if(!pipeline){
+        document.getElementById("b_yaml").value = "vars: {}\\ndirs: {}\\nsteps:\\n  - name: step1\\n    script: echo.py\\n";
+        builderLoaded = true;
+        return;
+      }
+      const res = await fetch(`/api/builder/source?pipeline=${encodeURIComponent(pipeline)}`);
+      if(!res.ok){
+        document.getElementById("builder_msg").textContent = await readMessage(res);
+        document.getElementById("b_yaml").value = "vars: {}\\ndirs: {}\\nsteps:\\n  - name: step1\\n    script: echo.py\\n";
+      } else {
+        const payload = await res.json();
+        document.getElementById("b_yaml").value = payload.yaml_text || "";
+      }
+      builderLoaded = true;
+    }
+    async function validateBuilderDraft(){
+      const msg = document.getElementById("builder_msg");
+      const out = document.getElementById("builder_output");
+      msg.textContent = "Validating draft...";
+      const res = await fetch(`/api/builder/validate`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(builderPayload()),
+      });
+      if(!res.ok){
+        msg.textContent = await readMessage(res);
+        return;
+      }
+      const payload = await res.json();
+      msg.textContent = `Valid draft: ${payload.step_count} steps`;
+      out.textContent = JSON.stringify(payload, null, 2);
+    }
+    async function testBuilderStep(){
+      const msg = document.getElementById("builder_msg");
+      const out = document.getElementById("builder_output");
+      msg.textContent = "Testing step...";
+      const res = await fetch(`/api/builder/test-step`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(builderPayload()),
+      });
+      if(!res.ok){
+        msg.textContent = await readMessage(res);
+        return;
+      }
+      const payload = await res.json();
+      msg.textContent = `Step ${payload.step_name}: ${payload.success ? "ok" : "failed"}`;
+      out.textContent = JSON.stringify(payload, null, 2);
+    }
     async function loadRuns(){
       const res = isPipelineDetailView
         ? await fetch(`/api/pipelines/${encodeURIComponent(selectedPipeline || "")}/runs?${qp()}`)
@@ -400,6 +576,30 @@ INDEX_HTML = """<!doctype html>
       `;
       document.getElementById("detail").innerHTML = html;
       await loadFileTree();
+    }
+    async function loadLive(){
+      if(!isLiveRunView || !selected) return;
+      const res = await fetch(`/api/runs/${encodeURIComponent(selected)}/live`);
+      const el = document.getElementById("detail");
+      if(!res.ok){
+        el.textContent = await readMessage(res);
+        return;
+      }
+      const d = await res.json();
+      const ev = d.latest_event || {};
+      el.innerHTML = `
+        <div><b>${esc(d.run_id)}</b> <span class="${d.success ? "ok" : "bad"}">${esc(d.status)}</span></div>
+        <div class="muted">${esc(d.pipeline)} | ${esc(d.executor)} | ${esc(d.started_at)} -> ${esc(d.ended_at)}</div>
+        <div class="muted">Active attempts: ${esc(d.active_attempt_count)} | Completed steps: ${esc(d.completed_step_count)} | Failed steps: ${esc(d.failed_step_count)}</div>
+        <h4>Latest Event</h4>
+        <pre>${esc(JSON.stringify(ev, null, 2))}</pre>
+        <h4>Active Attempts</h4>
+        <pre>${esc(JSON.stringify(d.active_attempts || [], null, 2))}</pre>
+        <h4>Timeline</h4>
+        <pre>${esc(JSON.stringify(d.events || [], null, 2))}</pre>
+        <h4>Provenance</h4>
+        <pre>${esc(JSON.stringify(d.provenance || {}, null, 2))}</pre>
+      `;
     }
     function renderTreeNode(node, depth){
       const indent = "&nbsp;".repeat(depth * 4);
@@ -496,19 +696,36 @@ INDEX_HTML = """<!doctype html>
       await tick();
     }
     async function tick(){
+      if(isBuilderView){
+        await loadBuilderSource();
+        return;
+      }
       await loadOps();
       await loadPipelines();
       await loadPipelineSummary();
       await loadRuns();
-      await loadDetail();
+      if(isLiveRunView){
+        await loadLive();
+      } else {
+        await loadDetail();
+      }
     }
     initViewMode();
+    setActiveNav();
     document.getElementById("btn_apply").onclick = tick;
     document.getElementById("btn_ops_refresh").onclick = tick;
     document.getElementById("btn_pipelines").onclick = tick;
     document.getElementById("btn_validate").onclick = validateAction;
     document.getElementById("btn_run").onclick = runAction;
     document.getElementById("btn_resume").onclick = resumeSelected;
+    document.getElementById("btn_nav_live").onclick = () => {
+      const runId = document.getElementById("nav_live_id").value.trim();
+      if (!runId) return;
+      window.location.href = `/runs/${encodeURIComponent(runId)}/live`;
+    };
+    document.getElementById("btn_builder_load").onclick = async () => { builderLoaded = false; await tick(); };
+    document.getElementById("btn_builder_validate").onclick = validateBuilderDraft;
+    document.getElementById("btn_builder_test_step").onclick = testBuilderStep;
     tick(); setInterval(tick, 12000);
   </script>
 </body>
@@ -526,8 +743,23 @@ def pipelines_index() -> str:
     return INDEX_HTML
 
 
+@app.get("/pipelines/new", response_class=HTMLResponse)
+def pipelines_new_index() -> str:
+    return INDEX_HTML
+
+
+@app.get("/pipelines/{pipeline_id:path}/edit", response_class=HTMLResponse)
+def pipeline_edit_index(pipeline_id: str) -> str:
+    return INDEX_HTML
+
+
 @app.get("/pipelines/{pipeline_id:path}", response_class=HTMLResponse)
 def pipeline_detail_index(pipeline_id: str) -> str:
+    return INDEX_HTML
+
+
+@app.get("/runs/{run_id:path}/live", response_class=HTMLResponse)
+def run_live_index(run_id: str) -> str:
     return INDEX_HTML
 
 
@@ -582,6 +814,46 @@ def api_runs(
         return fetch_runs(limit=limit, status=status, executor=executor, q=q)
     except WebQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/runs/{run_id}/live")
+def api_run_live(run_id: str) -> dict:
+    try:
+        payload = fetch_run_detail(run_id)
+    except WebQueryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+
+    attempts = payload.get("attempts") or []
+    events = payload.get("events") or []
+    steps = payload.get("steps") or []
+    active_attempts = [
+        a
+        for a in attempts
+        if not bool(a.get("skipped")) and not bool(a.get("success")) and not a.get("ended_at")
+    ]
+    failed_steps = [s for s in steps if not bool(s.get("success")) and not bool(s.get("skipped"))]
+    completed_steps = [s for s in steps if bool(s.get("success")) and not bool(s.get("skipped"))]
+    skipped_steps = [s for s in steps if bool(s.get("skipped"))]
+
+    return {
+        "run_id": payload.get("run_id"),
+        "pipeline": payload.get("pipeline"),
+        "status": payload.get("status"),
+        "success": bool(payload.get("success")),
+        "executor": payload.get("executor"),
+        "started_at": payload.get("started_at"),
+        "ended_at": payload.get("ended_at"),
+        "latest_event": events[-1] if events else None,
+        "events": events,
+        "active_attempt_count": len(active_attempts),
+        "active_attempts": active_attempts,
+        "completed_step_count": len(completed_steps),
+        "failed_step_count": len(failed_steps),
+        "skipped_step_count": len(skipped_steps),
+        "provenance": payload.get("provenance") or {},
+    }
 
 
 @app.get("/api/runs/{run_id}")
@@ -709,6 +981,111 @@ def _resolve_execution_env(execution_config_path: Optional[Path], env_name: Opti
         raise
     except ExecutionConfigError as exc:
         raise HTTPException(status_code=400, detail=f"Execution config error: {exc}") from exc
+
+
+def _parse_pipeline_from_yaml_text(
+    yaml_text: str,
+    *,
+    global_config_path: Optional[Path],
+) -> Pipeline:
+    if not (yaml_text or "").strip():
+        raise HTTPException(status_code=400, detail="`yaml_text` is required.")
+    global_vars = _resolve_global_vars(global_config_path)
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as tmp:
+        tmp.write(yaml_text)
+        tmp_path = Path(tmp.name)
+    try:
+        return parse_pipeline(tmp_path, global_vars=global_vars)
+    except (PipelineError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid draft pipeline: {exc}") from exc
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+@app.get("/api/builder/source")
+def api_builder_source(pipeline: str = Query(default="")) -> dict:
+    path = Path((pipeline or "").strip()).expanduser()
+    if not pipeline:
+        raise HTTPException(status_code=400, detail="`pipeline` query param is required.")
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Pipeline file not found: {path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Failed to read pipeline file: {exc}") from exc
+    return {"pipeline": str(path), "yaml_text": text}
+
+
+@app.post("/api/builder/validate")
+def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    payload = payload or {}
+    global_config_raw = str(payload.get("global_config") or "").strip()
+    global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
+    pipeline = _parse_pipeline_from_yaml_text(str(payload.get("yaml_text") or ""), global_config_path=global_config_path)
+    return {
+        "valid": True,
+        "step_count": len(pipeline.steps),
+        "step_names": [s.name for s in pipeline.steps],
+        "vars": pipeline.vars,
+        "dirs": pipeline.dirs,
+    }
+
+
+@app.post("/api/builder/test-step")
+def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    payload = payload or {}
+    global_config_raw = str(payload.get("global_config") or "").strip()
+    global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
+    pipeline = _parse_pipeline_from_yaml_text(str(payload.get("yaml_text") or ""), global_config_path=global_config_path)
+    step_name = str(payload.get("step_name") or "").strip()
+    target_step: Optional[Step] = None
+    if step_name:
+        for s in pipeline.steps:
+            if s.name == step_name:
+                target_step = s
+                break
+        if target_step is None:
+            raise HTTPException(status_code=400, detail=f"Step not found in draft: {step_name}")
+    else:
+        target_step = pipeline.steps[0] if pipeline.steps else None
+    if target_step is None:
+        raise HTTPException(status_code=400, detail="Draft has no steps to test.")
+
+    plugins_dir = Path(payload.get("plugins_dir") or "plugins")
+    workdir = Path(payload.get("workdir") or ".runs/builder")
+    dry_run = _parse_bool(payload.get("dry_run"), default=False)
+    max_retries = int(payload.get("max_retries", 0) or 0)
+    retry_delay_seconds = float(payload.get("retry_delay_seconds", 0.0) or 0.0)
+    if max_retries < 0 or retry_delay_seconds < 0:
+        raise HTTPException(status_code=400, detail="Retry settings must be >= 0.")
+
+    mini = Pipeline(vars=dict(pipeline.vars), dirs=dict(pipeline.dirs), steps=[target_step])
+    try:
+        result = run_pipeline(
+            mini,
+            plugin_dir=plugins_dir,
+            workdir=workdir,
+            dry_run=dry_run,
+            max_retries=max_retries,
+            retry_delay_seconds=retry_delay_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Step test failed: {exc}") from exc
+
+    step_result = result.steps[0] if result.steps else None
+    return {
+        "run_id": result.run_id,
+        "artifact_dir": result.artifact_dir,
+        "step_name": target_step.name,
+        "success": bool(step_result.success if step_result else False),
+        "skipped": bool(step_result.skipped if step_result else False),
+        "error": step_result.error if step_result else "No step result produced.",
+        "outputs": step_result.outputs if step_result else {},
+        "attempts": step_result.attempts if step_result else [],
+    }
 
 
 def _payload_with_pipeline(payload: Optional[dict[str, Any]], pipeline_id: str) -> dict[str, Any]:

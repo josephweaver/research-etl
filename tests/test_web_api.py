@@ -49,6 +49,10 @@ def test_web_api_endpoints(monkeypatch):
     assert r2.status_code == 200
     assert r2.json()["run_id"] == "r1"
 
+    r2b = client.get("/api/runs/r1/live")
+    assert r2b.status_code == 200
+    assert r2b.json()["run_id"] == "r1"
+
     r3 = client.get("/api/pipelines")
     assert r3.status_code == 200
     assert r3.json()[0]["pipeline"] == "pipelines/sample.yml"
@@ -56,8 +60,17 @@ def test_web_api_endpoints(monkeypatch):
     r4 = client.get("/pipelines")
     assert r4.status_code == 200
 
+    r4b = client.get("/pipelines/new")
+    assert r4b.status_code == 200
+
     r5 = client.get("/pipelines/pipelines%2Fsample.yml")
     assert r5.status_code == 200
+
+    r5c = client.get("/pipelines/pipelines%2Fsample.yml/edit")
+    assert r5c.status_code == 200
+
+    r5b = client.get("/runs/r1/live")
+    assert r5b.status_code == 200
 
     r6 = client.get("/api/pipelines/pipelines%2Fsample.yml")
     assert r6.status_code == 200
@@ -66,6 +79,55 @@ def test_web_api_endpoints(monkeypatch):
     r7 = client.get("/api/pipelines/pipelines%2Fsample.yml/runs")
     assert r7.status_code == 200
     assert r7.json()[0]["pipeline"] == "pipelines/sample.yml"
+
+
+def test_web_api_builder_source_and_validate(tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    p = tmp_path / "draft.yml"
+    p.write_text("steps:\n  - name: s1\n    script: echo.py\n", encoding="utf-8")
+    client = TestClient(web_api.app)
+
+    s = client.get("/api/builder/source", params={"pipeline": str(p)})
+    assert s.status_code == 200
+    assert "script: echo.py" in s.json()["yaml_text"]
+
+    v = client.post("/api/builder/validate", json={"yaml_text": p.read_text(encoding="utf-8")})
+    assert v.status_code == 200
+    assert v.json()["valid"] is True
+    assert v.json()["step_count"] == 1
+
+
+def test_web_api_builder_test_step(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.pipeline import Pipeline, Step
+    from etl.runner import RunResult, StepResult
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(
+        web_api,
+        "_parse_pipeline_from_yaml_text",
+        lambda yaml_text, global_config_path=None: Pipeline(steps=[Step(name="s1", script="echo.py")]),
+    )
+    monkeypatch.setattr(
+        web_api,
+        "run_pipeline",
+        lambda *a, **k: RunResult(
+            run_id="builder_run_1",
+            steps=[StepResult(step=Step(name="s1", script="echo.py"), success=True, outputs={"ok": True})],
+            artifact_dir=".runs/builder/x",
+        ),
+    )
+    client = TestClient(web_api.app)
+    r = client.post("/api/builder/test-step", json={"yaml_text": "steps: []", "step_name": "s1", "dry_run": True})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["run_id"] == "builder_run_1"
+    assert payload["step_name"] == "s1"
+    assert payload["success"] is True
 
 
 def test_web_api_404(monkeypatch):
@@ -265,3 +327,47 @@ def test_web_api_files_and_file_view(monkeypatch, tmp_path: Path):
     view = client.get("/api/runs/r1/file", params={"path": "logs/job.out"})
     assert view.status_code == 200
     assert "hello log" in view.json()["content"]
+
+
+def test_web_api_run_live_payload(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(
+        web_api,
+        "fetch_run_detail",
+        lambda run_id: {
+            "run_id": run_id,
+            "pipeline": "pipelines/sample.yml",
+            "status": "running",
+            "success": False,
+            "executor": "slurm",
+            "started_at": "2026-02-09T10:00:00Z",
+            "ended_at": None,
+            "steps": [
+                {"step_name": "s1", "success": True, "skipped": False},
+                {"step_name": "s2", "success": False, "skipped": False},
+                {"step_name": "s3", "success": True, "skipped": True},
+            ],
+            "attempts": [
+                {"step_name": "s2", "success": False, "skipped": False, "ended_at": None},
+                {"step_name": "s1", "success": True, "skipped": False, "ended_at": "2026-02-09T10:01:00Z"},
+            ],
+            "events": [
+                {"event_id": 1, "event_type": "run_started"},
+                {"event_id": 2, "event_type": "batch_started"},
+            ],
+            "provenance": {"git_commit_sha": "abc"},
+        },
+    )
+    client = TestClient(web_api.app)
+    r = client.get("/api/runs/r_live/live")
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["status"] == "running"
+    assert payload["active_attempt_count"] == 1
+    assert payload["completed_step_count"] == 1
+    assert payload["failed_step_count"] == 1
+    assert payload["skipped_step_count"] == 1
+    assert payload["latest_event"]["event_type"] == "batch_started"
