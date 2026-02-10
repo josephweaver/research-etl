@@ -27,6 +27,18 @@ Last updated: 2026-02-09
   - [x] save draft via API (`POST /api/pipelines`, `PUT /api/pipelines/{id}`)
   - [x] AI draft generation via API (`POST /api/builder/generate`)
 
+## Recent pipeline/plugin updates
+- [x] `P0` Iterative hierarchical variable resolver with namespace precedence:
+  - [x] `global.*` + flat globals
+  - [x] `env.*` + flat env overrides (from execution config)
+  - [x] `pipe.*` + flat pipeline overrides
+- [x] `P0` Pipeline dependencies via `requires_pipelines` with auto-run of missing successful prerequisites.
+- [x] `P0` Dependency cycle detection for prerequisite pipelines.
+- [x] `P0` New Google Drive staging plugin: `plugins/gdrive_download.py` (wraps `tools/gdrv/download.R`).
+- [x] `P0` YanRoy scaffold split:
+  - [x] `pipelines/yanroy_base.yml` for data staging dependency
+  - [x] `pipelines/yanroy.yml` for main flow with `requires_pipelines`
+
 ## Week 1 - Core hardening (P0)
 - [x] `P0` Packaging/install flow complete (`pyproject.toml`, `etl` console entrypoint, install docs validated).
 - [x] `P0` Retry/resume edge cases verified for `parallel_with`, `foreach`, and SLURM array batches.
@@ -82,7 +94,7 @@ Last updated: 2026-02-09
 - [ ] `P0` `GET /api/pipelines` (catalog + last status + failure rate window).
 - [x] `P0` `GET /api/pipelines/{id}` (definition + summary stats).
 - [x] `P0` `GET /api/pipelines/{id}/runs` (history + filters + pagination).
-- [ ] `P0` `GET /api/pipelines/{id}/validations` (latest and historical validation results).
+- [x] `P0` `GET /api/pipelines/{id}/validations` (latest and historical validation results).
 - [x] `P0` `POST /api/pipelines/{id}/validate` (pipeline-scoped validate endpoint alias).
 - [x] `P0` `POST /api/pipelines/{id}/run` (pipeline-scoped run endpoint alias).
 - [x] `P0` `GET /api/runs/{id}/live` (polling or SSE payload for timeline/status).

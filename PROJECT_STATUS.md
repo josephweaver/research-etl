@@ -7,6 +7,11 @@
   - `local` executor (`etl/executors/local.py`)
   - `slurm` executor (`etl/executors/slurm.py`) with setup + dependent batch/array planning and SSH submission support.
 - Strict git-pinned execution is implemented for both local and slurm execution paths.
+- Pipeline dependencies are supported via `requires_pipelines` with auto-run of missing successful prerequisites and cycle detection.
+- Hierarchical iterative variable resolution is active in pipeline parsing:
+  - `global.*` + flat globals
+  - `env.*` + flat env overrides (from execution config env)
+  - `pipe.*` + flat pipeline overrides
 - SLURM batch execution uses `etl/run_batch.py` and emits event-driven status transitions (`batch_started`, `batch_completed`, `batch_failed`, `run_completed`).
 - DB migration bootstrap is active (`etl/db.py`, `db/ddl/*.sql`) with checksum/version enforcement.
 - Tracking is persisted to JSONL and DB (when `ETL_DATABASE_URL` is set):
@@ -21,6 +26,10 @@
 - Diagnostics:
   - failure reports written to `.runs/error_reports/*.json`
   - `etl diagnostics latest [--show]` available.
+- New plugin: `plugins/gdrive_download.py` wraps `tools/gdrv/download.R` for pipeline-based Google Drive staging.
+- YanRoy pipeline split is scaffolded:
+  - `pipelines/yanroy_base.yml` (dependency stage: gdrive raw staging)
+  - `pipelines/yanroy.yml` (main pipeline requiring base)
 
 ## Web UI/API status
 - Web server: `etl web --host 127.0.0.1 --port 8000 --reload`

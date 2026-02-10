@@ -30,6 +30,10 @@ class _FakeCursor:
             return [
                 ("pipelines/sample.yml", 3, 1, datetime(2026, 2, 8, 1, 2, 3), "failed", "local"),
             ]
+        if "FROM etl_pipeline_validations" in self._last_sql:
+            return [
+                (7, "pipelines/sample.yml", True, 2, ["s1", "s2"], None, "api_validate", datetime(2026, 2, 8, 1, 2, 3)),
+            ]
         if "WHERE pipeline = %s" in self._last_sql and "SELECT\n                        run_id" in self._last_sql:
             return [
                 ("r1", "pipelines/sample.yml", "failed", False, datetime(2026, 2, 8, 1, 2, 3), datetime(2026, 2, 8, 1, 2, 4), "", "local", ".runs/x")
@@ -187,6 +191,17 @@ def test_fetch_pipeline_runs(monkeypatch):
     assert len(rows) == 1
     assert rows[0]["pipeline"] == "pipelines/sample.yml"
     assert rows[0]["status"] == "failed"
+
+
+def test_fetch_pipeline_validations(monkeypatch):
+    monkeypatch.setattr(wq, "get_database_url", lambda: "postgresql://u:p@h/db")
+    monkeypatch.setattr(wq.psycopg, "connect", lambda *_: _FakeConn())
+    rows = wq.fetch_pipeline_validations("pipelines/sample.yml", limit=10)
+    assert len(rows) == 1
+    assert rows[0]["validation_id"] == 7
+    assert rows[0]["valid"] is True
+    assert rows[0]["step_names"] == ["s1", "s2"]
+    assert rows[0]["source"] == "api_validate"
 
 
 def test_fetch_runs_requires_db_url(monkeypatch):

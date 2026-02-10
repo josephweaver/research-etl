@@ -310,6 +310,51 @@ def fetch_pipeline_runs(
     return out
 
 
+def fetch_pipeline_validations(
+    pipeline: str,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    pipeline = (pipeline or "").strip()
+    if not pipeline:
+        return []
+    limit = max(1, min(int(limit), 500))
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        validation_id, pipeline, valid, step_count, step_names_json, error, source, requested_at
+                    FROM etl_pipeline_validations
+                    WHERE pipeline = %s
+                    ORDER BY requested_at DESC, validation_id DESC
+                    LIMIT %s
+                    """,
+                    (pipeline, limit),
+                )
+                rows = cur.fetchall()
+    except WebQueryError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise WebQueryError(f"Failed to fetch pipeline validations: {exc}") from exc
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "validation_id": int(row[0]),
+                "pipeline": row[1],
+                "valid": bool(row[2]),
+                "step_count": int(row[3] or 0),
+                "step_names": _jsonify(row[4]) or [],
+                "error": row[5],
+                "source": row[6],
+                "requested_at": row[7].isoformat() if row[7] is not None else None,
+            }
+        )
+    return out
+
+
 def fetch_run_header(run_id: str) -> Optional[Dict[str, Any]]:
     try:
         with _connect() as conn:
@@ -466,6 +511,7 @@ __all__ = [
     "fetch_pipelines",
     "fetch_pipeline_detail",
     "fetch_pipeline_runs",
+    "fetch_pipeline_validations",
     "fetch_run_header",
     "fetch_run_detail",
 ]

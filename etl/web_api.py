@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import tempfile
+import json
 from pathlib import Path
 from typing import Any, Optional
 
+import psycopg
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from .config import ConfigError, load_global_config
 from .ai_pipeline import AIPipelineError, generate_pipeline_draft
+from .db import get_database_url
 from .execution_config import ExecutionConfigError, apply_execution_env_overrides, load_execution_config
 from .executors.local import LocalExecutor
 from .executors.slurm import SlurmExecutor
@@ -19,6 +22,7 @@ from .web_queries import (
     WebQueryError,
     fetch_pipeline_detail,
     fetch_pipeline_runs,
+    fetch_pipeline_validations,
     fetch_pipelines,
     fetch_run_detail,
     fetch_run_header,
@@ -145,6 +149,7 @@ INDEX_HTML = """<!doctype html>
       <section class="panel">
         <h3 id="right_title">Run Detail</h3>
         <div id="pipeline_summary" class="muted" style="display:none;"></div>
+        <div id="pipeline_validations" class="muted" style="display:none;"></div>
         <div id="builder_panel" style="display:none;">
           <div class="controls">
             <input id="b_pipeline_path" placeholder="pipeline file path (for edit/new context)" />
@@ -323,6 +328,7 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("left_title").textContent = "Pipeline Runs";
         document.getElementById("right_title").textContent = "Pipeline + Run Detail";
         document.getElementById("pipeline_summary").style.display = "block";
+        document.getElementById("pipeline_validations").style.display = "block";
         document.getElementById("a_pipeline").value = selectedPipeline;
         document.getElementById("f_q").value = selectedPipeline;
       }
@@ -600,6 +606,28 @@ INDEX_HTML = """<!doctype html>
         <div>Latest provenance: commit=${esc(p.git_commit_sha)} branch=${esc(p.git_branch)} dirty=${esc(p.git_is_dirty)}</div>
       `;
     }
+    async function loadPipelineValidations(){
+      if(!isPipelineDetailView || !selectedPipeline) return;
+      const el = document.getElementById("pipeline_validations");
+      const res = await fetch(`/api/pipelines/${encodeURIComponent(selectedPipeline)}/validations?limit=20`);
+      if(!res.ok){
+        el.innerHTML = `<div>${esc(await readMessage(res))}</div>`;
+        return;
+      }
+      const rows = await res.json();
+      if(!rows.length){
+        el.innerHTML = `<h4>Validation History</h4><div class="muted">No validation history yet.</div>`;
+        return;
+      }
+      const items = rows.map(v => `
+        <div class="node">
+          <span class="${v.valid ? "ok" : "bad"}">${v.valid ? "valid" : "invalid"}</span>
+          <span class="muted"> ${esc(v.requested_at)} | source=${esc(v.source)} | steps=${esc(v.step_count)}</span>
+          ${v.error ? `<div class="bad">${esc(v.error)}</div>` : ""}
+        </div>
+      `).join("");
+      el.innerHTML = `<h4>Validation History</h4>${items}`;
+    }
     async function loadPipelines(){
       if(!isPipelinesView) return;
       const res = await fetch(`/api/pipelines?${pipelineQp()}`);
@@ -775,6 +803,7 @@ INDEX_HTML = """<!doctype html>
       await loadOps();
       await loadPipelines();
       await loadPipelineSummary();
+      await loadPipelineValidations();
       await loadRuns();
       if(isLiveRunView){
         await loadLive();
@@ -862,6 +891,17 @@ def api_pipeline_runs(
 ) -> list[dict]:
     try:
         return fetch_pipeline_runs(pipeline_id, limit=limit, status=status, executor=executor)
+    except WebQueryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/pipelines/{pipeline_id:path}/validations")
+def api_pipeline_validations(
+    pipeline_id: str,
+    limit: int = Query(default=50, ge=1, le=500),
+) -> list[dict]:
+    try:
+        return fetch_pipeline_validations(pipeline_id, limit=limit)
     except WebQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -1087,6 +1127,43 @@ def _validate_draft_yaml(yaml_text: str) -> tuple[Optional[Pipeline], Optional[s
         return None, str(exc.detail)
 
 
+def _record_pipeline_validation(
+    *,
+    pipeline: str,
+    valid: bool,
+    step_count: int = 0,
+    step_names: Optional[list[str]] = None,
+    error: Optional[str] = None,
+    source: str = "web_validate",
+) -> None:
+    db_url = get_database_url()
+    if not db_url:
+        return
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO etl_pipeline_validations (
+                        pipeline, valid, step_count, step_names_json, error, source
+                    )
+                    VALUES (%s, %s, %s, %s::jsonb, %s, %s)
+                    """,
+                    (
+                        pipeline,
+                        bool(valid),
+                        int(step_count),
+                        json.dumps(step_names or []),
+                        error,
+                        source,
+                    ),
+                )
+            conn.commit()
+    except Exception:
+        # Validation history recording should be best-effort and non-blocking.
+        pass
+
+
 def _resolve_repo_relative_pipeline_path(pipeline: str) -> Path:
     raw = (pipeline or "").strip()
     if not raw:
@@ -1151,9 +1228,29 @@ def api_builder_source(pipeline: str = Query(default="")) -> dict:
 @app.post("/api/builder/validate")
 def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     payload = payload or {}
+    pipeline_label = str(payload.get("pipeline") or "<builder:draft>")
     global_config_raw = str(payload.get("global_config") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
-    pipeline = _parse_pipeline_from_yaml_text(str(payload.get("yaml_text") or ""), global_config_path=global_config_path)
+    try:
+        pipeline = _parse_pipeline_from_yaml_text(str(payload.get("yaml_text") or ""), global_config_path=global_config_path)
+    except HTTPException as exc:
+        _record_pipeline_validation(
+            pipeline=pipeline_label,
+            valid=False,
+            step_count=0,
+            step_names=[],
+            error=str(exc.detail),
+            source="builder_validate",
+        )
+        raise
+    _record_pipeline_validation(
+        pipeline=pipeline_label,
+        valid=True,
+        step_count=len(pipeline.steps),
+        step_names=[s.name for s in pipeline.steps],
+        error=None,
+        source="builder_validate",
+    )
     return {
         "valid": True,
         "step_count": len(pipeline.steps),
@@ -1299,7 +1396,23 @@ def api_action_validate(payload: Optional[dict[str, Any]] = Body(default=None)) 
     try:
         pipeline = parse_pipeline(args["pipeline_path"], global_vars=global_vars, env_vars=execution_env)
     except (PipelineError, FileNotFoundError) as exc:
+        _record_pipeline_validation(
+            pipeline=str(args["pipeline_path"]),
+            valid=False,
+            step_count=0,
+            step_names=[],
+            error=str(exc),
+            source="api_validate",
+        )
         raise HTTPException(status_code=400, detail=f"Invalid pipeline: {exc}") from exc
+    _record_pipeline_validation(
+        pipeline=str(args["pipeline_path"]),
+        valid=True,
+        step_count=len(pipeline.steps),
+        step_names=[s.name for s in pipeline.steps],
+        error=None,
+        source="api_validate",
+    )
     return {
         "valid": True,
         "pipeline": str(args["pipeline_path"]),

@@ -67,7 +67,8 @@ def run(args, ctx):
 
 ## Pipeline file format
 
-- `vars`: free-form variables; supports string templating with `{var}` using combined `global` and `vars` scope.
+- `requires_pipelines` (optional): list of prerequisite pipeline YAML paths. `etl run` auto-runs missing successful dependencies first (cycle-safe).
+- `vars`: pipeline variables (also exposed as `pipe.*` namespace during resolution).
 - `dirs`: derived paths or other computed values; also templated.
 - `steps`: list of steps; each step supports:
   - `name` (optional; defaults to `step_<index>`)
@@ -78,12 +79,27 @@ def run(args, ctx):
   - `foreach` (optional list var name; fans out one step per item)
   - `parallel_with` (optional string; consecutive steps with the same value run in parallel)
 
+### Hierarchical variable resolution
+
+Templating is iterative (resolved repeatedly until values stop changing). Resolution context precedence is:
+
+1. `global.*` from `config/global.yml`, also loaded as flat keys.
+2. `env.*` from selected execution environment (`config/execution.yml --env ...`), also loaded as flat keys and overriding global flat collisions.
+3. `pipe.*` from pipeline `vars`, also loaded as flat keys and overriding prior flat collisions.
+
+This supports patterns like:
+- `pipe.datadir: "{env.datadir}/{pipe.name}"`
+- `env.datadir: "{global.datadir}/dev"`
+
 Example:
 ```yaml
+requires_pipelines:
+  - pipelines/yanroy_base.yml
 vars:
-  jobname: prism
+  pipe:
+    name: prism
 dirs:
-  datadir: {global.data}/{jobname}
+  datadir: {env.datadir}/{pipe.name}
 steps:
   - name: fetch_urls
     script: import/read_txt_lines.py {bindir}/urls.txt
@@ -95,6 +111,7 @@ steps:
 ### Download scripts
 - http_download.py - list of HTTPS files
 - ftp_download.py - all files in an FTP folder
+- gdrive_download.py - Google Drive download via `tools/gdrv/download.R`
 
 ### File identification scripts
 - is_zip.py - determine if a file is a zip file
@@ -177,6 +194,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 - `etl plugins list [-d plugins/]` â€“ list discovered plugins.  
 - `etl validate <pipeline.yml> [--global-config config/global.yml]` â€“ parse and validate pipeline syntax/templating.  
 - `etl run <pipeline.yml> [--executor local|slurm --global-config ... --execution-config ... --env name --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.  
+  - If `requires_pipelines` is set in the target pipeline, missing successful dependencies are run first automatically.
   - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in execution config or env vars.  
 - `etl runs list [--store .runs/runs.jsonl]` â€“ show recent recorded runs.  
 - `etl runs show <run_id> [--store ...]` â€“ show details for a specific run.

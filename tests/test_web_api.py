@@ -34,6 +34,11 @@ def test_web_api_endpoints(monkeypatch):
         "fetch_pipeline_runs",
         lambda pipeline_id, limit=50, status=None, executor=None: [{"run_id": "r1", "pipeline": pipeline_id}],
     )
+    monkeypatch.setattr(
+        web_api,
+        "fetch_pipeline_validations",
+        lambda pipeline_id, limit=50: [{"validation_id": 1, "pipeline": pipeline_id, "valid": True}],
+    )
     monkeypatch.setattr(web_api, "fetch_run_detail", lambda run_id: {"run_id": run_id, "status": "succeeded"})
 
     client = TestClient(web_api.app)
@@ -79,6 +84,10 @@ def test_web_api_endpoints(monkeypatch):
     r7 = client.get("/api/pipelines/pipelines%2Fsample.yml/runs")
     assert r7.status_code == 200
     assert r7.json()[0]["pipeline"] == "pipelines/sample.yml"
+
+    r8 = client.get("/api/pipelines/pipelines%2Fsample.yml/validations")
+    assert r8.status_code == 200
+    assert r8.json()[0]["pipeline"] == "pipelines/sample.yml"
 
 
 def test_web_api_builder_source_and_validate(tmp_path: Path):
