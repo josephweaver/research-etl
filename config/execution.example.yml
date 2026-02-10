@@ -1,5 +1,7 @@
 environments:
   hpcc_msu:
+    name: dev
+    datadir: /mnt/scratch/Viens_AgroEco_Lab/data
     host: hpcc.msu.edu
     partition: scavenger
     account: weave151
@@ -25,6 +27,8 @@ environments:
     # Workspace mode is last-resort and least reproducible.
     allow_workspace_source: false
   hpcc_beta:
+    name: beta
+    datadir: /hpcc/data
     host: beta.login.univ.edu
     partition: highmem
     account: proj456

@@ -8,6 +8,7 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from .config import ConfigError, load_global_config
+from .ai_pipeline import AIPipelineError, generate_pipeline_draft
 from .execution_config import ExecutionConfigError, apply_execution_env_overrides, load_execution_config
 from .executors.local import LocalExecutor
 from .executors.slurm import SlurmExecutor
@@ -148,9 +149,15 @@ INDEX_HTML = """<!doctype html>
           <div class="controls">
             <input id="b_pipeline_path" placeholder="pipeline file path (for edit/new context)" />
             <button id="btn_builder_load">Load</button>
+            <button id="btn_builder_save">Save Draft</button>
+            <button id="btn_builder_generate">Generate</button>
             <button id="btn_builder_validate">Validate Draft</button>
             <button id="btn_builder_test_step">Test Step</button>
             <span id="builder_msg" class="muted"></span>
+          </div>
+          <div class="controls">
+            <input id="b_intent" placeholder="intent for AI draft generation" />
+            <input id="b_constraints" placeholder="constraints (optional)" />
           </div>
           <div class="controls">
             <input id="b_step_name" placeholder="step name to test (default: first step)" />
@@ -430,6 +437,8 @@ INDEX_HTML = """<!doctype html>
         yaml_text: document.getElementById("b_yaml").value || "",
       };
       const pipeline = document.getElementById("b_pipeline_path").value.trim();
+      const intent = document.getElementById("b_intent").value.trim();
+      const constraints = document.getElementById("b_constraints").value.trim();
       const stepName = document.getElementById("b_step_name").value.trim();
       const globalConfig = document.getElementById("b_global_config").value.trim();
       const pluginsDir = document.getElementById("b_plugins_dir").value.trim();
@@ -437,6 +446,8 @@ INDEX_HTML = """<!doctype html>
       const retries = document.getElementById("b_max_retries").value.trim();
       const delay = document.getElementById("b_retry_delay").value.trim();
       if (pipeline) body.pipeline = pipeline;
+      if (intent) body.intent = intent;
+      if (constraints) body.constraints = constraints;
       if (stepName) body.step_name = stepName;
       if (globalConfig) body.global_config = globalConfig;
       if (pluginsDir) body.plugins_dir = pluginsDir;
@@ -463,6 +474,67 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("b_yaml").value = payload.yaml_text || "";
       }
       builderLoaded = true;
+    }
+    async function saveBuilderDraft(){
+      const msg = document.getElementById("builder_msg");
+      const out = document.getElementById("builder_output");
+      const payload = builderPayload();
+      if (!payload.pipeline){
+        msg.textContent = "pipeline path is required to save.";
+        return;
+      }
+      msg.textContent = "Saving draft...";
+      const encoded = encodeURIComponent(payload.pipeline);
+      const update = await fetch(`/api/pipelines/${encoded}`, {
+        method:"PUT",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ yaml_text: payload.yaml_text }),
+      });
+      if(update.status === 404){
+        const create = await fetch(`/api/pipelines`, {
+          method:"POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ pipeline: payload.pipeline, yaml_text: payload.yaml_text }),
+        });
+        if(!create.ok){
+          msg.textContent = await readMessage(create);
+          return;
+        }
+        const data = await create.json();
+        msg.textContent = `Saved ${data.pipeline}`;
+        out.textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+      if(!update.ok){
+        msg.textContent = await readMessage(update);
+        return;
+      }
+      const data = await update.json();
+      msg.textContent = `Updated ${data.pipeline}`;
+      out.textContent = JSON.stringify(data, null, 2);
+    }
+    async function generateBuilderDraft(){
+      const msg = document.getElementById("builder_msg");
+      const out = document.getElementById("builder_output");
+      const payload = builderPayload();
+      if (!payload.intent){
+        msg.textContent = "intent is required to generate.";
+        return;
+      }
+      msg.textContent = "Generating draft...";
+      const res = await fetch(`/api/builder/generate`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(payload),
+      });
+      if(!res.ok){
+        msg.textContent = await readMessage(res);
+        return;
+      }
+      const data = await res.json();
+      document.getElementById("b_yaml").value = data.yaml_text || "";
+      msg.textContent = data.valid ? `Generated valid draft (${data.step_count} steps)` : "Generated draft has validation issues";
+      out.textContent = JSON.stringify(data, null, 2);
     }
     async function validateBuilderDraft(){
       const msg = document.getElementById("builder_msg");
@@ -724,6 +796,8 @@ INDEX_HTML = """<!doctype html>
       window.location.href = `/runs/${encodeURIComponent(runId)}/live`;
     };
     document.getElementById("btn_builder_load").onclick = async () => { builderLoaded = false; await tick(); };
+    document.getElementById("btn_builder_save").onclick = saveBuilderDraft;
+    document.getElementById("btn_builder_generate").onclick = generateBuilderDraft;
     document.getElementById("btn_builder_validate").onclick = validateBuilderDraft;
     document.getElementById("btn_builder_test_step").onclick = testBuilderStep;
     tick(); setInterval(tick, 12000);
@@ -1005,6 +1079,61 @@ def _parse_pipeline_from_yaml_text(
             pass
 
 
+def _validate_draft_yaml(yaml_text: str) -> tuple[Optional[Pipeline], Optional[str]]:
+    try:
+        pipeline = _parse_pipeline_from_yaml_text(yaml_text, global_config_path=None)
+        return pipeline, None
+    except HTTPException as exc:
+        return None, str(exc.detail)
+
+
+def _resolve_repo_relative_pipeline_path(pipeline: str) -> Path:
+    raw = (pipeline or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="`pipeline` is required.")
+    repo_root = Path(".").resolve()
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(repo_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Pipeline path must be inside repository: {raw}") from exc
+    if resolved.suffix.lower() not in {".yml", ".yaml"}:
+        raise HTTPException(status_code=400, detail="Pipeline path must end with .yml or .yaml")
+    return resolved
+
+
+@app.post("/api/pipelines")
+def api_pipelines_create(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    payload = payload or {}
+    pipeline_path = _resolve_repo_relative_pipeline_path(str(payload.get("pipeline") or ""))
+    yaml_text = str(payload.get("yaml_text") or "")
+    _ = _parse_pipeline_from_yaml_text(yaml_text, global_config_path=None)
+    overwrite = _parse_bool(payload.get("overwrite"), default=False)
+    if pipeline_path.exists() and not overwrite:
+        raise HTTPException(status_code=409, detail=f"Pipeline already exists: {pipeline_path}")
+    pipeline_path.parent.mkdir(parents=True, exist_ok=True)
+    pipeline_path.write_text(yaml_text.strip() + "\n", encoding="utf-8")
+    return {"pipeline": str(pipeline_path), "saved": True, "created": True}
+
+
+@app.put("/api/pipelines/{pipeline_id:path}")
+def api_pipelines_update(pipeline_id: str, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    payload = payload or {}
+    if "pipeline" in payload and str(payload.get("pipeline") or "").strip() not in {"", pipeline_id}:
+        raise HTTPException(status_code=400, detail="Payload pipeline does not match URL pipeline_id.")
+    pipeline_path = _resolve_repo_relative_pipeline_path(pipeline_id)
+    if not pipeline_path.exists():
+        raise HTTPException(status_code=404, detail=f"Pipeline file not found: {pipeline_path}")
+    yaml_text = str(payload.get("yaml_text") or "")
+    _ = _parse_pipeline_from_yaml_text(yaml_text, global_config_path=None)
+    pipeline_path.parent.mkdir(parents=True, exist_ok=True)
+    pipeline_path.write_text(yaml_text.strip() + "\n", encoding="utf-8")
+    return {"pipeline": str(pipeline_path), "saved": True, "updated": True}
+
+
 @app.get("/api/builder/source")
 def api_builder_source(pipeline: str = Query(default="")) -> dict:
     path = Path((pipeline or "").strip()).expanduser()
@@ -1031,6 +1160,68 @@ def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None))
         "step_names": [s.name for s in pipeline.steps],
         "vars": pipeline.vars,
         "dirs": pipeline.dirs,
+    }
+
+
+@app.post("/api/builder/generate")
+def api_builder_generate(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    payload = payload or {}
+    intent = str(payload.get("intent") or "").strip()
+    constraints = str(payload.get("constraints") or "").strip() or None
+    existing_yaml = str(payload.get("yaml_text") or "").strip() or None
+    model = str(payload.get("model") or "").strip() or None
+    auto_repair = _parse_bool(payload.get("auto_repair"), default=True)
+    if not intent:
+        raise HTTPException(status_code=400, detail="`intent` is required.")
+    try:
+        yaml_text = generate_pipeline_draft(
+            intent=intent,
+            constraints=constraints,
+            existing_yaml=existing_yaml,
+            model=model,
+        )
+    except AIPipelineError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    attempts = 1
+    repaired = False
+    repair_error = None
+    pipeline, validation_error = _validate_draft_yaml(yaml_text)
+    if validation_error and auto_repair:
+        repaired = True
+        attempts = 2
+        repair_constraints = (
+            (constraints + "\n\n") if constraints else ""
+        ) + f"Fix these validation errors exactly:\n{validation_error}"
+        try:
+            yaml_text = generate_pipeline_draft(
+                intent=intent,
+                constraints=repair_constraints,
+                existing_yaml=yaml_text,
+                model=model,
+            )
+            pipeline, validation_error = _validate_draft_yaml(yaml_text)
+        except AIPipelineError as exc:
+            repair_error = str(exc)
+
+    if pipeline is not None:
+        return {
+            "yaml_text": yaml_text,
+            "valid": True,
+            "repaired": repaired,
+            "attempts": attempts,
+            "step_count": len(pipeline.steps),
+            "step_names": [s.name for s in pipeline.steps],
+        }
+    return {
+        "yaml_text": yaml_text,
+        "valid": False,
+        "repaired": repaired,
+        "attempts": attempts,
+        "validation_error": validation_error or "Unknown validation error.",
+        "repair_error": repair_error,
+        "step_count": 0,
+        "step_names": [],
     }
 
 
@@ -1104,8 +1295,9 @@ def _payload_with_pipeline(payload: Optional[dict[str, Any]], pipeline_id: str) 
 def api_action_validate(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     args = _parse_action_payload(payload)
     global_vars = _resolve_global_vars(args["global_config_path"])
+    execution_env = _resolve_execution_env(args["execution_config_path"], args["env_name"])
     try:
-        pipeline = parse_pipeline(args["pipeline_path"], global_vars=global_vars)
+        pipeline = parse_pipeline(args["pipeline_path"], global_vars=global_vars, env_vars=execution_env)
     except (PipelineError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid pipeline: {exc}") from exc
     return {
@@ -1136,7 +1328,7 @@ def api_action_run(payload: Optional[dict[str, Any]] = Body(default=None)) -> di
     source_snapshot = args["source_snapshot"] or execution_env.get("source_snapshot")
     allow_workspace_source = bool(args["allow_workspace_source"] or execution_env.get("allow_workspace_source", False))
     try:
-        pipeline = parse_pipeline(args["pipeline_path"], global_vars=global_vars)
+        pipeline = parse_pipeline(args["pipeline_path"], global_vars=global_vars, env_vars=execution_env)
     except (PipelineError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid pipeline: {exc}") from exc
 
@@ -1312,7 +1504,7 @@ def api_resume_run(run_id: str, payload: Optional[dict[str, Any]] = Body(default
     allow_workspace_source = _parse_bool(payload.get("allow_workspace_source"), default=False)
 
     try:
-        pipeline = parse_pipeline(pipeline_path)
+        pipeline = parse_pipeline(pipeline_path, global_vars={}, env_vars={})
     except (PipelineError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid pipeline for resume: {exc}") from exc
 

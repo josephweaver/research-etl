@@ -24,6 +24,8 @@ Last updated: 2026-02-09
 - [x] `Task 4 (P0)` Add operations dashboard on `/` for failed/running first view.
 - [x] `Task 5 (P0)` Add live run status API + UI (`/runs/{run_id}/live`) with event timeline.
 - [x] `Task 6 (P1)` Add draft pipeline builder (new/edit/test-step flow).
+  - [x] save draft via API (`POST /api/pipelines`, `PUT /api/pipelines/{id}`)
+  - [x] AI draft generation via API (`POST /api/builder/generate`)
 
 ## Week 1 - Core hardening (P0)
 - [x] `P0` Packaging/install flow complete (`pyproject.toml`, `etl` console entrypoint, install docs validated).
@@ -84,8 +86,9 @@ Last updated: 2026-02-09
 - [x] `P0` `POST /api/pipelines/{id}/validate` (pipeline-scoped validate endpoint alias).
 - [x] `P0` `POST /api/pipelines/{id}/run` (pipeline-scoped run endpoint alias).
 - [x] `P0` `GET /api/runs/{id}/live` (polling or SSE payload for timeline/status).
-- [ ] `P1` `POST /api/pipelines` + `PUT /api/pipelines/{id}` for draft/save flows.
 - [x] `P1` `GET /api/builder/source` + `POST /api/builder/validate` + `POST /api/builder/test-step` for draft authoring loop.
+- [x] `P1` `POST /api/pipelines` + `PUT /api/pipelines/{id}` for draft/save flows.
+- [x] `P1` `POST /api/builder/generate` for LLM-assisted YAML draft generation.
 
 ## Cut list if schedule slips (defer first)
 - [ ] `P2` Advanced UI styling

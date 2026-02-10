@@ -81,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     global_vars = {}
+    exec_env = {}
     if args.global_config:
         try:
             global_vars = load_global_config(Path(args.global_config))
@@ -94,13 +95,13 @@ def main(argv: list[str] | None = None) -> int:
             if not exec_env:
                 print(f"Execution env '{args.env}' not found in config")
                 return 1
-            apply_execution_env_overrides(exec_env)
+            exec_env = apply_execution_env_overrides(exec_env)
         except ExecutionConfigError as exc:
             print(f"Execution config error: {exc}")
             return 1
 
     try:
-        full_pipeline = parse_pipeline(Path(args.pipeline), global_vars=global_vars)
+        full_pipeline = parse_pipeline(Path(args.pipeline), global_vars=global_vars, env_vars=exec_env)
     except PipelineError as exc:
         print(f"Pipeline error: {exc}")
         return 1

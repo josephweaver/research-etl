@@ -16,6 +16,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, Dict, List, Set
 
 from etl import __version__
 from etl.config import load_global_config, ConfigError
@@ -35,6 +36,163 @@ from etl.execution_config import (
 
 
 DEFAULT_PLUGIN_DIR = Path("plugins")
+
+
+def _run_store_path(workdir: str) -> Path:
+    return Path(workdir) / "runs.jsonl"
+
+
+def _has_successful_run_for_pipeline(pipeline_path: Path, *, workdir: str) -> bool:
+    records = load_runs(_run_store_path(workdir))
+    target = pipeline_path.resolve().as_posix()
+    for rec in reversed(records):
+        try:
+            rec_path = Path(rec.pipeline).resolve().as_posix()
+        except Exception:
+            rec_path = Path(rec.pipeline).as_posix()
+        if rec.success and rec_path == target:
+            return True
+    return False
+
+
+def _resolve_required_pipelines(
+    pipeline_path: Path,
+    *,
+    global_vars: Dict[str, Any],
+    env_vars: Dict[str, Any],
+    stack: List[Path],
+    visiting: Set[str],
+    ordered: List[Path],
+) -> None:
+    canonical = pipeline_path.resolve()
+    key = canonical.as_posix()
+    if key in visiting:
+        cycle = " -> ".join([p.as_posix() for p in stack] + [canonical.as_posix()])
+        raise PipelineError(f"Pipeline dependency cycle detected: {cycle}")
+    if any(p.resolve() == canonical for p in stack):
+        return
+
+    visiting.add(key)
+    stack.append(canonical)
+    pipeline = parse_pipeline(canonical, global_vars=global_vars, env_vars=env_vars)
+    base_dir = canonical.parent
+    for req in pipeline.requires_pipelines:
+        req_path = Path(req)
+        if not req_path.is_absolute():
+            from_cwd = req_path.resolve()
+            if from_cwd.exists():
+                req_path = from_cwd
+            else:
+                req_path = (base_dir / req_path).resolve()
+        _resolve_required_pipelines(
+            req_path,
+            global_vars=global_vars,
+            env_vars=env_vars,
+            stack=stack,
+            visiting=visiting,
+            ordered=ordered,
+        )
+        if all(p.resolve() != req_path.resolve() for p in ordered):
+            ordered.append(req_path.resolve())
+    stack.pop()
+    visiting.remove(key)
+
+
+def _submit_pipeline_run(
+    args: argparse.Namespace,
+    *,
+    pipeline_path: Path,
+    global_vars: Dict[str, Any],
+    exec_env: Dict[str, Any],
+    resume_run_id: str | None,
+) -> int:
+    plugins_dir_path = Path(args.plugins_dir)
+    repo_root = Path(".").resolve()
+    try:
+        pipeline = parse_pipeline(pipeline_path, global_vars=global_vars, env_vars=exec_env)
+    except (PipelineError, FileNotFoundError) as exc:
+        print(f"Invalid pipeline: {exc}", file=sys.stderr)
+        return 1
+    cli_argv = list(getattr(args, "_raw_argv", []))
+    if cli_argv:
+        try:
+            idx = cli_argv.index(args.pipeline)
+            cli_argv[idx] = str(pipeline_path)
+        except ValueError:
+            pass
+    cli_command = "python cli.py " + " ".join(cli_argv)
+    provenance = collect_run_provenance(
+        repo_root=repo_root,
+        pipeline_path=pipeline_path,
+        global_config_path=Path(args.global_config) if args.global_config else None,
+        execution_config_path=Path(args.execution_config) if args.execution_config else None,
+        plugin_dir=plugins_dir_path,
+        pipeline=pipeline,
+        cli_command=cli_command,
+    )
+    execution_source = args.execution_source or exec_env.get("execution_source", "auto")
+    source_bundle = args.source_bundle or exec_env.get("source_bundle")
+    source_snapshot = args.source_snapshot or exec_env.get("source_snapshot")
+    allow_workspace_source = bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False))
+
+    if args.executor == "slurm":
+        executor = SlurmExecutor(
+            env_config=exec_env,
+            repo_root=repo_root,
+            plugins_dir=plugins_dir_path,
+            workdir=Path(args.workdir),
+            global_config=Path(args.global_config) if args.global_config else None,
+            execution_config=Path(args.execution_config) if args.execution_config else None,
+            env_name=args.env,
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+            enforce_git_checkout=True,
+            require_clean_git=not bool(args.allow_dirty_git),
+            execution_source=execution_source,
+            source_bundle=source_bundle,
+            source_snapshot=source_snapshot,
+            allow_workspace_source=allow_workspace_source,
+        )
+    else:
+        executor = LocalExecutor(
+            plugin_dir=plugins_dir_path,
+            workdir=Path(args.workdir),
+            dry_run=args.dry_run,
+            max_retries=int(exec_env.get("step_max_retries", 0)),
+            retry_delay_seconds=float(exec_env.get("step_retry_delay_seconds", 0.0)),
+            enforce_git_checkout=True,
+            require_clean_git=not bool(args.allow_dirty_git),
+            execution_source=execution_source,
+            source_bundle=source_bundle,
+            source_snapshot=source_snapshot,
+            allow_workspace_source=allow_workspace_source,
+        )
+
+    try:
+        result = executor.submit(
+            str(pipeline_path),
+            context={
+                "pipeline": pipeline,
+                "execution_env": exec_env,
+                "resume_run_id": resume_run_id,
+                "provenance": provenance,
+                "repo_root": repo_root,
+                "global_vars": global_vars,
+                "execution_source": execution_source,
+                "source_bundle": source_bundle,
+                "source_snapshot": source_snapshot,
+                "allow_workspace_source": allow_workspace_source,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        _emit_error_with_report(_format_run_submission_error(exc, args), exc, args)
+        return 1
+    status = executor.status(result.run_id)
+    job_info = f" (jobs: {result.job_ids})" if getattr(result, "job_ids", None) else ""
+    print(f"Run {result.run_id} -> {status.state}{job_info} [{pipeline_path}]")
+    if status.state in ("succeeded", "queued", "running"):
+        return 0
+    return 1
 
 
 def _format_run_submission_error(exc: Exception, args: argparse.Namespace) -> str:
@@ -124,8 +282,6 @@ def cmd_plugins_list(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     pipeline_path = Path(args.pipeline)
-    plugins_dir_path = Path(args.plugins_dir)
-    repo_root = Path(".").resolve()
     global_vars = {}
     exec_env = {}
     if args.global_config:
@@ -161,78 +317,45 @@ def cmd_run(args: argparse.Namespace) -> int:
     exec_env["step_max_retries"] = max_retries
     exec_env["step_retry_delay_seconds"] = retry_delay_seconds
     try:
-        pipeline = parse_pipeline(pipeline_path, global_vars=global_vars)
+        ordered_reqs: List[Path] = []
+        _resolve_required_pipelines(
+            pipeline_path.resolve(),
+            global_vars=global_vars,
+            env_vars=exec_env,
+            stack=[],
+            visiting=set(),
+            ordered=ordered_reqs,
+        )
     except (PipelineError, FileNotFoundError) as exc:
         print(f"Invalid pipeline: {exc}", file=sys.stderr)
         return 1
-    cli_command = "python cli.py " + " ".join(getattr(args, "_raw_argv", []))
-    provenance = collect_run_provenance(
-        repo_root=repo_root,
-        pipeline_path=pipeline_path,
-        global_config_path=Path(args.global_config) if args.global_config else None,
-        execution_config_path=Path(args.execution_config) if args.execution_config else None,
-        plugin_dir=plugins_dir_path,
-        pipeline=pipeline,
-        cli_command=cli_command,
-    )
 
-    if args.executor == "slurm":
-        executor = SlurmExecutor(
-            env_config=exec_env,
-            repo_root=repo_root,
-            plugins_dir=plugins_dir_path,
-            workdir=Path(args.workdir),
-            global_config=Path(args.global_config) if args.global_config else None,
-            execution_config=Path(args.execution_config) if args.execution_config else None,
-            env_name=args.env,
-            dry_run=args.dry_run,
-            verbose=args.verbose,
-            enforce_git_checkout=True,
-            require_clean_git=not bool(args.allow_dirty_git),
-            execution_source=args.execution_source or exec_env.get("execution_source"),
-            source_bundle=args.source_bundle or exec_env.get("source_bundle"),
-            source_snapshot=args.source_snapshot or exec_env.get("source_snapshot"),
-            allow_workspace_source=bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False)),
+    target = pipeline_path.resolve()
+    for dep in ordered_reqs:
+        if dep.resolve() == target:
+            continue
+        if _has_successful_run_for_pipeline(dep, workdir=args.workdir):
+            print(f"Dependency already satisfied: {dep}")
+            continue
+        print(f"Running missing dependency pipeline: {dep}")
+        dep_rc = _submit_pipeline_run(
+            args,
+            pipeline_path=dep,
+            global_vars=global_vars,
+            exec_env=exec_env,
+            resume_run_id=None,
         )
-    else:
-        executor = LocalExecutor(
-            plugin_dir=plugins_dir_path,
-            workdir=Path(args.workdir),
-            dry_run=args.dry_run,
-            max_retries=max_retries,
-            retry_delay_seconds=retry_delay_seconds,
-            enforce_git_checkout=True,
-            require_clean_git=not bool(args.allow_dirty_git),
-            execution_source=args.execution_source or exec_env.get("execution_source", "auto"),
-            source_bundle=args.source_bundle or exec_env.get("source_bundle"),
-            source_snapshot=args.source_snapshot or exec_env.get("source_snapshot"),
-            allow_workspace_source=bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False)),
-        )
-    try:
-        result = executor.submit(
-            str(pipeline_path),
-            context={
-                "pipeline": pipeline,
-                "execution_env": exec_env,
-                "resume_run_id": args.resume_run_id,
-                "provenance": provenance,
-                "repo_root": repo_root,
-                "global_vars": global_vars,
-                "execution_source": args.execution_source or exec_env.get("execution_source", "auto"),
-                "source_bundle": args.source_bundle or exec_env.get("source_bundle"),
-                "source_snapshot": args.source_snapshot or exec_env.get("source_snapshot"),
-                "allow_workspace_source": bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False)),
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        _emit_error_with_report(_format_run_submission_error(exc, args), exc, args)
-        return 1
-    status = executor.status(result.run_id)
-    job_info = f" (jobs: {result.job_ids})" if getattr(result, "job_ids", None) else ""
-    print(f"Run {result.run_id} -> {status.state}{job_info}")
-    if status.state in ("succeeded", "queued", "running"):
-        return 0
-    return 1
+        if dep_rc != 0:
+            print(f"Dependency pipeline failed: {dep}", file=sys.stderr)
+            return dep_rc
+
+    return _submit_pipeline_run(
+        args,
+        pipeline_path=target,
+        global_vars=global_vars,
+        exec_env=exec_env,
+        resume_run_id=args.resume_run_id,
+    )
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -245,7 +368,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
             print(f"Global config error: {exc}", file=sys.stderr)
             return 1
     try:
-        pipeline = parse_pipeline(pipeline_path, global_vars=global_vars)
+        pipeline = parse_pipeline(pipeline_path, global_vars=global_vars, env_vars={})
     except (PipelineError, FileNotFoundError) as exc:
         print(f"Invalid pipeline: {exc}", file=sys.stderr)
         return 1

@@ -100,6 +100,74 @@ def test_web_api_builder_source_and_validate(tmp_path: Path):
     assert v.json()["step_count"] == 1
 
 
+def test_web_api_builder_generate(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(
+        web_api,
+        "generate_pipeline_draft",
+        lambda intent, constraints=None, existing_yaml=None, model=None: "steps:\n  - name: s1\n    script: echo.py\n",
+    )
+    client = TestClient(web_api.app)
+    r = client.post("/api/builder/generate", json={"intent": "download and clean data"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["valid"] is True
+    assert payload["attempts"] == 1
+    assert payload["repaired"] is False
+    assert payload["step_count"] == 1
+
+
+def test_web_api_builder_generate_auto_repair(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    drafts = iter(
+        [
+            "steps:\n  - name: broken\n",  # invalid: missing script
+            "steps:\n  - name: repaired\n    script: echo.py\n",  # valid
+        ]
+    )
+    monkeypatch.setattr(
+        web_api,
+        "generate_pipeline_draft",
+        lambda intent, constraints=None, existing_yaml=None, model=None: next(drafts),
+    )
+    client = TestClient(web_api.app)
+    r = client.post("/api/builder/generate", json={"intent": "build a simple ETL"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["valid"] is True
+    assert payload["repaired"] is True
+    assert payload["attempts"] == 2
+    assert payload["step_names"] == ["repaired"]
+
+
+def test_web_api_pipeline_save_create_and_update(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+    from urllib.parse import quote
+
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(web_api.app)
+    yaml_text = "steps:\n  - name: s1\n    script: echo.py\n"
+    create = client.post("/api/pipelines", json={"pipeline": "pipelines/new_draft.yml", "yaml_text": yaml_text})
+    assert create.status_code == 200
+    created_path = Path(create.json()["pipeline"])
+    assert created_path.exists()
+    assert "echo.py" in created_path.read_text(encoding="utf-8")
+
+    update_text = "steps:\n  - name: s1\n    script: echo.py\n  - name: s2\n    script: echo.py\n"
+    pid = quote("pipelines/new_draft.yml", safe="")
+    update = client.put(f"/api/pipelines/{pid}", json={"yaml_text": update_text})
+    assert update.status_code == 200
+    assert "s2" in created_path.read_text(encoding="utf-8")
+
+
 def test_web_api_builder_test_step(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
