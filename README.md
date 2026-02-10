@@ -16,11 +16,13 @@ This project has moved from a local prototype toward an operational research run
   - `etl_run_step_attempts` (retry-ready)
   - `etl_run_events`
 - Provenance: run records capture Git and snapshot context (commit/branch/tag/dirty state, CLI command, and checksums for pipeline/config/plugins).
+- Strict source pinning: run paths execute from explicit source selection (git checkout / bundle / snapshot / workspace override), with git-pinned mode as default.
 - Git is the source of truth for pipeline/config content; DB stores checksums and run provenance only (no full pipeline/config text blobs).
 - Schema management: migration bootstrap from `db/ddl/*.sql` with checksum/version tracking (`etl_schema_versions`, `etl_schema_state`).
 - Artifacts: timestamp-first run paths for easier debugging:
   - `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>/`
 - Quality: pytest suite + GitHub Actions test workflow.
+- Web UX: compact nav with Operations, Pipelines, New Pipeline, and Live Run jump; builder and live run routes are active.
 
 ## Plugin Script
 
@@ -174,7 +176,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 
 - `etl plugins list [-d plugins/]` â€“ list discovered plugins.  
 - `etl validate <pipeline.yml> [--global-config config/global.yml]` â€“ parse and validate pipeline syntax/templating.  
-- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --execution-config ... --env name --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id>]` - run locally or submit SLURM jobs.  
+- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --execution-config ... --env name --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.  
   - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in execution config or env vars.  
 - `etl runs list [--store .runs/runs.jsonl]` â€“ show recent recorded runs.  
 - `etl runs show <run_id> [--store ...]` â€“ show details for a specific run.
@@ -192,8 +194,19 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 1) Install web dependencies: `python -m pip install -e ".[web]"`
 2) Start server: `etl web --host 127.0.0.1 --port 8000 --reload`
 3) Open: `http://127.0.0.1:8000`
-4) Use Status/Executor/Search filters in the UI run list.
-5) Select a failed run and click `Resume Selected` (currently local executor only). Optional UI overrides:
+4) Use top nav:
+   - `Operations` for failed/running triage
+   - `Pipelines` for catalog/detail views
+   - `New Pipeline` for draft builder
+   - quick Live Run jump by run id
+5) In Operations, select failed runs and use `Resume` or `View` cards (resume currently local executor only).
+6) In builder (`/pipelines/new` or `/pipelines/{pipeline_id}/edit`), use:
+   - `Load` (from existing YAML)
+   - `Generate` (OpenAI-backed draft generation + one-pass auto-repair)
+   - `Validate Draft`
+   - `Test Step`
+   - `Save Draft`
+7) Optional run/resume overrides:
    - `plugins_dir`
    - `workdir`
    - `max_retries`
@@ -204,11 +217,29 @@ API endpoints:
 - `GET /api/health`
 - `GET /api/runs?limit=50&status=failed&executor=local&q=sample`
 - `GET /api/runs/{run_id}`
+- `GET /api/runs/{run_id}/live`
 - `POST /api/runs/{run_id}/resume`
 - `GET /api/runs/{run_id}/files`
 - `GET /api/runs/{run_id}/file?path=logs/job.out`
+- `GET /api/pipelines`
+- `GET /api/pipelines/{pipeline_id}`
+- `GET /api/pipelines/{pipeline_id}/runs`
+- `POST /api/pipelines/{pipeline_id}/validate`
+- `POST /api/pipelines/{pipeline_id}/run`
+- `POST /api/pipelines`
+- `PUT /api/pipelines/{pipeline_id}`
+- `GET /api/builder/source`
+- `POST /api/builder/validate`
+- `POST /api/builder/test-step`
+- `POST /api/builder/generate`
 
 Artifact browsing uses executor-specific retrieval methods. `local` reads local filesystem artifacts directly. `slurm` currently supports local-visible artifact paths and returns a clear message when only remote cluster paths are available.
+
+### Builder + AI notes
+
+- AI draft generation endpoint (`POST /api/builder/generate`) requires `OPENAI_API_KEY`.
+- Optional model override: `OPENAI_MODEL` (default in code: `gpt-4.1-mini`).
+- Generation flow performs one automatic repair pass if the first draft fails parser/validator checks.
 
 ## Local runner behavior
 
@@ -308,4 +339,3 @@ Goal: trigger ETL when a pipeline YAML is committed, but run heavy geospatial wo
 - Status return: the Action captures the SLURM job ID and can comment on the PR or fail the workflow on non-zero exit.
 - If SSH is blocked: use a campus-hosted webhook/queue or a cron poller on HPCC to submit `sbatch` for new pipeline commits.
 - Security: use read-only deploy key, minimal privileges; avoid moving data through GitHub - compute and storage stay on HPCC.
-
