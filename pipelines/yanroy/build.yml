@@ -20,17 +20,31 @@ dirs:
 
 steps:
   - name: publish_outputs
-    script: 'echo.py message="TODO: publish YanRoy outputs to {dirs.publish_dir}"'
+    plugin: echo.py
+    args:
+      message: "TODO: publish YanRoy outputs to {dirs.publish_dir}"
     output_var: publish_manifest
 
   - name: catalog_ai_research
-    script: 'ai_dataset_research.py dataset_id="{vars.dataset_id}" specs_file="config/catalog_ai_specs.yml" output_dir=".runs/catalog_ai"'
+    plugin: ai_dataset_research.py
+    args:
+      dataset_id: "{vars.dataset_id}"
+      specs_file: "config/catalog_ai_specs.yml"
+      output_dir: ".runs/catalog_ai"
     output_var: catalog_ai
 
   - name: catalog_json_upsert
-    script: 'catalog_json_upsert.py research_file=".runs/catalog_ai/{vars.dataset_id}.research.json" catalog_json=".runs/catalog/catalog.json"'
+    plugin: catalog_json_upsert.py
+    args:
+      research_file: ".runs/catalog_ai/{vars.dataset_id}.research.json"
+      catalog_json: ".runs/catalog/catalog.json"
     output_var: catalog_json
 
   - name: catalog_yaml_sync
-    script: 'catalog_yaml_sync.py dataset_id="{vars.dataset_id}" catalog_json=".runs/catalog/catalog.json" catalog_repo="../landcore-data-catalog" overwrite_managed_fields=false'
+    plugin: catalog_yaml_sync.py
+    args:
+      dataset_id: "{vars.dataset_id}"
+      catalog_json: ".runs/catalog/catalog.json"
+      catalog_repo: "../landcore-data-catalog"
+      overwrite_managed_fields: false
     output_var: catalog_yaml

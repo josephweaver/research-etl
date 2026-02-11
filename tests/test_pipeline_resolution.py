@@ -121,3 +121,86 @@ def test_parse_pipeline_rejects_noncontiguous_parallel_group_tokens(tmp_path: Pa
     )
     with pytest.raises(PipelineError, match="out of order"):
         parse_pipeline(p)
+
+
+def test_parse_pipeline_supports_plugin_and_args_mapping(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    plugin: gdrive_download.py",
+                "    args:",
+                "      src: Data/yanroy/raw",
+                "      out: \"/tmp/out dir\"",
+                "      recursive: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    script = pipeline.steps[0].script
+    assert script.startswith("gdrive_download.py ")
+    assert "src=Data/yanroy/raw" in script
+    assert "recursive=true" in script
+    assert "'out=/tmp/out dir'" in script
+
+
+def test_parse_pipeline_supports_plugin_with_arg_list(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    plugin: echo.py",
+                "    args:",
+                "      message: hello",
+                "    arg_list:",
+                "      - pos1",
+                "      - \"pos 2\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    script = pipeline.steps[0].script
+    assert "message=hello" in script
+    assert "pos1" in script
+    assert "'pos 2'" in script
+
+
+def test_parse_pipeline_supports_script_as_token_list(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script:",
+                "      - echo.py",
+                "      - message=hello world",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    assert pipeline.steps[0].script == "echo.py 'message=hello world'"
+
+
+def test_parse_pipeline_rejects_script_and_plugin_together(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+                "    plugin: echo.py",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="both `script` and `plugin`"):
+        parse_pipeline(p)

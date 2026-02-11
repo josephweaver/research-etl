@@ -22,9 +22,11 @@ combined context of provided `global_vars` and pipeline `vars`.
 from __future__ import annotations
 
 import copy
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
+import shlex
 from typing import Any, Dict, List, Optional, Set
 
 import yaml
@@ -142,6 +144,41 @@ def _normalize_step(raw: Any, index: int) -> Dict[str, Any]:
     return raw
 
 
+def _arg_scalar_to_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+    return str(value)
+
+
+def _compose_script_from_parts(
+    *,
+    plugin: str,
+    args_map: Optional[Dict[str, Any]] = None,
+    arg_list: Optional[List[Any]] = None,
+) -> str:
+    tokens: List[str] = [str(plugin).strip()]
+    for key, raw_val in (args_map or {}).items():
+        key_text = str(key).strip()
+        if not key_text:
+            continue
+        value_text = _arg_scalar_to_text(raw_val)
+        if value_text == "":
+            continue
+        tokens.append(f"{key_text}={value_text}")
+    for item in (arg_list or []):
+        value_text = _arg_scalar_to_text(item)
+        if value_text == "":
+            continue
+        tokens.append(value_text)
+    return shlex.join(tokens)
+
+
 def parse_pipeline(
     path: Path,
     global_vars: Optional[Dict[str, Any]] = None,
@@ -221,8 +258,32 @@ def parse_pipeline(
         step_map = _normalize_step(raw, idx)
         name = step_map.get("name") or f"step_{idx}"
         script = step_map.get("script")
-        if not isinstance(script, str):
-            raise PipelineError(f"Step {idx} missing required string `script`")
+        plugin = step_map.get("plugin")
+        args_map = step_map.get("args")
+        arg_list = step_map.get("arg_list")
+        if script is not None and plugin is not None:
+            raise PipelineError(f"Step {idx} may not define both `script` and `plugin`.")
+        if script is None and plugin is None:
+            raise PipelineError(f"Step {idx} missing required `script` or `plugin`.")
+        if plugin is not None and not isinstance(plugin, str):
+            raise PipelineError(f"Step {idx} `plugin` must be a string when provided")
+        if args_map is None:
+            args_map = {}
+        if args_map is not None and not isinstance(args_map, dict):
+            raise PipelineError(f"Step {idx} `args` must be a mapping when provided")
+        if arg_list is None:
+            arg_list = []
+        if arg_list is not None and not isinstance(arg_list, list):
+            raise PipelineError(f"Step {idx} `arg_list` must be a list when provided")
+        if isinstance(script, list):
+            if not all(not isinstance(tok, (dict, list)) for tok in script):
+                raise PipelineError(f"Step {idx} `script` list entries must be scalar values")
+            script = shlex.join([str(tok) for tok in script])
+        if script is not None and not isinstance(script, str):
+            raise PipelineError(f"Step {idx} `script` must be a string or list of scalar tokens")
+        if plugin is not None:
+            script = _compose_script_from_parts(plugin=plugin, args_map=args_map, arg_list=arg_list)
+        assert isinstance(script, str)
         output_var = step_map.get("output_var")
         if output_var is not None and not isinstance(output_var, str):
             raise PipelineError(f"Step {idx} `output_var` must be a string if provided")

@@ -1,4 +1,4 @@
-basedir: ./out
+basedir: .out
 bindir: .
 logdir: "{basedir}/logs"
 datadir: "{basedir}/data"

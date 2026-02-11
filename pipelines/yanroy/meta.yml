@@ -22,25 +22,45 @@ dirs:
 
 steps:
   - name: resolve_download_catalog_input
-    script: 'catalog_resolve_uri.py dataset_id="raw.yanroy_download_v1" catalog_json=".runs/catalog/catalog.json" catalog_repo="../landcore-data-catalog"'
+    plugin: catalog_resolve_uri.py
+    args:
+      dataset_id: "raw.yanroy_download_v1"
+      catalog_json: ".runs/catalog/catalog.json"
+      catalog_repo: "../landcore-data-catalog"
     output_var: raw_input
 
   - name: scan_raw_metadata
-    script: 'echo.py message="TODO: scan raw files from {dirs.raw_cache} and write metadata to {dirs.meta_cache}"'
+    plugin: echo.py
+    args:
+      message: "TODO: scan raw files from {dirs.raw_cache} and write metadata to {dirs.meta_cache}"
     output_var: raw_meta
 
   - name: extract_field_meta
-    script: 'echo.py message="TODO: extract field-level metadata into {dirs.tilemeta_work}"'
+    plugin: echo.py
+    args:
+      message: "TODO: extract field-level metadata into {dirs.tilemeta_work}"
     output_var: field_meta
 
   - name: catalog_ai_research
-    script: 'ai_dataset_research.py dataset_id="{vars.dataset_id}" specs_file="config/catalog_ai_specs.yml" output_dir=".runs/catalog_ai"'
+    plugin: ai_dataset_research.py
+    args:
+      dataset_id: "{vars.dataset_id}"
+      specs_file: "config/catalog_ai_specs.yml"
+      output_dir: ".runs/catalog_ai"
     output_var: catalog_ai
 
   - name: catalog_json_upsert
-    script: 'catalog_json_upsert.py research_file=".runs/catalog_ai/{vars.dataset_id}.research.json" catalog_json=".runs/catalog/catalog.json"'
+    plugin: catalog_json_upsert.py
+    args:
+      research_file: ".runs/catalog_ai/{vars.dataset_id}.research.json"
+      catalog_json: ".runs/catalog/catalog.json"
     output_var: catalog_json
 
   - name: catalog_yaml_sync
-    script: 'catalog_yaml_sync.py dataset_id="{vars.dataset_id}" catalog_json=".runs/catalog/catalog.json" catalog_repo="../landcore-data-catalog" overwrite_managed_fields=false'
+    plugin: catalog_yaml_sync.py
+    args:
+      dataset_id: "{vars.dataset_id}"
+      catalog_json: ".runs/catalog/catalog.json"
+      catalog_repo: "../landcore-data-catalog"
+      overwrite_managed_fields: false
     output_var: catalog_yaml

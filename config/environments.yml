@@ -2,7 +2,7 @@ environments:
   local:
     executor: local
     modules: [ "Python/3.11.3-GCCcore-12.3.0" ]
-    rclone_bin: "rclone"
+    rclone_bin: "bin/rclone"
     basedir: "{global.basedir}"
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
