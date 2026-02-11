@@ -1,0 +1,50 @@
+default_publish_location_type: gdrive
+
+classes:
+  published:
+    require_canonical: true
+    canonical_location_type: gdrive
+    allowed_location_types: [gdrive]
+    enforce_delete: false
+  cache:
+    allowed_location_types: [local_cache, hpcc_cache]
+    retention_days: 30
+    enforce_delete: true
+  tmp:
+    allowed_location_types: [local_tmp, hpcc_tmp]
+    retention_days: 7
+    enforce_delete: true
+  run_log:
+    allowed_location_types: [run_artifact]
+    retention_days: 60
+    enforce_delete: false
+  diagnostic:
+    allowed_location_types: [run_artifact]
+    retention_days: 90
+    enforce_delete: false
+
+locations:
+  gdrive:
+    kind: gdrive
+    root_uri: gdrive://data/etl
+    description: canonical published dataset location
+  local_cache:
+    kind: filesystem
+    root_path: C:/Joe Local Only/College/Research/etl/.runs/cache
+    description: local cache mirror
+  hpcc_cache:
+    kind: filesystem
+    root_path: /mnt/scratch/weave151/cache
+    description: hpcc cache mirror
+  hpcc_tmp:
+    kind: filesystem
+    root_path: /mnt/scratch/weave151/tmp
+    description: ephemeral hpcc scratch
+  local_tmp:
+    kind: filesystem
+    root_path: C:/Joe Local Only/College/Research/etl/.runs/tmp
+    description: ephemeral local temporary location
+  run_artifact:
+    kind: filesystem
+    root_path: C:/Joe Local Only/College/Research/etl/.runs
+    description: run artifact root (logs, diagnostics, step outputs)

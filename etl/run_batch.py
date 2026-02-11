@@ -198,6 +198,9 @@ def main(argv: list[str] | None = None) -> int:
                     outputs=att.get("outputs", step_res.outputs),
                     started_at=att.get("started_at", batch_started_at),
                     ended_at=att.get("ended_at", batch_ended_at),
+                    pipeline=args.pipeline,
+                    artifact_dir=str(args.workdir),
+                    executor="slurm",
                 )
         elif step_res.attempt_no > 0:
             upsert_step_attempt(
@@ -211,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
                 outputs=step_res.outputs,
                 started_at=batch_started_at,
                 ended_at=batch_ended_at,
+                pipeline=args.pipeline,
+                artifact_dir=str(args.workdir),
+                executor="slurm",
             )
 
     # merge outputs into ctx (simple overwrite)

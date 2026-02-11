@@ -94,3 +94,24 @@ def test_upsert_step_attempt_updates_summary_and_attempt_tables(monkeypatch) -> 
     sql_text = "\n".join(sql for sql, _ in fake_conn.executed)
     assert "INSERT INTO etl_run_steps" in sql_text
     assert "INSERT INTO etl_run_step_attempts" in sql_text
+
+
+def test_record_run_triggers_artifact_registration(monkeypatch, tmp_path: Path) -> None:
+    called = {}
+    monkeypatch.setattr(tracking, "_upsert_run_db", lambda *a, **k: None)
+
+    def _register(**kwargs):
+        called.update(kwargs)
+        return 1
+
+    monkeypatch.setattr(tracking, "register_run_artifacts", _register)
+    step = Step(name="echo", script="echo.py")
+    result = RunResult(
+        run_id="run_003",
+        steps=[StepResult(step=step, success=True, outputs={"path": str(tmp_path / "x.txt")})],
+        artifact_dir=str(tmp_path / ".runs" / "r3"),
+    )
+    store = tmp_path / "runs.jsonl"
+    tracking.record_run(result, "pipelines/sample.yml", store, executor="local", artifact_dir=result.artifact_dir)
+    assert called["run_id"] == "run_003"
+    assert called["pipeline"] == "pipelines/sample.yml"

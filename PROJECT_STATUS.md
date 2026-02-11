@@ -1,4 +1,4 @@
-﻿# Project Status (2026-02-10)
+﻿# Project Status (2026-02-11)
 
 ## Current state
 - CLI/package baseline is in place (`pyproject.toml`, `etl` entrypoint, editable install flow, GitHub Actions tests).
@@ -14,6 +14,12 @@
   - `pipe.*` + flat pipeline overrides
 - SLURM batch execution uses `etl/run_batch.py` and emits event-driven status transitions (`batch_started`, `batch_completed`, `batch_failed`, `run_completed`).
 - DB migration bootstrap is active (`etl/db.py`, `db/ddl/*.sql`) with checksum/version enforcement.
+- Artifact policy/registry baseline is active:
+  - metadata-only artifact tables (`etl_artifacts`, `etl_artifact_locations`)
+  - policy config support via `config/artifacts.yml` (starter: `config/artifacts.example.yml`)
+  - CLI enforcement command: `etl artifacts enforce [--dry-run]`
+  - auto-registration from run artifacts and step outputs (local + slurm run_batch), including explicit publish descriptors via `_artifacts`.
+  - root-bound registration checks (`locations.*.root_uri` / `root_path`) and class `allowed_location_types`, with violations recorded as `policy_violation`.
 - Tracking is persisted to JSONL and DB (when `ETL_DATABASE_URL` is set):
   - `etl_runs`
   - `etl_run_steps`
@@ -55,7 +61,7 @@
   - `PUT /api/pipelines/{pipeline_id}`
 
 ## Test status
-- Current local run: `69 passed` (`python -m pytest -q`).
+- Current local run: `86 passed` (`python -m pytest -q`).
 - Coverage includes:
   - DB migration bootstrap
   - tracking write paths
@@ -73,6 +79,7 @@
 - Builder persistence is file-backed; DB-backed draft/version history is not implemented.
 - AI draft generation currently uses a single repair pass and no schema-constrained decoding.
 - Config/pipeline/plugin catalog tables are not yet populated by runtime snapshots.
+- Artifact class/location inference is heuristic when plugins do not emit explicit `_artifacts` descriptors.
 
 ## Suggested next steps
 1) Add SSH-backed remote artifact retrieval for SLURM paths in web API.
@@ -91,6 +98,7 @@
 - List runs: `etl runs list`
 - Show run: `etl runs show <run_id>`
 - Latest diagnostics: `etl diagnostics latest --show`
+- Enforce artifact policy (dry-run): `etl artifacts enforce --dry-run --config config/artifacts.yml`
 - Start web UI: `etl web --host 127.0.0.1 --port 8000 --reload`
 - Open builder: `http://127.0.0.1:8000/pipelines/new`
 - Test suite: `python -m pytest -q`

@@ -19,6 +19,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Set
 
 from etl import __version__
+from etl.artifacts import (
+    ArtifactPolicyError,
+    enforce_artifact_policies,
+    load_artifact_policy,
+    resolve_artifact_policy_path,
+)
 from etl.config import load_global_config, ConfigError
 from etl.db import ensure_database_schema, DatabaseError
 from etl.diagnostics import write_error_report, find_latest_error_report
@@ -454,6 +460,59 @@ def cmd_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_artifacts_enforce(args: argparse.Namespace) -> int:
+    try:
+        policy_path = resolve_artifact_policy_path(Path(args.config) if args.config else None)
+    except ArtifactPolicyError as exc:
+        print(f"Artifact policy config error: {exc}", file=sys.stderr)
+        return 1
+    if not policy_path:
+        print(
+            "Artifact policy config error: no policy file found. "
+            "Create config/artifacts.yml (see config/artifacts.example.yml).",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        policy = load_artifact_policy(policy_path)
+    except ArtifactPolicyError as exc:
+        print(f"Artifact policy config error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        summary = enforce_artifact_policies(
+            config=policy,
+            dry_run=bool(args.dry_run),
+            limit=int(args.limit),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _emit_error_with_report(f"Artifact enforcement failed: {exc}", exc, args)
+        return 1
+
+    print(
+        "Artifact policy summary: "
+        f"inspected_artifacts={summary.get('inspected_artifacts', 0)} "
+        f"inspected_locations={summary.get('inspected_locations', 0)} "
+        f"missing_canonical={summary.get('violations_missing_canonical', 0)} "
+        f"policy_violations={summary.get('violations_policy', 0)} "
+        f"deleted={summary.get('deleted_files', 0)} "
+        f"would_delete={summary.get('would_delete_files', 0)} "
+        f"missing_marked={summary.get('missing_files_marked', 0)} "
+        f"errors={summary.get('delete_errors', 0)}"
+    )
+
+    violations = summary.get("violations") or []
+    if violations:
+        print("Sample violations:")
+        for item in violations[:10]:
+            print(
+                f"- {item.get('artifact_key')} ({item.get('artifact_class')}): "
+                f"{item.get('issue')} expected={item.get('expected_location_type')}"
+            )
+
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="etl", description="ETL pipeline runner")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -533,6 +592,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_web.add_argument("--port", type=int, default=8000, help="Bind port")
     p_web.add_argument("--reload", action="store_true", help="Auto-reload on code changes")
     p_web.set_defaults(func=cmd_web)
+
+    p_artifacts = subparsers.add_parser("artifacts", help="Artifact policy commands")
+    artifacts_sub = p_artifacts.add_subparsers(dest="artifacts_command", required=True)
+
+    p_artifacts_enforce = artifacts_sub.add_parser("enforce", help="Enforce artifact retention/canonical policies")
+    p_artifacts_enforce.add_argument(
+        "--config",
+        default=None,
+        help="Path to artifact policy YAML (default: config/artifacts.yml)",
+    )
+    p_artifacts_enforce.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Evaluate policy actions without deleting files or updating location state.",
+    )
+    p_artifacts_enforce.add_argument(
+        "--limit",
+        type=int,
+        default=2000,
+        help="Max number of artifact records to inspect per run.",
+    )
+    p_artifacts_enforce.set_defaults(func=cmd_artifacts_enforce)
 
     return parser
 

@@ -43,6 +43,14 @@ Each plugin is a Python module under `plugins/` that exposes:
 - `run(args, ctx) -> outputs`: `args` are resolved params/inputs; `ctx` provides `log`, `workdir`, `run_id`, `temp_path()`.
 - Optional `validate(args, outputs, ctx) -> ValidationResult`: return/raise failures that block downstream steps.
 - Optional `cleanup(ctx)`: best-effort teardown for temp files or remote handles.
+- Optional artifact descriptors in outputs: include `_artifacts` (or `artifacts`) as a list of mappings to explicitly register artifact metadata:
+  - `uri` (or `path`/`location_uri`)
+  - `class` (`published`, `cache`, `tmp`, `run_log`, etc.)
+  - `location_type` (`gdrive`, `local_cache`, `local_tmp`, `run_artifact`, etc.)
+  - `canonical`/`is_canonical` (bool)
+  - optional `metadata` (object)
+
+If descriptors are not provided, ResearchETL infers artifact paths from step outputs heuristically and auto-registers them.
 
 Example skeleton:
 ```python
@@ -131,6 +139,19 @@ steps:
 
 A YAML-powered interface defining global variables that all pipelines/scripts share, such as the bin, data, and log directories - like a system environment key/value list.
 
+## Artifact policy configuration
+
+Use a separate policy config for artifact governance (`config/artifacts.yml`) rather than embedding policy in execution environment settings.
+
+- Copy starter policy from `config/artifacts.example.yml`.
+- Policy model:
+  - `classes`: retention/canonical requirements plus optional `allowed_location_types`.
+  - `locations`: storage location types (for example `gdrive`, `local_cache`, `hpcc_cache`) with `kind` and optional roots:
+    - `root_uri` for non-filesystem locations (for example `gdrive://data/etl`)
+    - `root_path` for filesystem locations (absolute path required)
+- DB stores metadata only (artifact IDs, class, checksum, URIs, provenance fields), not file blobs.
+- Registration enforces class/location/root bounds. Out-of-bounds registrations are stored as `policy_violation` rows in `etl_artifact_locations` for audit/remediation.
+
 ## Pipelines definition
 
 An interface where we create a folder structure and add/edit pipelines to define sequences of scripts to run in sequence or parallel.  
@@ -200,6 +221,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 - `etl runs show <run_id> [--store ...]` â€“ show details for a specific run.
 - `etl diagnostics latest [--workdir .runs] [--show]` - print latest diagnostic report path; optional `--show` prints JSON contents.
 - `etl web [--host 127.0.0.1 --port 8000 --reload]` - run minimal FastAPI UI/API for runs and details.
+- `etl artifacts enforce [--config config/artifacts.yml --dry-run --limit 2000]` - enforce artifact policies (canonical-location checks + retention cleanup for filesystem-backed locations).
 
 ### Error reports
 

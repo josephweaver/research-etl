@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import psycopg
 
+from .artifacts import register_run_artifacts, register_step_artifacts
 from .db import get_database_url
 from .runner import RunResult, StepResult
 
@@ -349,6 +350,9 @@ def upsert_step_attempt(
     outputs: Optional[Dict[str, Any]] = None,
     started_at: Optional[str] = None,
     ended_at: Optional[str] = None,
+    pipeline: Optional[str] = None,
+    artifact_dir: Optional[str] = None,
+    executor: Optional[str] = None,
 ) -> None:
     """
     Upsert a single step attempt row for retry-aware tracking.
@@ -416,6 +420,18 @@ def upsert_step_attempt(
                 ),
             )
         conn.commit()
+    if success and outputs and pipeline:
+        try:
+            register_step_artifacts(
+                run_id=run_id,
+                pipeline=pipeline,
+                step_name=step_name,
+                outputs=outputs,
+                executor=executor,
+            )
+        except Exception:
+            # Artifact registration is best-effort and should not fail execution tracking.
+            pass
 
 
 def record_run(
@@ -443,6 +459,17 @@ def record_run(
         f.write(json.dumps(asdict(rec)) + "\n")
 
     _upsert_run_db(rec, executor=executor, artifact_dir=artifact_dir, provenance=provenance)
+    try:
+        register_run_artifacts(
+            run_id=rec.run_id,
+            pipeline=rec.pipeline,
+            artifact_dir=artifact_dir or getattr(run_result, "artifact_dir", None),
+            steps=rec.steps,
+            executor=executor,
+        )
+    except Exception:
+        # Artifact registration is best-effort and should not fail run persistence.
+        pass
     return rec
 
 
