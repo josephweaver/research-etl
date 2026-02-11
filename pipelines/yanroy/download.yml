@@ -37,6 +37,8 @@ steps:
       dataset_id: "{vars.dataset_id}"
       specs_file: "config/catalog_ai_specs.yml"
       output_dir: ".runs/catalog_ai"
+      supplemental_urls: 
+        - https://drive.google.com/file/d/1u7S3gOImB1fUvoMAczUznz2pUPWuRmhy/view?usp=drive_link
     output_var: catalog_ai
 
   - name: catalog_json_upsert
