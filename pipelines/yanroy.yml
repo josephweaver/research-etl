@@ -1,47 +1,10 @@
+project_id: land_core
+shared_with_projects:
+  - gee_lee
+
 requires_pipelines:
-  - pipelines/yanroy_base.yml
-
-vars:
-  pipe:
-    name: yanroy
-    datadir: "{env.datadir}/{pipe.name}"
-    cache_dir: "{pipe.datadir}/cache"
-    work_dir: "{pipe.datadir}/work"
-    publish_dir: "{pipe.datadir}/publish"
-    gdrive:
-      src: "Data/yanroy/raw"
-      glob: "*"
-      shared_drive_name: "Land Core Risk Model Development"
-      # Shared drive ID is optional; if set it overrides shared_drive_name in the plugin.
-      shared_drive_id: ""
-  job:
-    run_tag: "{env.name}"
-    states_file: "{pipe.cache_dir}/meta/states.of.interest.txt"
-    tiles_file: "{pipe.cache_dir}/meta/tiles.of.interest.csv"
-
-dirs:
-  raw_cache: "{pipe.cache_dir}/raw"
-  meta_cache: "{pipe.cache_dir}/meta"
-  tile_5070_cache: "{pipe.cache_dir}/5070"
-  tilemeta_work: "{pipe.work_dir}/tilemeta"
-  publish_dir: "{pipe.publish_dir}/{job.run_tag}"
+  - pipelines/yanroy/build.yml
 
 steps:
-  - name: scan_raw_metadata
-    script: 'echo.py message="TODO: scan_raw_metadata plugin -> {dirs.meta_cache}"'
-    when: "False"
-    output_var: raw_meta
-
-  - name: reproject_tiles_5070
-    script: 'echo.py message="TODO: reproject_tile plugin -> {dirs.tile_5070_cache}"'
-    when: "False"
-    output_var: reproj
-
-  - name: extract_field_meta
-    script: 'echo.py message="TODO: extract_field_meta plugin -> {dirs.tilemeta_work}"'
-    when: "False"
-    output_var: field_meta
-
-  - name: publish_outputs
-    script: 'echo.py message="TODO: publish outputs to {dirs.publish_dir}"'
-    when: "False"
+  - name: yanroy_subfolder_entrypoint
+    script: 'echo.py message="YanRoy root wrapper complete; use pipelines/yanroy/*.yml for modular jobs."'

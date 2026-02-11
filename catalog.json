@@ -1,0 +1,43 @@
+{
+  "datasets": {
+    "serve.a_v1": {
+      "ai_meta": {
+        "source_research_file": "C:/Users/Josep/AppData/Local/Temp/pytest-of-Ninjo/pytest-120/test_catalog_json_upsert_glob_0/ai/serve.a_v1.research.json",
+        "source_run_id": null,
+        "source_step": null,
+        "updated_at": "2026-02-11T18:06:28+00:00"
+      },
+      "auto": {
+        "assumptions": [],
+        "description": "d",
+        "how_to_use_notes": "",
+        "lineage_upstream": [],
+        "quality_known_issues": [],
+        "quality_validation": [],
+        "tags": [],
+        "title": "serve.a_v1"
+      },
+      "dataset_id": "serve.a_v1"
+    },
+    "serve.b_v1": {
+      "ai_meta": {
+        "source_research_file": "C:/Users/Josep/AppData/Local/Temp/pytest-of-Ninjo/pytest-120/test_catalog_json_upsert_glob_0/ai/serve.b_v1.research.json",
+        "source_run_id": null,
+        "source_step": null,
+        "updated_at": "2026-02-11T18:06:28+00:00"
+      },
+      "auto": {
+        "assumptions": [],
+        "description": "d",
+        "how_to_use_notes": "",
+        "lineage_upstream": [],
+        "quality_known_issues": [],
+        "quality_validation": [],
+        "tags": [],
+        "title": "serve.b_v1"
+      },
+      "dataset_id": "serve.b_v1"
+    }
+  },
+  "schema_version": 1
+}

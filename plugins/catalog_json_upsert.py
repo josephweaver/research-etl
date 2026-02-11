@@ -51,15 +51,18 @@ def _collect_research_files(args: Dict[str, Any], ctx) -> List[Path]:
     one = str(args.get("research_file") or "").strip()
     if one:
         p = Path(one).expanduser()
-        if not p.is_absolute():
-            p = ctx.workdir / p
+        if not p.is_absolute() and not p.exists():
+            p2 = ctx.workdir / p
+            if p2.exists():
+                p = p2
         if not p.exists():
             raise FileNotFoundError(f"research_file not found: {p}")
         files.append(p)
     pattern = str(args.get("research_glob") or "").strip()
     if pattern:
-        glob_root = ctx.workdir
-        matches = sorted(glob_root.glob(pattern))
+        matches = sorted(Path(".").glob(pattern))
+        if not matches:
+            matches = sorted(ctx.workdir.glob(pattern))
         files.extend([m for m in matches if m.is_file() and m.suffix.lower() == ".json"])
     dedup: Dict[str, Path] = {}
     for p in files:
@@ -85,8 +88,6 @@ def run(args, ctx):
     inputs = _collect_research_files(args, ctx)
 
     catalog_path = Path(str(args.get("catalog_json") or "catalog.json")).expanduser()
-    if not catalog_path.is_absolute():
-        catalog_path = ctx.workdir / catalog_path
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
 
     catalog: Dict[str, Any]

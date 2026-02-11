@@ -76,8 +76,40 @@ steps:
 ```
 
 The plugin writes one JSON file per dataset and returns an explicit `_artifacts` descriptor so outputs are auto-registered.
-`specs_file` can optionally provide per-dataset defaults (`title`, `data_class`, `artifact_uri`, `notes`, file hints) keyed by `dataset_id`.
+`specs_file` can optionally provide per-dataset defaults (`title`, `data_class`, `artifact_uri`, `notes`, supplemental URLs, file hints) keyed by `dataset_id`.
 See `config/catalog_ai_specs.example.yml` for a starter format.
+
+### Catalog merge/sync plugins
+
+Use these two plugins after AI research generation:
+
+- `plugins/catalog_json_upsert.py`
+  - Merges one or more `*.research.json` files into local canonical `catalog.json`.
+  - Upserts by `dataset_id` (from payload field or filename stem like `serve.demo_v1.research.json`).
+- `plugins/catalog_yaml_sync.py`
+  - Reads `catalog.json` and updates dataset YAML docs in a catalog repo (e.g., `../landcore-data-catalog`).
+  - Creates missing YAML files with defaults and fills managed fields from `catalog.json`.
+  - Preserves existing manual content when `overwrite_managed_fields=false`.
+
+Example chained pipeline:
+
+```yaml
+vars:
+  datasets:
+    - serve.demo_a_v1
+    - serve.demo_b_v1
+steps:
+  - name: ai_catalog_research
+    foreach: datasets
+    parallel_with: ai_research
+    script: 'ai_dataset_research.py dataset_id="{item}" specs_file="config/catalog_ai_specs.yml" output_dir=".runs/catalog_ai"'
+
+  - name: upsert_catalog_json
+    script: 'catalog_json_upsert.py research_glob=".runs/catalog_ai/*.research.json" catalog_json=".runs/catalog/catalog.json"'
+
+  - name: sync_catalog_yml
+    script: 'catalog_yaml_sync.py catalog_json=".runs/catalog/catalog.json" catalog_repo="../landcore-data-catalog" overwrite_managed_fields=false'
+```
 
 Example skeleton:
 ```python
@@ -251,7 +283,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 - `etl diagnostics latest [--workdir .runs] [--show]` - print latest diagnostic report path; optional `--show` prints JSON contents.
 - `etl web [--host 127.0.0.1 --port 8000 --reload]` - run minimal FastAPI UI/API for runs and details.
 - `etl artifacts enforce [--config config/artifacts.yml --dry-run --limit 2000]` - enforce artifact policies (canonical-location checks + retention cleanup for filesystem-backed locations).
-- `etl ai research --dataset-id <id> [--data-class SERVE --title ... --artifact-uri ... --sample-file path --schema-file path --notes ... --model ... --output path]` - ask ChatGPT to draft dataset explanations/usage/quality notes as structured JSON for catalog docs.
+- `etl ai research --dataset-id <id> [--data-class SERVE --title ... --artifact-uri ... --sample-file path --schema-file path --supplemental-url <url> --supplemental-urls-file <txt> --notes ... --model ... --output path]` - ask ChatGPT to draft dataset explanations/usage/quality notes as structured JSON for catalog docs.
 
 ### Error reports
 

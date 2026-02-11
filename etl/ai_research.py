@@ -2,12 +2,71 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Optional
 from urllib import error, request
 
 
 class AIResearchError(RuntimeError):
     """Raised when AI dataset research generation fails."""
+
+
+def _normalize_supplemental_urls(value: Optional[list[str]]) -> list[str]:
+    if not value:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        url = str(raw or "").strip()
+        if not url:
+            continue
+        lowered = url.lower()
+        if not (lowered.startswith("http://") or lowered.startswith("https://")):
+            continue
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        out.append(url)
+    return out
+
+
+def _strip_html(html: str) -> str:
+    text = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", html)
+    text = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", text)
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _fetch_supplemental_url_contexts(urls: list[str], *, max_urls: int = 5, max_chars_per_url: int = 6000) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for url in urls[:max_urls]:
+        req = request.Request(
+            url,
+            headers={
+                "User-Agent": "research-etl/ai-research",
+                "Accept": "text/html, text/plain, application/json;q=0.9, */*;q=0.1",
+            },
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=20) as resp:
+                raw = resp.read()
+                content_type = str(getattr(resp, "headers", {}).get("Content-Type", "")).lower()
+        except Exception as exc:  # noqa: BLE001
+            out.append({"url": url, "error": f"fetch_failed: {exc}"})
+            continue
+
+        decoded = raw.decode("utf-8", errors="replace")
+        if "html" in content_type or "<html" in decoded.lower():
+            text = _strip_html(decoded)
+        else:
+            text = decoded.strip()
+        if not text:
+            out.append({"url": url, "error": "empty_content"})
+            continue
+        out.append({"url": url, "excerpt": text[:max_chars_per_url]})
+    return out
 
 
 def _extract_text(payload: dict[str, Any]) -> str:
@@ -85,6 +144,7 @@ def generate_dataset_research(
     sample_text: Optional[str] = None,
     schema_text: Optional[str] = None,
     notes: Optional[str] = None,
+    supplemental_urls: Optional[list[str]] = None,
     model: Optional[str] = None,
 ) -> dict[str, Any]:
     api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
@@ -94,10 +154,14 @@ def generate_dataset_research(
     if not model_name:
         raise AIResearchError("OpenAI model name is empty.")
 
+    supplemental_list = _normalize_supplemental_urls(supplemental_urls)
+    supplemental_context = _fetch_supplemental_url_contexts(supplemental_list) if supplemental_list else []
+
     prompt = (
         "You are preparing structured dataset documentation for a data catalog. "
         "Respond with valid JSON only. Avoid markdown. "
         "If uncertain, include assumptions and avoid hallucinating concrete values. "
+        "When supplemental URL excerpts are provided, use them as source material and prefer them over guesses. "
         "Return keys: title, description, how_to_use_notes, tags, quality_validation, "
         "quality_known_issues, assumptions, lineage_upstream."
     )
@@ -109,6 +173,7 @@ def generate_dataset_research(
         "notes": notes or "",
         "schema_excerpt": (schema_text or "")[:12000],
         "sample_excerpt": (sample_text or "")[:12000],
+        "supplemental_sources": supplemental_context,
     }
     body = {
         "model": model_name,

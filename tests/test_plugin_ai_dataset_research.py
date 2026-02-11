@@ -54,6 +54,9 @@ def test_ai_dataset_research_plugin_uses_specs_file(tmp_path: Path) -> None:
                 "    data_class: SERVE",
                 "    title: Demo",
                 "    notes: notes from spec",
+                "    supplemental_urls:",
+                "      - https://example.com/spec-a",
+                "      - https://example.com/spec-b",
             ]
         ),
         encoding="utf-8",
@@ -85,4 +88,4 @@ def test_ai_dataset_research_plugin_uses_specs_file(tmp_path: Path) -> None:
     assert captured["data_class"] == "SERVE"
     assert captured["title"] == "Demo"
     assert captured["notes"] == "notes from spec"
-
+    assert captured["supplemental_urls"] == ["https://example.com/spec-a", "https://example.com/spec-b"]

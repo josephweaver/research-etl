@@ -544,6 +544,22 @@ def cmd_ai_research(args: argparse.Namespace) -> int:
             return 1
         schema_text = schema_path.read_text(encoding="utf-8", errors="replace")
 
+    supplemental_urls: list[str] = []
+    for url in list(args.supplemental_url or []):
+        text = str(url or "").strip()
+        if text:
+            supplemental_urls.append(text)
+    if args.supplemental_urls_file:
+        urls_path = Path(args.supplemental_urls_file)
+        if not urls_path.exists():
+            print(f"AI research error: supplemental URLs file not found: {urls_path}", file=sys.stderr)
+            return 1
+        for line in urls_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            text = line.strip()
+            if not text or text.startswith("#"):
+                continue
+            supplemental_urls.append(text)
+
     try:
         payload = generate_dataset_research(
             dataset_id=dataset_id,
@@ -553,6 +569,7 @@ def cmd_ai_research(args: argparse.Namespace) -> int:
             sample_text=sample_text,
             schema_text=schema_text,
             notes=args.notes,
+            supplemental_urls=supplemental_urls or None,
             model=args.model,
         )
     except AIResearchError as exc:
@@ -684,6 +701,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_ai_research.add_argument("--artifact-uri", default=None, help="Optional storage URI/path hint")
     p_ai_research.add_argument("--sample-file", default=None, help="Optional sample data excerpt file")
     p_ai_research.add_argument("--schema-file", default=None, help="Optional schema/column description file")
+    p_ai_research.add_argument(
+        "--supplemental-url",
+        action="append",
+        default=[],
+        help="Optional URL to fetch and include as supplemental research context (repeatable).",
+    )
+    p_ai_research.add_argument(
+        "--supplemental-urls-file",
+        default=None,
+        help="Optional text file with one supplemental URL per line (# comments allowed).",
+    )
     p_ai_research.add_argument("--notes", default=None, help="Optional analyst notes/instructions")
     p_ai_research.add_argument("--model", default=None, help="Optional OpenAI model override")
     p_ai_research.add_argument("--output", default=None, help="Write JSON output to file path instead of stdout")

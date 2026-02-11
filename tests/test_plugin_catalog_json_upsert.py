@@ -60,7 +60,6 @@ def test_catalog_json_upsert_glob_updates_multiple(tmp_path: Path) -> None:
         _ctx(tmp_path),
     )
     assert outputs["updated_count"] == 2
-    catalog = json.loads((tmp_path / "catalog.json").read_text(encoding="utf-8"))
+    catalog = json.loads(Path(outputs["catalog_json"]).read_text(encoding="utf-8"))
     assert "serve.a_v1" in catalog["datasets"]
     assert "serve.b_v1" in catalog["datasets"]
-

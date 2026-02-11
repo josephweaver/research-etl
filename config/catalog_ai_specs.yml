@@ -1,0 +1,32 @@
+datasets:
+  raw.yanroy_download_v1:
+    data_class: RAW
+    title: YanRoy Raw Download (v1)
+    artifact_uri: gdrive://landcore/yanroy/raw
+    notes: >
+      Source staging dataset for the YanRoy workflow. Document source provenance,
+      refresh cadence, and known ingest caveats.
+
+  stage.yanroy_5070_v1:
+    data_class: STAGE
+    title: YanRoy Reprojected 5070 Tiles (v1)
+    artifact_uri: gdrive://landcore/yanroy/5070
+    notes: >
+      Intermediate projected raster/tile outputs in EPSG:5070 used by downstream
+      analysis and publication steps.
+
+  stage.yanroy_meta_v1:
+    data_class: STAGE
+    title: YanRoy Field Metadata (v1)
+    artifact_uri: gdrive://landcore/yanroy/meta
+    notes: >
+      Field-level metadata extracted from staged YanRoy inputs. Include assumptions
+      and quality limitations for metadata derivation.
+
+  serve.yanroy_publish_v1:
+    data_class: SERVE
+    title: YanRoy Published Outputs (v1)
+    artifact_uri: gdrive://landcore/yanroy/publish
+    notes: >
+      Final published YanRoy deliverable dataset intended for downstream consumers.
+      Emphasize interpretation and usage guidance.

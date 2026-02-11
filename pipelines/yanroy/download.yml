@@ -1,0 +1,36 @@
+project_id: land_core
+shared_with_projects:
+  - gee_lee
+
+vars:
+  dataset_id: "raw.yanroy_download_v1"
+  pipe:
+    name: yanroy
+    datadir: "{env.datadir}/{pipe.name}"
+    cache_dir: "{pipe.datadir}/cache"
+    gdrive:
+      src: "Data/yanroy/raw"
+      glob: "*"
+      shared_drive_name: "Land Core Risk Model Development"
+      # Shared drive ID is optional; if set it overrides shared_drive_name in the plugin.
+      shared_drive_id: ""
+
+dirs:
+  raw_cache: "{pipe.cache_dir}/raw"
+
+steps:
+  - name: stage_raw_from_gdrive
+    script: 'gdrive_download.py src="{pipe.gdrive.src}" out="{dirs.raw_cache}" glob="{pipe.gdrive.glob}" recursive=true shared_drive="{pipe.gdrive.shared_drive_name}" shared_drive_id="{pipe.gdrive.shared_drive_id}"'
+    output_var: staged_raw
+
+  - name: catalog_ai_research
+    script: 'ai_dataset_research.py dataset_id="{vars.dataset_id}" specs_file="config/catalog_ai_specs.yml" output_dir=".runs/catalog_ai"'
+    output_var: catalog_ai
+
+  - name: catalog_json_upsert
+    script: 'catalog_json_upsert.py research_file=".runs/catalog_ai/{vars.dataset_id}.research.json" catalog_json=".runs/catalog/catalog.json"'
+    output_var: catalog_json
+
+  - name: catalog_yaml_sync
+    script: 'catalog_yaml_sync.py dataset_id="{vars.dataset_id}" catalog_json=".runs/catalog/catalog.json" catalog_repo="../landcore-data-catalog" overwrite_managed_fields=false'
+    output_var: catalog_yaml

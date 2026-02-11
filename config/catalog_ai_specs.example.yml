@@ -6,6 +6,8 @@ datasets:
     notes: >
       Focus on web-safe usage guidance and practical query patterns.
       Be explicit about assumptions.
+    supplemental_urls:
+      - https://example.org/project-docs/demo-a
     # Optional local text files used to ground the AI response:
     # sample_file: .runs/samples/demo_a_rows.txt
     # schema_file: .runs/schemas/demo_a_schema.txt
@@ -16,3 +18,5 @@ datasets:
     artifact_uri: gdrive://data/etl/demo/b
     notes: >
       Emphasize model-output caveats and downstream interpretation limits.
+    # Optional file with one URL per line:
+    # supplemental_urls_file: config/demo_b_research_urls.txt

@@ -161,14 +161,18 @@ def _yaml_path_for(repo_root: Path, dataset_id: str, data_class: str) -> Path:
 
 def run(args, ctx):
     catalog_path = Path(str(args.get("catalog_json") or "catalog.json")).expanduser()
-    if not catalog_path.is_absolute():
-        catalog_path = ctx.workdir / catalog_path
+    if not catalog_path.is_absolute() and not catalog_path.exists():
+        p2 = ctx.workdir / catalog_path
+        if p2.exists():
+            catalog_path = p2
     if not catalog_path.exists():
         raise FileNotFoundError(f"catalog_json not found: {catalog_path}")
 
     repo_root = Path(str(args.get("catalog_repo") or "../landcore-data-catalog")).expanduser()
-    if not repo_root.is_absolute():
-        repo_root = ctx.workdir / repo_root
+    if not repo_root.is_absolute() and not repo_root.exists():
+        p2 = ctx.workdir / repo_root
+        if p2.exists():
+            repo_root = p2
     if not repo_root.exists():
         raise FileNotFoundError(f"catalog_repo not found: {repo_root}")
 

@@ -22,6 +22,8 @@ meta = {
         "artifact_uri": {"type": "str", "default": ""},
         "sample_file": {"type": "str", "default": ""},
         "schema_file": {"type": "str", "default": ""},
+        "supplemental_urls": {"type": "str", "default": ""},
+        "supplemental_urls_file": {"type": "str", "default": ""},
         "notes": {"type": "str", "default": ""},
         "model": {"type": "str", "default": ""},
         "output_dir": {"type": "str", "default": ""},
@@ -72,6 +74,36 @@ def _resolve_file_path(output_dir: str, output_file: str, dataset_id: str, ctx) 
     return base / f"{safe_id}.research.json"
 
 
+def _read_urls_inline(raw: str) -> list[str]:
+    text = (raw or "").strip()
+    if not text:
+        return []
+    # Support either comma-separated or pipe-separated values.
+    chunks = text.replace("|", ",").split(",")
+    out: list[str] = []
+    for chunk in chunks:
+        item = chunk.strip()
+        if item:
+            out.append(item)
+    return out
+
+
+def _read_urls_file(path_text: str) -> list[str]:
+    raw = (path_text or "").strip()
+    if not raw:
+        return []
+    p = Path(raw).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"supplemental_urls_file not found: {p}")
+    out: list[str] = []
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        out.append(text)
+    return out
+
+
 def run(args, ctx):
     specs = _load_specs(str(args.get("specs_file") or ""))
 
@@ -91,8 +123,18 @@ def run(args, ctx):
 
     sample_file = str(args.get("sample_file") or spec.get("sample_file") or "").strip()
     schema_file = str(args.get("schema_file") or spec.get("schema_file") or "").strip()
+    supplemental_urls_inline = args.get("supplemental_urls")
+    if supplemental_urls_inline is None:
+        supplemental_urls_inline = spec.get("supplemental_urls")
+    supplemental_urls_file = str(args.get("supplemental_urls_file") or spec.get("supplemental_urls_file") or "").strip()
     sample_text = _read_text_optional(sample_file)
     schema_text = _read_text_optional(schema_file)
+    supplemental_urls: list[str] = []
+    if isinstance(supplemental_urls_inline, list):
+        supplemental_urls.extend([str(v).strip() for v in supplemental_urls_inline if str(v).strip()])
+    else:
+        supplemental_urls.extend(_read_urls_inline(str(supplemental_urls_inline or "")))
+    supplemental_urls.extend(_read_urls_file(supplemental_urls_file))
 
     out_path = _resolve_file_path(
         str(args.get("output_dir") or spec.get("output_dir") or ""),
@@ -113,6 +155,7 @@ def run(args, ctx):
         sample_text=sample_text,
         schema_text=schema_text,
         notes=notes,
+        supplemental_urls=supplemental_urls or None,
         model=model,
     )
     out_path.write_text(json.dumps(research, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
