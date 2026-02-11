@@ -9,7 +9,7 @@ vars:
     datadir: "{env.datadir}/{pipe.name}"
     cache_dir: "{pipe.datadir}/cache"
     gdrive:
-      src: "Data/Field_Boundries"
+      src: "Data/Field_Boundaries"
       glob: "ReleaseData.7z"
       shared_drive_name: "Land Core Risk Model Development"
       # Shared drive ID is optional; if set it overrides shared_drive_name in the plugin.
