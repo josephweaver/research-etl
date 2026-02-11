@@ -2,6 +2,7 @@ environments:
   local:
     executor: local
     modules: [ "Python/3.11.3-GCCcore-12.3.0" ]
+    rclone_bin: "rclone"
     basedir: "{global.basedir}"
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
@@ -13,6 +14,7 @@ environments:
   hpcc_msu:
     executor: slurm
     host: hpcc.msu.edu
+    rclone_bin: "rclone"
     # partition: scavenger # optional: specify valid
     # account: weave151  # optional: specify valid allocation if required
     time: "01:00:00"

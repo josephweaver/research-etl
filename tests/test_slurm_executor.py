@@ -17,7 +17,7 @@ def test_slurm_submit_uses_array_batches_and_passes_resume_retry(monkeypatch, tm
             Step(name="fan", script="echo.py", foreach="items"),
         ],
     )
-    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda _: pipeline)
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
     monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
 
     calls = []

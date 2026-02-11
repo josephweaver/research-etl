@@ -180,7 +180,7 @@ steps:
 ### Download scripts
 - http_download.py - list of HTTPS files
 - ftp_download.py - all files in an FTP folder
-- gdrive_download.py - Google Drive download via `tools/gdrv/download.R`
+- gdrive_download.py - Google Drive download via `rclone` (standalone; supports shared drive name/id)
 
 ### File identification scripts
 - is_zip.py - determine if a file is a zip file

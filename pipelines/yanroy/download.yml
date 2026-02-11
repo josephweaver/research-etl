@@ -20,7 +20,7 @@ dirs:
 
 steps:
   - name: stage_raw_from_gdrive
-    script: 'gdrive_download.py src="{pipe.gdrive.src}" out="{dirs.raw_cache}" glob="{pipe.gdrive.glob}" recursive=true shared_drive="{pipe.gdrive.shared_drive_name}" shared_drive_id="{pipe.gdrive.shared_drive_id}"'
+    script: 'gdrive_download.py rclone_bin="{env.rclone_bin}" src="{pipe.gdrive.src}" out="{dirs.raw_cache}" glob="{pipe.gdrive.glob}" recursive=true shared_drive="{pipe.gdrive.shared_drive_name}" shared_drive_id="{pipe.gdrive.shared_drive_id}"'
     output_var: staged_raw
 
   - name: catalog_ai_research

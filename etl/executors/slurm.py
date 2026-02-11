@@ -155,7 +155,11 @@ class SlurmExecutor(Executor):
         run_date = ts.strftime("%y%m%d")
         run_stamp = ts.strftime("%H%M%S")
         run_fs_id = f"{run_stamp}-{run_id[:8]}"
-        pipeline = parse_pipeline(Path(pipeline_path))
+        pipeline = parse_pipeline(
+            Path(pipeline_path),
+            global_vars=context.get("global_vars") or {},
+            env_vars=context.get("execution_env") or {},
+        )
         batches = self._group_steps_with_indices(pipeline.steps)
         submission_records = []
         prev_jobid = None

@@ -2,6 +2,7 @@ environments:
   hpcc_msu:
     executor: slurm
     name: dev
+    rclone_bin: rclone
     datadir: /mnt/scratch/Viens_AgroEco_Lab/data
     host: hpcc.msu.edu
     partition: scavenger
@@ -30,6 +31,7 @@ environments:
   hpcc_beta:
     executor: slurm
     name: beta
+    rclone_bin: rclone
     datadir: /hpcc/data
     host: beta.login.univ.edu
     partition: highmem

@@ -65,3 +65,45 @@ def test_local_executor_runs_from_checkout_when_enforced(tmp_path: Path, monkeyp
     )
     assert submit.run_id
     assert ex.status(submit.run_id).state.value == "succeeded"
+
+
+def test_local_executor_applies_execution_env_vars_in_parse(tmp_path: Path, monkeypatch) -> None:
+    pipeline_path = tmp_path / "pipeline.yml"
+    pipeline_path.write_text(
+        "steps:\n  - name: echo\n    script: 'echo.py message=\"{env.msg}\"'\n",
+        encoding="utf-8",
+    )
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    (plugins_dir / "echo.py").write_text(
+        "\n".join(
+            [
+                "meta = {'name': 'echo', 'version': '0.1.0', 'description': 'test'}",
+                "def run(args, ctx):",
+                "    return {'message': args.get('message', '')}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def _fake_record_run(run_result, pipeline_path, store, **kwargs):
+        captured["script"] = run_result.steps[0].step.script
+
+    monkeypatch.setattr(local_mod, "record_run", _fake_record_run)
+
+    ex = LocalExecutor(
+        plugin_dir=plugins_dir,
+        workdir=tmp_path / ".runs",
+        dry_run=True,
+    )
+    submit = ex.submit(
+        str(pipeline_path),
+        context={
+            "global_vars": {},
+            "execution_env": {"msg": "HELLO_ENV"},
+        },
+    )
+    assert submit.run_id
+    assert captured["script"] == 'echo.py message="HELLO_ENV"'
