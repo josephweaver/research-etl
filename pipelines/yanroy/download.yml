@@ -13,7 +13,7 @@ vars:
       glob: "ReleaseData.7z"
       shared_drive_name: "Land Core Risk Model Development"
       # Shared drive ID is optional; if set it overrides shared_drive_name in the plugin.
-      shared_drive_id: "18jYz_b4FTpwzDzxjUShZC8xDInTcmNTj"
+      shared_drive_id: "0AKJcAvvAyp4oUk9PVA"
 
 dirs:
   raw_cache: "{pipe.cache_dir}/raw"
