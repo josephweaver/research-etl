@@ -28,7 +28,7 @@ def test_collect_run_provenance_returns_expected_keys(tmp_path: Path) -> None:
         repo_root=Path(".").resolve(),
         pipeline_path=pipeline_path,
         global_config_path=None,
-        execution_config_path=None,
+        environments_config_path=None,
         plugin_dir=plugin_dir,
         pipeline=pipeline,
         cli_command="python cli.py run pipelines/sample.yml",

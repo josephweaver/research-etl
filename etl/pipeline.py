@@ -25,7 +25,7 @@ import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
@@ -249,6 +249,8 @@ def parse_pipeline(
 def validate_pipeline(p: Pipeline) -> None:
     """Raise PipelineError on validation problems."""
     errors: List[str] = []
+    closed_parallel_groups: Set[str] = set()
+    active_parallel_group: Optional[str] = None
 
     if not p.steps:
         errors.append("Pipeline must contain at least one step")
@@ -258,6 +260,28 @@ def validate_pipeline(p: Pipeline) -> None:
             errors.append(f"Step {idx} missing script")
         if step.output_var and not step.output_var.isidentifier():
             errors.append(f"Step {idx} output_var must be a valid identifier: {step.output_var}")
+
+        token = (step.parallel_with or "").strip()
+        if token:
+            if active_parallel_group is None:
+                if token in closed_parallel_groups:
+                    errors.append(
+                        f"Step {idx} `parallel_with={token}` is out of order; "
+                        "parallel groups must be contiguous."
+                    )
+                active_parallel_group = token
+            elif token != active_parallel_group:
+                closed_parallel_groups.add(active_parallel_group)
+                if token in closed_parallel_groups:
+                    errors.append(
+                        f"Step {idx} `parallel_with={token}` is out of order; "
+                        "parallel groups must be contiguous."
+                    )
+                active_parallel_group = token
+        else:
+            if active_parallel_group is not None:
+                closed_parallel_groups.add(active_parallel_group)
+                active_parallel_group = None
 
     if errors:
         raise PipelineError("; ".join(errors))

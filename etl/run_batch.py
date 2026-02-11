@@ -20,6 +20,8 @@ from etl.config import load_global_config, ConfigError
 from etl.execution_config import (
     load_execution_config,
     apply_execution_env_overrides,
+    resolve_execution_config_path,
+    validate_environment_executor,
     ExecutionConfigError,
 )
 from etl.pipeline import parse_pipeline, PipelineError
@@ -72,8 +74,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-retries", type=int, default=0, help="Max step retries after first failure")
     parser.add_argument("--retry-delay-seconds", type=float, default=0.0, help="Delay between retries")
     parser.add_argument("--global-config", help="Path to global config YAML", default=None)
-    parser.add_argument("--execution-config", help="Path to execution env config YAML", default=None)
-    parser.add_argument("--env", help="Execution environment name (from execution config)", default=None)
+    parser.add_argument(
+        "--environments-config",
+        help="Path to environments config YAML (default: config/environments.yml)",
+        default=None,
+    )
+    parser.add_argument("--env", help="Execution environment name (from environments config)", default=None)
     args = parser.parse_args(argv)
     run_id = args.run_id
     if not run_id:
@@ -88,17 +94,31 @@ def main(argv: list[str] | None = None) -> int:
         except ConfigError as exc:
             print(f"Global config error: {exc}")
             return 1
-    if args.execution_config and args.env:
+    try:
+        resolved_exec_cfg = resolve_execution_config_path(
+            Path(args.environments_config) if args.environments_config else None
+        )
+    except ExecutionConfigError as exc:
+        print(f"Environments config error: {exc}")
+        return 1
+    selected_env_name = args.env
+    if resolved_exec_cfg and selected_env_name:
         try:
-            envs = load_execution_config(Path(args.execution_config))
-            exec_env = envs.get(args.env, {})
+            envs = load_execution_config(resolved_exec_cfg)
+            exec_env = envs.get(selected_env_name, {})
             if not exec_env:
-                print(f"Execution env '{args.env}' not found in config")
+                print(f"Execution env '{selected_env_name}' not found in config")
                 return 1
+            validate_environment_executor(selected_env_name, exec_env, executor="slurm")
             exec_env = apply_execution_env_overrides(exec_env)
         except ExecutionConfigError as exc:
-            print(f"Execution config error: {exc}")
+            print(f"Environments config error: {exc}")
             return 1
+    if args.env and not resolved_exec_cfg:
+        print("Environments config error: `--env` was provided but no environments config was found.")
+        return 1
+    if resolved_exec_cfg:
+        args.environments_config = str(resolved_exec_cfg)
 
     try:
         full_pipeline = parse_pipeline(Path(args.pipeline), global_vars=global_vars, env_vars=exec_env)
@@ -109,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         repo_root=Path(".").resolve(),
         pipeline_path=Path(args.pipeline),
         global_config_path=Path(args.global_config) if args.global_config else None,
-        execution_config_path=Path(args.execution_config) if args.execution_config else None,
+        environments_config_path=Path(args.environments_config) if args.environments_config else None,
         plugin_dir=Path(args.plugins_dir),
         pipeline=full_pipeline,
         cli_command="python etl/run_batch.py " + " ".join(argv or []),

@@ -3,7 +3,7 @@ SLURM executor: submits the whole pipeline as a single SLURM job.
 
 This first-cut executor runs the full pipeline inside one SLURM job using
 the local runner on the compute node. It uses execution environment
-settings provided via `--execution-config` / `--env`.
+settings provided via `--environments-config` / `--env`.
 
 Future enhancement: expand batches/foreach into job arrays with dependencies.
 """
@@ -69,7 +69,7 @@ class SlurmExecutor(Executor):
         plugins_dir: Path = Path("plugins"),
         workdir: Path = Path(".runs"),
         global_config: Optional[Path] = None,
-        execution_config: Optional[Path] = None,
+        environments_config: Optional[Path] = None,
         env_name: Optional[str] = None,
         dry_run: bool = False,
         verbose: bool = False,
@@ -103,7 +103,7 @@ class SlurmExecutor(Executor):
         self.plugins_dir = plugins_dir
         self.workdir = workdir
         self.global_config = global_config
-        self.execution_config = execution_config
+        self.environments_config = environments_config
         self.env_name = env_name
         self.dry_run = dry_run
         self.verbose = verbose
@@ -283,14 +283,16 @@ class SlurmExecutor(Executor):
             else:
                 global_config_remote = ((Path(checkout_root) / gc_path).as_posix() if not gc_path.is_absolute() else gc_path.as_posix())
 
-        execution_config_remote = None
-        if self.execution_config and self.env_name:
-            ec_path = Path(self.execution_config)
+        environments_config_remote = None
+        if self.environments_config and self.env_name:
+            ec_path = Path(self.environments_config)
             if use_repo_relative_paths:
-                ec_rel = repo_relative_path(ec_path, source_repo_root, "execution_config")
-                execution_config_remote = (Path(checkout_root) / ec_rel).as_posix()
+                ec_rel = repo_relative_path(ec_path, source_repo_root, "environments_config")
+                environments_config_remote = (Path(checkout_root) / ec_rel).as_posix()
             else:
-                execution_config_remote = ((Path(checkout_root) / ec_path).as_posix() if not ec_path.is_absolute() else ec_path.as_posix())
+                environments_config_remote = (
+                    (Path(checkout_root) / ec_path).as_posix() if not ec_path.is_absolute() else ec_path.as_posix()
+                )
 
         base_logdir = Path(self.env.logdir or (self.workdir / "slurm_logs"))
 
@@ -376,7 +378,7 @@ class SlurmExecutor(Executor):
                     python_bin,
                     resume_run_id=resume_run_id,
                     global_config_path=global_config_remote,
-                    execution_config_path=execution_config_remote,
+                    environments_config_path=environments_config_remote,
                     array_index=False,
                 )
                 jobid = self._submit_script(script_text, run_id, label=label, prev_dependency=prev_jobid, remote_dest_dir=step_workdir)
@@ -409,7 +411,7 @@ class SlurmExecutor(Executor):
                         python_bin,
                         resume_run_id=resume_run_id,
                         global_config_path=global_config_remote,
-                        execution_config_path=execution_config_remote,
+                        environments_config_path=environments_config_remote,
                         array_index=True,
                     )
                     jobid = self._submit_script(script_text, run_id, label=label, prev_dependency=prev_jobid, array_bounds=(0, len(chunk)-1), remote_dest_dir=step_workdir)
@@ -556,10 +558,10 @@ class SlurmExecutor(Executor):
             gc_path = Path(self.global_config)
             gc_arg = ((Path(checkout_root) / gc_path).as_posix() if not gc_path.is_absolute() else gc_path.as_posix())
             cmd += ["--global-config", gc_arg]
-        if self.execution_config and self.env_name:
-            ec_path = Path(self.execution_config)
+        if self.environments_config and self.env_name:
+            ec_path = Path(self.environments_config)
             ec_arg = ((Path(checkout_root) / ec_path).as_posix() if not ec_path.is_absolute() else ec_path.as_posix())
-            cmd += ["--execution-config", ec_arg, "--env", self.env_name]
+            cmd += ["--environments-config", ec_arg, "--env", self.env_name]
 
         lines.append(" ".join(cmd))
 
@@ -582,7 +584,7 @@ class SlurmExecutor(Executor):
         python_bin: str,
         resume_run_id: Optional[str] = None,
         global_config_path: Optional[str] = None,
-        execution_config_path: Optional[str] = None,
+        environments_config_path: Optional[str] = None,
         array_index: bool = False,
     ) -> str:
         logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
@@ -649,8 +651,8 @@ class SlurmExecutor(Executor):
         cmd += ["--retry-delay-seconds", str(self.step_retry_delay_seconds)]
         if global_config_path:
             cmd += ["--global-config", global_config_path]
-        if execution_config_path and self.env_name:
-            cmd += ["--execution-config", execution_config_path, "--env", self.env_name]
+        if environments_config_path and self.env_name:
+            cmd += ["--environments-config", environments_config_path, "--env", self.env_name]
 
         lines.append(" ".join(cmd))
 

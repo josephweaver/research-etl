@@ -1,3 +1,9 @@
-data: /data
-bin: /opt/etl/bin
-log: /data/logs
+basedir: ./out
+bindir: .
+logdir: "{basedir}/logs"
+datadir: "{basedir}/data"
+tmpdir: "{basedir}/tmp"
+artifactsdir: "{basedir}/artifacts"
+
+
+    

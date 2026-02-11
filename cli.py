@@ -31,6 +31,8 @@ from etl.tracking import load_runs, find_run
 from etl.execution_config import (
     load_execution_config,
     apply_execution_env_overrides,
+    resolve_execution_config_path,
+    validate_environment_executor,
     ExecutionConfigError,
 )
 
@@ -125,7 +127,7 @@ def _submit_pipeline_run(
         repo_root=repo_root,
         pipeline_path=pipeline_path,
         global_config_path=Path(args.global_config) if args.global_config else None,
-        execution_config_path=Path(args.execution_config) if args.execution_config else None,
+        environments_config_path=Path(args.environments_config) if args.environments_config else None,
         plugin_dir=plugins_dir_path,
         pipeline=pipeline,
         cli_command=cli_command,
@@ -142,7 +144,7 @@ def _submit_pipeline_run(
             plugins_dir=plugins_dir_path,
             workdir=Path(args.workdir),
             global_config=Path(args.global_config) if args.global_config else None,
-            execution_config=Path(args.execution_config) if args.execution_config else None,
+            environments_config=Path(args.environments_config) if args.environments_config else None,
             env_name=args.env,
             dry_run=args.dry_run,
             verbose=args.verbose,
@@ -228,7 +230,7 @@ def _format_run_submission_error(exc: Exception, args: argparse.Namespace) -> st
     if isinstance(exc, subprocess.TimeoutExpired):
         return (
             f"Operation timed out while executing '{exc.cmd}'. "
-            "Increase ssh_timeout/scp_timeout in execution config or check cluster/login-node responsiveness."
+            "Increase ssh_timeout/scp_timeout in environments config or check cluster/login-node responsiveness."
         )
     return f"Run failed before submission/execution: {text}"
 
@@ -284,23 +286,44 @@ def cmd_run(args: argparse.Namespace) -> int:
     pipeline_path = Path(args.pipeline)
     global_vars = {}
     exec_env = {}
+    selected_environments_config: Path | None = None
+    selected_env_name: str | None = None
     if args.global_config:
         try:
             global_vars = load_global_config(Path(args.global_config))
         except ConfigError as exc:
             print(f"Global config error: {exc}", file=sys.stderr)
             return 1
-    if args.execution_config and args.env:
+    try:
+        selected_environments_config = resolve_execution_config_path(
+            Path(args.environments_config) if args.environments_config else None
+        )
+    except ExecutionConfigError as exc:
+        print(f"Environments config error: {exc}", file=sys.stderr)
+        return 1
+    if args.env:
+        selected_env_name = args.env
+    elif args.executor == "local":
+        selected_env_name = "local"
+    if selected_environments_config and selected_env_name:
         try:
-            envs = load_execution_config(Path(args.execution_config))
-            exec_env = envs.get(args.env, {})
+            envs = load_execution_config(selected_environments_config)
+            exec_env = envs.get(selected_env_name, {})
             if not exec_env:
-                print(f"Execution env '{args.env}' not found in config", file=sys.stderr)
+                print(f"Execution env '{selected_env_name}' not found in config", file=sys.stderr)
                 return 1
+            validate_environment_executor(selected_env_name, exec_env, executor=args.executor)
             exec_env = apply_execution_env_overrides(exec_env)
         except ExecutionConfigError as exc:
-            print(f"Execution config error: {exc}", file=sys.stderr)
+            print(f"Environments config error: {exc}", file=sys.stderr)
             return 1
+    if args.env and not selected_environments_config:
+        print("Environments config error: `--env` was provided but no environments config was found.", file=sys.stderr)
+        return 1
+    if selected_environments_config:
+        args.environments_config = str(selected_environments_config)
+    if selected_env_name:
+        args.env = selected_env_name
     max_retries = args.max_retries if args.max_retries is not None else int(exec_env.get("step_max_retries", 0) or 0)
     retry_delay_seconds = (
         args.retry_delay_seconds
@@ -313,7 +336,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if retry_delay_seconds < 0:
         print("Invalid --retry-delay-seconds: must be >= 0.", file=sys.stderr)
         return 1
-    # Ensure SLURM path inherits explicit CLI overrides even when execution config is used.
+    # Ensure SLURM path inherits explicit CLI overrides even when environments config is used.
     exec_env["step_max_retries"] = max_retries
     exec_env["step_retry_delay_seconds"] = retry_delay_seconds
     try:
@@ -449,8 +472,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = subparsers.add_parser("run", help="Run a pipeline")
     p_run.add_argument("pipeline", help="Path to pipeline YAML")
     p_run.add_argument("--global-config", help="Path to global config YAML", default=None)
-    p_run.add_argument("--execution-config", help="Path to execution env config YAML", default=None)
-    p_run.add_argument("--env", help="Execution environment name (from execution config)", default=None)
+    p_run.add_argument(
+        "--environments-config",
+        help="Path to environments config YAML (default: config/environments.yml)",
+        default=None,
+    )
+    p_run.add_argument("--env", help="Execution environment name (from environments config)", default=None)
     p_run.add_argument("--plugins-dir", default="plugins", help="Directory containing plugins")
     p_run.add_argument("--workdir", default=".runs", help="Directory to store run artifacts")
     p_run.add_argument("--dry-run", action="store_true", help="Parse and plan without executing plugins")
@@ -463,7 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--execution-source",
         choices=["auto", "git_remote", "git_bundle", "snapshot", "workspace"],
         default=None,
-        help="Source mode for run code checkout (default from execution config or auto).",
+        help="Source mode for run code checkout (default from environments config or auto).",
     )
     p_run.add_argument("--source-bundle", default=None, help="Path to git bundle file for offline checkout fallback.")
     p_run.add_argument("--source-snapshot", default=None, help="Path to tar/zip snapshot for offline checkout fallback.")

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from etl.pipeline import parse_pipeline
+import pytest
+
+from etl.pipeline import PipelineError, parse_pipeline
 
 
 def test_parse_pipeline_resolves_hierarchical_recursive_scopes(tmp_path: Path) -> None:
@@ -97,3 +99,25 @@ def test_parse_pipeline_keeps_missing_placeholders(tmp_path: Path) -> None:
     pipeline = parse_pipeline(p)
     assert pipeline.vars["a"] == "{missing.path}/x"
     assert pipeline.steps[0].script == "echo.py msg={missing.path}/x"
+
+
+def test_parse_pipeline_rejects_noncontiguous_parallel_group_tokens(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+                "    parallel_with: step1",
+                "  - name: s2",
+                "    script: echo.py",
+                "  - name: s3",
+                "    script: echo.py",
+                "    parallel_with: step1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="out of order"):
+        parse_pipeline(p)

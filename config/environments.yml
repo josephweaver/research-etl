@@ -1,5 +1,17 @@
 environments:
+  local:
+    executor: local
+    modules: [ "Python/3.11.3-GCCcore-12.3.0" ]
+    basedir: "{global.basedir}"
+    workdir: "{basedir}/work"
+    logdir: "{basedir}/logs"
+    datadir: "{basedir}/work"
+    tmpdir: "{basedir}/tmp"
+    artifactsdir: "{basedir}/artifacts"
+
+
   hpcc_msu:
+    executor: slurm
     host: hpcc.msu.edu
     # partition: scavenger # optional: specify valid
     # account: weave151  # optional: specify valid allocation if required

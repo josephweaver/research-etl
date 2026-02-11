@@ -96,7 +96,10 @@ def test_web_api_builder_source_and_validate(tmp_path: Path):
     from fastapi.testclient import TestClient
 
     p = tmp_path / "draft.yml"
-    p.write_text("steps:\n  - name: s1\n    script: echo.py\n", encoding="utf-8")
+    p.write_text(
+        "dirs:\n  workdir: .runs/work\n  logdir: .runs/log\nsteps:\n  - name: s1\n    script: echo.py\n",
+        encoding="utf-8",
+    )
     client = TestClient(web_api.app)
 
     s = client.get("/api/builder/source", params={"pipeline": str(p)})
@@ -107,6 +110,24 @@ def test_web_api_builder_source_and_validate(tmp_path: Path):
     assert v.status_code == 200
     assert v.json()["valid"] is True
     assert v.json()["step_count"] == 1
+
+
+def test_web_api_builder_files_lists_pipeline_folder(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    pdir = tmp_path / "pipelines" / "sub"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "pipelines" / "a.yml").write_text("steps:\n  - script: echo.py\n", encoding="utf-8")
+    (pdir / "b.yml").write_text("steps:\n  - script: echo.py\n", encoding="utf-8")
+    client = TestClient(web_api.app)
+    r = client.get("/api/builder/files")
+    assert r.status_code == 200
+    files = r.json()["files"]
+    assert "a.yml" in files
+    assert "sub/b.yml" in files
 
 
 def test_web_api_builder_generate(monkeypatch):
@@ -164,14 +185,16 @@ def test_web_api_pipeline_save_create_and_update(monkeypatch, tmp_path: Path):
     monkeypatch.chdir(tmp_path)
     client = TestClient(web_api.app)
     yaml_text = "steps:\n  - name: s1\n    script: echo.py\n"
-    create = client.post("/api/pipelines", json={"pipeline": "pipelines/new_draft.yml", "yaml_text": yaml_text})
+    (tmp_path / "pipelines").mkdir(parents=True, exist_ok=True)
+    create = client.post("/api/pipelines", json={"pipeline": "new_draft", "yaml_text": yaml_text})
     assert create.status_code == 200
     created_path = Path(create.json()["pipeline"])
     assert created_path.exists()
+    assert created_path.name == "new_draft.yml"
     assert "echo.py" in created_path.read_text(encoding="utf-8")
 
     update_text = "steps:\n  - name: s1\n    script: echo.py\n  - name: s2\n    script: echo.py\n"
-    pid = quote("pipelines/new_draft.yml", safe="")
+    pid = quote("new_draft", safe="")
     update = client.put(f"/api/pipelines/{pid}", json={"yaml_text": update_text})
     assert update.status_code == 200
     assert "s2" in created_path.read_text(encoding="utf-8")
@@ -187,7 +210,10 @@ def test_web_api_builder_test_step(monkeypatch):
     monkeypatch.setattr(
         web_api,
         "_parse_pipeline_from_yaml_text",
-        lambda yaml_text, global_config_path=None: Pipeline(steps=[Step(name="s1", script="echo.py")]),
+        lambda yaml_text, global_config_path=None: Pipeline(
+            dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
+            steps=[Step(name="s1", script="echo.py")],
+        ),
     )
     monkeypatch.setattr(
         web_api,
@@ -204,7 +230,78 @@ def test_web_api_builder_test_step(monkeypatch):
     payload = r.json()
     assert payload["run_id"] == "builder_run_1"
     assert payload["step_name"] == "s1"
+    assert payload["step_index"] == 0
     assert payload["success"] is True
+
+
+def test_web_api_builder_test_step_with_step_index(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.pipeline import Pipeline, Step
+    from etl.runner import RunResult, StepResult
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(
+        web_api,
+        "_parse_pipeline_from_yaml_text",
+        lambda yaml_text, global_config_path=None: Pipeline(
+            dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
+            steps=[
+                Step(name="s1", script="echo.py"),
+                Step(name="s2", script="echo.py"),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        web_api,
+        "run_pipeline",
+        lambda mini, **k: RunResult(
+            run_id="builder_run_2",
+            steps=[StepResult(step=mini.steps[0], success=True, outputs={"ok": True})],
+            artifact_dir=".runs/builder/y",
+        ),
+    )
+    client = TestClient(web_api.app)
+    r = client.post("/api/builder/test-step", json={"yaml_text": "steps: []", "step_index": 1})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["run_id"] == "builder_run_2"
+    assert payload["step_name"] == "s2"
+    assert payload["step_index"] == 1
+    assert payload["success"] is True
+
+
+def test_web_api_builder_test_step_uses_work_dir_from_dirs(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.pipeline import Pipeline, Step
+    from etl.runner import RunResult, StepResult
+    from fastapi.testclient import TestClient
+
+    called = {}
+
+    monkeypatch.setattr(
+        web_api,
+        "_parse_pipeline_from_yaml_text",
+        lambda yaml_text, global_config_path=None: Pipeline(
+            dirs={"workdir": ".runs/from_dirs", "logdir": ".runs/log"},
+            steps=[Step(name="s1", script="echo.py")],
+        ),
+    )
+
+    def _fake_run_pipeline(*args, **kwargs):
+        called["workdir"] = kwargs.get("workdir")
+        return RunResult(
+            run_id="builder_run_3",
+            steps=[StepResult(step=Step(name="s1", script="echo.py"), success=True)],
+            artifact_dir=".runs/builder/z",
+        )
+
+    monkeypatch.setattr(web_api, "run_pipeline", _fake_run_pipeline)
+    client = TestClient(web_api.app)
+    r = client.post("/api/builder/test-step", json={"yaml_text": "steps: []"})
+    assert r.status_code == 200
+    assert str(called["workdir"]).replace("\\", "/").endswith(".runs/from_dirs")
 
 
 def test_web_api_404(monkeypatch):

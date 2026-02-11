@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import json
+import shlex
 from pathlib import Path
 from typing import Any, Optional
 
@@ -12,11 +13,18 @@ from fastapi.responses import HTMLResponse
 from .config import ConfigError, load_global_config
 from .ai_pipeline import AIPipelineError, generate_pipeline_draft
 from .db import get_database_url
-from .execution_config import ExecutionConfigError, apply_execution_env_overrides, load_execution_config
+from .execution_config import (
+    ExecutionConfigError,
+    apply_execution_env_overrides,
+    load_execution_config,
+    resolve_execution_config_path,
+    validate_environment_executor,
+)
 from .executors.local import LocalExecutor
 from .executors.slurm import SlurmExecutor
 from .pipeline import Pipeline, Step, parse_pipeline, PipelineError
 from .provenance import collect_run_provenance
+from .plugins.base import PluginLoadError, load_plugin
 from .runner import run_pipeline
 from .web_queries import (
     WebQueryError,
@@ -57,6 +65,9 @@ INDEX_HTML = """<!doctype html>
     h1 { margin:0; font-size:24px; }
     .muted { color:var(--muted); font-size:13px; }
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+    body.builder-mode .grid { grid-template-columns: 1fr; }
+    body.builder-mode .grid > section:first-child { display:none; }
+    body.builder-mode .grid > section:last-child { max-width:980px; width:100%; margin:0 auto; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; box-shadow:0 2px 10px rgba(10,25,60,.06); }
     .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
     input, select, button { border:1px solid var(--line); border-radius:8px; padding:6px 8px; font-size:13px; }
@@ -75,6 +86,27 @@ INDEX_HTML = """<!doctype html>
     .node.file { cursor:pointer; }
     .node.file:hover { background:#edf3ff; }
     .node.dir { font-weight:600; color:#334e73; }
+    .builder-surface { display:grid; grid-template-columns: 3fr 2fr; gap:10px; }
+    .builder-card { border:1px solid var(--line); border-radius:8px; background:#fafcff; padding:10px; }
+    .builder-card h4 { margin:0 0 8px 0; font-size:14px; }
+    .builder-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 8px 0; }
+    .builder-head h4 { margin:0; }
+    .builder-list { display:grid; gap:8px; margin-bottom:10px; }
+    .builder-item { border:1px dashed var(--line); border-radius:8px; padding:8px; background:#fff; }
+    .builder-item .controls { margin-bottom:6px; }
+    .builder-item h5 { margin:0 0 6px 0; font-size:13px; color:#334e73; }
+    .step-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
+    .status-pill { display:inline-block; border-radius:999px; padding:2px 8px; font-size:11px; border:1px solid var(--line); background:#f4f7ff; color:#3b4f70; text-transform:lowercase; }
+    .status-pill.not-run { background:#f3f4f6; color:#4b5563; border-color:#d1d5db; }
+    .status-pill.valid { background:#ecfdf3; color:#0a8f57; border-color:#b7ebcf; }
+    .status-pill.failed { background:#fff1f1; color:#b42318; border-color:#f3c6c6; }
+    .status-pill.successful { background:#e7f6ff; color:#0b6fb3; border-color:#bfe3fa; }
+    .spin-btn { position:relative; min-width:96px; }
+    .spin-btn.loading { color:transparent; }
+    .spin-btn .spin { display:none; position:absolute; right:10px; top:50%; width:13px; height:13px; margin-top:-6.5px; border:2px solid rgba(255,255,255,.55); border-top-color:#fff; border-radius:50%; animation:spin .8s linear infinite; }
+    .spin-btn.loading .spin { display:block; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    @media (max-width: 1100px) { .builder-surface { grid-template-columns: 1fr; } }
     @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -92,6 +124,7 @@ INDEX_HTML = """<!doctype html>
         <button id="btn_nav_live">Live</button>
       </div>
     </nav>
+    <input id="b_file_picker" type="file" accept=".yml,.yaml" style="display:none;" />
     <div class="head">
       <h1 id="page_title">Research ETL Runs</h1>
       <div class="muted">Auto-refresh every 12s</div>
@@ -151,33 +184,74 @@ INDEX_HTML = """<!doctype html>
         <div id="pipeline_summary" class="muted" style="display:none;"></div>
         <div id="pipeline_validations" class="muted" style="display:none;"></div>
         <div id="builder_panel" style="display:none;">
-          <div class="controls">
-            <input id="b_pipeline_path" placeholder="pipeline file path (for edit/new context)" />
-            <button id="btn_builder_load">Load</button>
-            <button id="btn_builder_save">Save Draft</button>
-            <button id="btn_builder_generate">Generate</button>
-            <button id="btn_builder_validate">Validate Draft</button>
-            <button id="btn_builder_test_step">Test Step</button>
-            <span id="builder_msg" class="muted"></span>
+          <div class="builder-surface">
+            <div class="builder-card">
+              <div class="builder-head">
+                <h4>Pipeline Config</h4>
+                <span id="builder_pipeline_status" class="status-pill not-run">not run</span>
+              </div>
+              <div class="controls">
+                <input id="b_pipeline_path" placeholder="pipeline name (stored under pipelines/)" />
+                <button id="btn_builder_load">Load</button>
+                <button id="btn_builder_save">Save Draft</button>
+                <button id="btn_builder_generate">Generate</button>
+                <button id="btn_builder_validate">Validate Draft</button>
+                <button id="btn_builder_run" class="spin-btn"><span>Run Pipeline</span><span class="spin"></span></button>
+                <span id="builder_msg" class="muted"></span>
+              </div>
+              <div class="controls">
+                <input id="b_intent" placeholder="intent for AI draft generation" />
+                <input id="b_constraints" placeholder="constraints (optional)" />
+              </div>
+              <div class="controls">
+                <input id="b_global_config" placeholder="global_config (optional)" />
+                <select id="b_run_mode">
+                  <option value="draft">Draft Mode (workspace)</option>
+                  <option value="repro">Repro Mode (auto/git-pinned)</option>
+                </select>
+                <label class="muted"><input type="checkbox" id="b_dry_run" /> dry_run</label>
+              </div>
+              <div class="controls">
+                <input id="b_max_retries" placeholder="max_retries (default: 0)" />
+                <input id="b_retry_delay" placeholder="retry_delay_seconds (default: 0.0)" />
+              </div>
+              <div class="builder-head">
+                <h4>Requires Pipelines</h4>
+                <button id="btn_builder_add_req">Add Require</button>
+              </div>
+              <div id="b_requires" class="builder-list"></div>
+              <div class="builder-head">
+                <h4>Pipeline Vars</h4>
+                <button id="btn_builder_add_var">Add Var</button>
+              </div>
+              <div id="b_vars" class="builder-list"></div>
+              <div class="builder-head">
+                <h4>Directories</h4>
+                <select id="b_dir_type">
+                  <option value="workdir">workdir</option>
+                  <option value="logdir">logdir</option>
+                  <option value="artifact">artifact</option>
+                  <option value="tmp">tmp</option>
+                  <option value="stage">stage</option>
+                  <option value="custom">&lt;enter custom name&gt;</option>
+                </select>
+                <input id="b_dir_custom" placeholder="custom dir key" />
+                <button id="btn_builder_add_dir">Add Dir</button>
+              </div>
+              <div id="b_dirs" class="builder-list"></div>
+              <div class="builder-head">
+                <h4>Steps</h4>
+                <button id="btn_builder_add_step">Add Step</button>
+              </div>
+              <div id="b_steps" class="builder-list"></div>
+            </div>
+            <div class="builder-card">
+              <h4>YAML Preview (read-only)</h4>
+              <textarea id="b_yaml" readonly style="width:100%; min-height:420px; font-family:Consolas,monospace; font-size:12px;"></textarea>
+              <h4>Builder Output</h4>
+              <pre id="builder_output">No draft action yet.</pre>
+            </div>
           </div>
-          <div class="controls">
-            <input id="b_intent" placeholder="intent for AI draft generation" />
-            <input id="b_constraints" placeholder="constraints (optional)" />
-          </div>
-          <div class="controls">
-            <input id="b_step_name" placeholder="step name to test (default: first step)" />
-            <input id="b_global_config" placeholder="global_config (optional)" />
-            <input id="b_plugins_dir" placeholder="plugins_dir (default: plugins)" />
-            <input id="b_workdir" placeholder="workdir (default: .runs/builder)" />
-            <label class="muted"><input type="checkbox" id="b_dry_run" /> dry_run</label>
-          </div>
-          <div class="controls">
-            <input id="b_max_retries" placeholder="max_retries (default: 0)" />
-            <input id="b_retry_delay" placeholder="retry_delay_seconds (default: 0.0)" />
-          </div>
-          <textarea id="b_yaml" style="width:100%; min-height:260px; font-family:Consolas,monospace; font-size:12px;"></textarea>
-          <h4>Builder Output</h4>
-          <pre id="builder_output">No draft action yet.</pre>
         </div>
         <div class="controls">
           <input id="a_pipeline" placeholder="pipeline path (e.g. pipelines/sample.yml)" />
@@ -191,8 +265,8 @@ INDEX_HTML = """<!doctype html>
         </div>
         <div class="controls">
           <input id="a_global_config" placeholder="global_config (optional)" />
-          <input id="a_execution_config" placeholder="execution_config (optional)" />
-          <input id="a_env" placeholder="env name (when execution_config set)" />
+          <input id="a_environments_config" placeholder="environments_config (optional)" />
+          <input id="a_env" placeholder="env name (when environments_config set)" />
         </div>
         <div class="controls">
           <input id="a_plugins_dir" placeholder="plugins_dir (default: plugins)" />
@@ -241,6 +315,38 @@ INDEX_HTML = """<!doctype html>
       ? decodeURIComponent(window.location.pathname.slice("/pipelines/".length))
       : null;
     let builderLoaded = false;
+    let builderModel = { vars: {}, dirs: {}, requires_pipelines: [], steps: [] };
+    let builderPlugins = [];
+    let builderPluginMeta = {};
+    let builderValidationState = "unknown";
+    let builderStepStatus = {};
+    let builderStepTesting = {};
+    let builderPipelineRunState = "not-run";
+    let builderPipelineRunning = false;
+    function defaultBuilderDirs(){
+      return {
+        workdir: "{workdir}/{pipe.name}/{run_id}",
+        logdir: "{logdir}/{pipe.name}/{run_id}",
+      };
+    }
+    function ensureBuilderDefaultDirs(model){
+      const out = model || {};
+      out.dirs = out.dirs || {};
+      if(Object.keys(out.dirs).length){
+        return out;
+      }
+      out.dirs = { ...defaultBuilderDirs() };
+      return out;
+    }
+    function deriveBuilderWorkdir(){
+      const dirs = (builderModel && builderModel.dirs) || {};
+      const candidates = ["workdir", "work", "work_dir"];
+      for(const k of candidates){
+        const v = String(dirs[k] || "").trim();
+        if(v) return v;
+      }
+      return "";
+    }
     function qp(){
       const p = new URLSearchParams();
       const s = document.getElementById("f_status").value;
@@ -260,6 +366,13 @@ INDEX_HTML = """<!doctype html>
       return p.toString();
     }
     function esc(v){return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")}
+    function normalizeBuilderPipelineName(raw){
+      let s = String(raw || "").trim().replaceAll("\\\\","/");
+      if (!s) return "";
+      if (s.toLowerCase().startsWith("pipelines/")) s = s.slice("pipelines/".length);
+      if (!s.toLowerCase().endsWith(".yml") && !s.toLowerCase().endsWith(".yaml")) s += ".yml";
+      return s;
+    }
     function setActiveNav(){
       const path = window.location.pathname;
       const ops = document.getElementById("nav_ops");
@@ -298,8 +411,8 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("ops_panel").style.display = "none";
       }
       if(isBuilderView){
+        document.body.classList.add("builder-mode");
         document.getElementById("page_title").textContent = isBuilderNewView ? "Research ETL Pipeline Builder" : "Research ETL Pipeline Editor";
-        document.getElementById("left_title").textContent = "Builder Context";
         document.getElementById("right_title").textContent = "Draft Builder";
         document.getElementById("ops_panel").style.display = "none";
         document.getElementById("pipelines_panel").style.display = "none";
@@ -421,14 +534,14 @@ INDEX_HTML = """<!doctype html>
       if (pipeline) body.pipeline = pipeline;
       body.executor = document.getElementById("a_executor").value.trim() || "local";
       const globalConfig = document.getElementById("a_global_config").value.trim();
-      const executionConfig = document.getElementById("a_execution_config").value.trim();
+      const environmentsConfig = document.getElementById("a_environments_config").value.trim();
       const env = document.getElementById("a_env").value.trim();
       const pluginsDir = document.getElementById("a_plugins_dir").value.trim();
       const workdir = document.getElementById("a_workdir").value.trim();
       const retries = document.getElementById("a_max_retries").value.trim();
       const delay = document.getElementById("a_retry_delay").value.trim();
       if (globalConfig) body.global_config = globalConfig;
-      if (executionConfig) body.execution_config = executionConfig;
+      if (environmentsConfig) body.environments_config = environmentsConfig;
       if (env) body.env = env;
       if (pluginsDir) body.plugins_dir = pluginsDir;
       if (workdir) body.workdir = workdir;
@@ -438,47 +551,487 @@ INDEX_HTML = """<!doctype html>
       body.verbose = document.getElementById("a_verbose").checked;
       return body;
     }
+    function _yamlEsc(v){
+      const s = String(v ?? "");
+      if (!s.length) return '""';
+      if (/^[A-Za-z0-9_./:-]+$/.test(s) && s.toLowerCase() !== "true" && s.toLowerCase() !== "false") return s;
+      return `"${s.replaceAll("\\\\","\\\\\\\\").replaceAll('"','\\\\\\"')}"`;
+    }
+    function _scriptFromStep(st){
+      const base = (st.plugin || "").trim();
+      const parts = [];
+      for(const [k,v] of Object.entries(st.params || {})){
+        const vv = String(v ?? "").trim();
+        if (!vv.length) continue;
+        parts.push(`${k}=${_yamlEsc(vv)}`);
+      }
+      return [base, ...parts].filter(Boolean).join(" ");
+    }
+    function buildYamlFromModel(){
+      const m = builderModel || { vars:{}, dirs:{}, requires_pipelines:[], steps:[] };
+      const lines = [];
+      if ((m.requires_pipelines || []).length){
+        lines.push("requires_pipelines:");
+        for(const r of m.requires_pipelines){ lines.push(`  - ${_yamlEsc(r)}`); }
+      }
+      lines.push("vars:");
+      const vars = m.vars || {};
+      const vkeys = Object.keys(vars);
+      if(!vkeys.length){ lines.push("  {}"); } else {
+        for(const k of vkeys){ lines.push(`  ${k}: ${_yamlEsc(vars[k])}`); }
+      }
+      lines.push("dirs:");
+      const dirs = m.dirs || {};
+      const dkeys = Object.keys(dirs);
+      if(!dkeys.length){ lines.push("  {}"); } else {
+        for(const k of dkeys){ lines.push(`  ${k}: ${_yamlEsc(dirs[k])}`); }
+      }
+      lines.push("steps:");
+      const steps = m.steps || [];
+      if(!steps.length){
+        lines.push("  - script: echo.py");
+      } else {
+        for(const st of steps){
+          lines.push(`  - script: ${_yamlEsc(_scriptFromStep(st))}`);
+          if ((st.type || "sequential") === "parallel" && (st.parallel_with || "").trim()) {
+            lines.push(`    parallel_with: ${_yamlEsc(st.parallel_with)}`);
+          }
+          if ((st.type || "sequential") === "foreach" && (st.foreach || "").trim()) {
+            lines.push(`    foreach: ${_yamlEsc(st.foreach)}`);
+          }
+          if ((st.output_var || "").trim()) lines.push(`    output_var: ${_yamlEsc(st.output_var)}`);
+          if ((st.when || "").trim()) lines.push(`    when: ${_yamlEsc(st.when)}`);
+        }
+      }
+      return lines.join("\\n") + "\\n";
+    }
+    function syncYamlPreview(){
+      const area = document.getElementById("b_yaml");
+      const next = buildYamlFromModel();
+      const changed = area.value !== next;
+      area.value = next;
+      if(changed){
+        builderValidationState = "unknown";
+        builderStepStatus = {};
+        builderStepTesting = {};
+        builderPipelineRunState = "not-run";
+      }
+      renderBuilderPipelineStatus();
+    }
+    function builderPipelineStatusMeta(){
+      if(builderPipelineRunState === "failed"){
+        return { klass: "failed", text: "failed" };
+      }
+      if(builderPipelineRunState === "run_ok"){
+        if(builderValidationState === "valid"){
+          return { klass: "successful", text: "successful" };
+        }
+        return { klass: "valid", text: "valid" };
+      }
+      if(builderValidationState === "valid"){
+        return { klass: "valid", text: "valid" };
+      }
+      return { klass: "not-run", text: "not run" };
+    }
+    function renderBuilderPipelineStatus(){
+      const pill = document.getElementById("builder_pipeline_status");
+      if(!pill) return;
+      const meta = builderPipelineStatusMeta();
+      pill.className = `status-pill ${meta.klass}`;
+      pill.textContent = meta.text;
+      const runBtn = document.getElementById("btn_builder_run");
+      if(runBtn){
+        runBtn.classList.toggle("loading", !!builderPipelineRunning);
+        runBtn.disabled = !!builderPipelineRunning;
+      }
+    }
     function builderPayload(){
-      const body = {
-        yaml_text: document.getElementById("b_yaml").value || "",
-      };
-      const pipeline = document.getElementById("b_pipeline_path").value.trim();
+      const body = { yaml_text: document.getElementById("b_yaml").value || "" };
+      const pipeline = normalizeBuilderPipelineName(document.getElementById("b_pipeline_path").value.trim());
       const intent = document.getElementById("b_intent").value.trim();
       const constraints = document.getElementById("b_constraints").value.trim();
-      const stepName = document.getElementById("b_step_name").value.trim();
       const globalConfig = document.getElementById("b_global_config").value.trim();
-      const pluginsDir = document.getElementById("b_plugins_dir").value.trim();
-      const workdir = document.getElementById("b_workdir").value.trim();
+      const workdir = deriveBuilderWorkdir();
       const retries = document.getElementById("b_max_retries").value.trim();
       const delay = document.getElementById("b_retry_delay").value.trim();
       if (pipeline) body.pipeline = pipeline;
       if (intent) body.intent = intent;
       if (constraints) body.constraints = constraints;
-      if (stepName) body.step_name = stepName;
       if (globalConfig) body.global_config = globalConfig;
-      if (pluginsDir) body.plugins_dir = pluginsDir;
       if (workdir) body.workdir = workdir;
       if (retries) body.max_retries = Number(retries);
       if (delay) body.retry_delay_seconds = Number(delay);
       body.dry_run = document.getElementById("b_dry_run").checked;
       return body;
     }
+    async function loadBuilderPlugins(){
+      if(!isBuilderView) return;
+      const gc = document.getElementById("b_global_config").value.trim();
+      const qp = new URLSearchParams();
+      if(gc) qp.set("global_config", gc);
+      const res = await fetch(`/api/builder/plugins?${qp.toString()}`);
+      if(!res.ok){
+        document.getElementById("builder_msg").textContent = await readMessage(res);
+        return;
+      }
+      const payload = await res.json();
+      builderPlugins = payload.plugins || [];
+      builderPluginMeta = {};
+      for(const p of builderPlugins){ builderPluginMeta[p.path] = p; }
+      renderBuilderModel();
+    }
+    function addBuilderRequire(){
+      builderModel.requires_pipelines = builderModel.requires_pipelines || [];
+      builderModel.requires_pipelines.push("");
+      renderBuilderModel();
+      syncYamlPreview();
+    }
+    function addBuilderDir(){
+      builderModel.dirs = builderModel.dirs || {};
+      const dtype = String(document.getElementById("b_dir_type").value || "custom").trim().toLowerCase();
+      const defaults = defaultBuilderDirs();
+      if(dtype && dtype !== "custom"){
+        if(!Object.prototype.hasOwnProperty.call(builderModel.dirs, dtype)){
+          builderModel.dirs[dtype] = defaults[dtype] || "";
+        } else {
+          let i = 2;
+          while(Object.prototype.hasOwnProperty.call(builderModel.dirs, `${dtype}_${i}`)) i++;
+          builderModel.dirs[`${dtype}_${i}`] = defaults[dtype] || "";
+        }
+      } else {
+        const customRaw = String(document.getElementById("b_dir_custom").value || "").trim();
+        const custom = customRaw.replaceAll(" ", "_");
+        if(!custom){
+          document.getElementById("builder_msg").textContent = "Enter a custom directory name.";
+          return;
+        }
+        if(!Object.prototype.hasOwnProperty.call(builderModel.dirs, custom)){
+          builderModel.dirs[custom] = "";
+        } else {
+          let i = 2;
+          while(Object.prototype.hasOwnProperty.call(builderModel.dirs, `${custom}_${i}`)) i++;
+          builderModel.dirs[`${custom}_${i}`] = "";
+        }
+      }
+      document.getElementById("builder_msg").textContent = "";
+      renderBuilderModel();
+      syncYamlPreview();
+    }
+    function addBuilderVar(){
+      builderModel.vars = builderModel.vars || {};
+      let i = 1;
+      while(Object.prototype.hasOwnProperty.call(builderModel.vars, `var_${i}`)) i++;
+      builderModel.vars[`var_${i}`] = "";
+      renderBuilderModel();
+      syncYamlPreview();
+    }
+    function addBuilderStep(){
+      const firstPlugin = builderPlugins.length ? builderPlugins[0].path : "echo.py";
+      builderModel.steps = builderModel.steps || [];
+      builderModel.steps.push({ type:"sequential", plugin:firstPlugin, params:{}, output_var:"", when:"", parallel_with:"", foreach:"" });
+      renderBuilderModel();
+      syncYamlPreview();
+    }
+    function nextParallelGroupKey(preferred){
+      const used = new Set();
+      for(const st of (builderModel.steps || [])){
+        const k = String(st.parallel_with || "").trim();
+        if(k) used.add(k);
+      }
+      const pref = String(preferred || "").trim();
+      if(pref && !used.has(pref)) return pref;
+      let i = 1;
+      while(used.has(`p${i}`)) i++;
+      return `p${i}`;
+    }
+    function stepDisplayLabels(steps){
+      const labels = [];
+      let base = 1;
+      let activeKey = "";
+      let activeBase = 0;
+      let activeCount = 0;
+      for(let i=0; i<steps.length; i++){
+        const st = steps[i] || {};
+        const type = st.type || "sequential";
+        const key = String(st.parallel_with || "").trim();
+        if(type === "parallel" && key){
+          if(activeKey === key){
+            activeCount += 1;
+          } else {
+            activeKey = key;
+            activeBase = base;
+            activeCount = 1;
+            base += 1;
+          }
+          labels.push(`Step ${activeBase}.${activeCount}`);
+        } else {
+          activeKey = "";
+          activeBase = 0;
+          activeCount = 0;
+          labels.push(`Step ${base}`);
+          base += 1;
+        }
+      }
+      return labels;
+    }
+    function stepStatusMeta(idx){
+      if(builderStepTesting[idx]){
+        return { klass: "valid", text: "valid" };
+      }
+      const run = builderStepStatus[idx];
+      if(run === "failed"){
+        return { klass: "failed", text: "failed" };
+      }
+      if(run === "run_ok"){
+        if(builderValidationState === "valid"){
+          return { klass: "successful", text: "successful" };
+        }
+        return { klass: "valid", text: "valid" };
+      }
+      if(builderValidationState === "valid"){
+        return { klass: "valid", text: "valid" };
+      }
+      return { klass: "not-run", text: "not run" };
+    }
+    function renderBuilderModel(){
+      const reqEl = document.getElementById("b_requires");
+      const varEl = document.getElementById("b_vars");
+      const dirEl = document.getElementById("b_dirs");
+      const stepsEl = document.getElementById("b_steps");
+      reqEl.innerHTML = "";
+      varEl.innerHTML = "";
+      dirEl.innerHTML = "";
+      stepsEl.innerHTML = "";
+
+      (builderModel.requires_pipelines || []).forEach((val, idx) => {
+        const row = document.createElement("div");
+        row.className = "builder-item";
+        row.innerHTML = `<div class="controls"><input data-kind="req" data-idx="${idx}" value="${esc(val)}" placeholder="pipelines/dependency.yml" /><button data-del-req="${idx}">Remove</button></div>`;
+        reqEl.appendChild(row);
+      });
+
+      Object.entries(builderModel.vars || {}).forEach(([k,v]) => {
+        const row = document.createElement("div");
+        row.className = "builder-item";
+        row.innerHTML = `<div class="controls"><input data-kind="var-key" data-key="${esc(k)}" value="${esc(k)}" placeholder="var key" /><input data-kind="var-val" data-key="${esc(k)}" value="${esc(v)}" placeholder="value" /><button data-del-var="${esc(k)}">Remove</button></div>`;
+        varEl.appendChild(row);
+      });
+
+      Object.entries(builderModel.dirs || {}).forEach(([k,v]) => {
+        const row = document.createElement("div");
+        row.className = "builder-item";
+        row.innerHTML = `<div class="controls"><input data-kind="dir-key" data-key="${esc(k)}" value="${esc(k)}" placeholder="dir key" /><input data-kind="dir-val" data-key="${esc(k)}" value="${esc(v)}" placeholder="path/value" /><button data-del-dir="${esc(k)}">Remove</button></div>`;
+        dirEl.appendChild(row);
+      });
+
+      const steps = builderModel.steps || [];
+      const stepLabels = stepDisplayLabels(steps);
+      steps.forEach((st, idx) => {
+        const meta = builderPluginMeta[st.plugin] || {params:{}};
+        const pluginOptions = builderPlugins.map(p => `<option value="${esc(p.path)}" ${p.path===st.plugin?"selected":""}>${esc(p.path)}</option>`).join("");
+        const type = st.type || "sequential";
+        let paramsHtml = "";
+        for(const [pk, pspec] of Object.entries(meta.params || {})){
+          const ptype = (pspec && (pspec.type || pspec["type"])) || "str";
+          const pval = (st.params || {})[pk] ?? "";
+          if(String(ptype).toLowerCase() === "bool"){
+            paramsHtml += `<label class="muted"><input type="checkbox" data-kind="step-param-bool" data-idx="${idx}" data-param="${esc(pk)}" ${String(pval).toLowerCase()==="true"||pval===true?"checked":""} /> ${esc(pk)}</label>`;
+          } else {
+            paramsHtml += `<input data-kind="step-param" data-idx="${idx}" data-param="${esc(pk)}" value="${esc(pval)}" placeholder="${esc(pk)} (${esc(ptype)})" />`;
+          }
+        }
+        const card = document.createElement("div");
+        card.className = "builder-item";
+        const badge = stepStatusMeta(idx);
+        const loading = !!builderStepTesting[idx];
+        let typeSpecificHtml = "";
+        if(type === "parallel"){
+          typeSpecificHtml = `<div class="controls"><input data-kind="step-parallel" data-idx="${idx}" value="${esc(st.parallel_with || "")}" placeholder="parallel_with group key" /></div>`;
+        } else if (type === "foreach"){
+          typeSpecificHtml = `<div class="controls"><input data-kind="step-foreach" data-idx="${idx}" value="${esc(st.foreach || "")}" placeholder="foreach var name" /></div>`;
+        }
+        card.innerHTML = `
+          <div class="step-head">
+            <h5>${stepLabels[idx] || `Step ${idx+1}`}</h5>
+            <span class="status-pill ${badge.klass}">${badge.text}</span>
+          </div>
+          <div class="controls">
+            <select data-kind="step-type" data-idx="${idx}">
+              <option value="sequential" ${type==="sequential"?"selected":""}>sequential</option>
+              <option value="parallel" ${type==="parallel"?"selected":""}>parallel</option>
+              <option value="foreach" ${type==="foreach"?"selected":""}>foreach</option>
+            </select>
+            <select data-kind="step-plugin" data-idx="${idx}">${pluginOptions}</select>
+            <button class="spin-btn ${loading ? "loading" : ""}" data-test-step="${idx}" ${loading ? "disabled" : ""}>
+              <span>Test Step</span><span class="spin"></span>
+            </button>
+            <button data-del-step="${idx}">Remove Step</button>
+          </div>
+          <div class="controls">${paramsHtml || '<span class="muted">No plugin params</span>'}</div>
+          <div class="controls">
+            <input data-kind="step-output" data-idx="${idx}" value="${esc(st.output_var || "")}" placeholder="output_var (optional)" />
+            <input data-kind="step-when" data-idx="${idx}" value="${esc(st.when || "")}" placeholder="when (optional)" />
+          </div>
+          ${typeSpecificHtml}
+        `;
+        stepsEl.appendChild(card);
+      });
+    }
+    function handleBuilderInput(ev){
+      const t = ev.target;
+      if (!(t instanceof HTMLElement)) return;
+      const kind = t.getAttribute("data-kind");
+      if (!kind) return;
+      const eventType = ev.type || "input";
+      let changed = false;
+      if (kind === "req"){
+        const idx = Number(t.getAttribute("data-idx") || "-1");
+        if(idx >= 0){
+          builderModel.requires_pipelines[idx] = t.value;
+          changed = true;
+        }
+      } else if (kind === "var-key"){
+        if (eventType === "input") return;
+        const oldKey = t.getAttribute("data-key") || "";
+        const newKey = String(t.value || "").trim();
+        if(oldKey && newKey && oldKey !== newKey){
+          const val = builderModel.vars[oldKey];
+          delete builderModel.vars[oldKey];
+          builderModel.vars[newKey] = val;
+          renderBuilderModel();
+          changed = true;
+        }
+      } else if (kind === "var-val"){
+        const key = t.getAttribute("data-key") || "";
+        if(key){
+          builderModel.vars[key] = t.value;
+          changed = true;
+        }
+      } else if (kind === "dir-key"){
+        if (eventType === "input") return;
+        const oldKey = t.getAttribute("data-key") || "";
+        const newKey = String(t.value || "").trim();
+        if(oldKey && newKey && oldKey !== newKey){
+          const val = builderModel.dirs[oldKey];
+          delete builderModel.dirs[oldKey];
+          builderModel.dirs[newKey] = val;
+          renderBuilderModel();
+          changed = true;
+        }
+      } else if (kind === "dir-val"){
+        const key = t.getAttribute("data-key") || "";
+        if(key){
+          builderModel.dirs[key] = t.value;
+          changed = true;
+        }
+      } else if (kind.startsWith("step-")){
+        const idx = Number(t.getAttribute("data-idx") || "-1");
+        if(idx < 0 || !builderModel.steps[idx]) return;
+        const st = builderModel.steps[idx];
+        if(kind === "step-type"){
+          st.type = t.value;
+          if(st.type === "parallel" && !(String(st.parallel_with || "").trim())){
+            st.parallel_with = nextParallelGroupKey(`step${idx+2}`);
+          }
+          renderBuilderModel();
+          changed = true;
+        }
+        if(kind === "step-plugin"){ st.plugin = t.value; st.params = {}; renderBuilderModel(); changed = true; }
+        if(kind === "step-output"){ st.output_var = t.value; changed = true; }
+        if(kind === "step-when"){ st.when = t.value; changed = true; }
+        if(kind === "step-parallel"){ st.parallel_with = t.value; changed = true; }
+        if(kind === "step-foreach"){ st.foreach = t.value; changed = true; }
+        if(kind === "step-param"){
+          st.params = st.params || {};
+          st.params[t.getAttribute("data-param")] = t.value;
+          changed = true;
+        }
+        if(kind === "step-param-bool"){
+          st.params = st.params || {};
+          st.params[t.getAttribute("data-param")] = t.checked ? "true" : "false";
+          changed = true;
+        }
+      }
+      if (changed) syncYamlPreview();
+    }
+    async function handleBuilderClicks(ev){
+      const t = ev.target;
+      if (!(t instanceof HTMLElement)) return;
+      const testStepBtn = t.closest("[data-test-step]");
+      if(testStepBtn){
+        const idx = Number(testStepBtn.getAttribute("data-test-step") || "-1");
+        if(idx >= 0){
+          await testBuilderStepAt(idx);
+        }
+        return;
+      }
+      const delReq = t.getAttribute("data-del-req");
+      if (delReq !== null){ builderModel.requires_pipelines.splice(Number(delReq),1); renderBuilderModel(); syncYamlPreview(); return; }
+      const delVar = t.getAttribute("data-del-var");
+      if (delVar !== null){ delete builderModel.vars[delVar]; renderBuilderModel(); syncYamlPreview(); return; }
+      const delDir = t.getAttribute("data-del-dir");
+      if (delDir !== null){ delete builderModel.dirs[delDir]; renderBuilderModel(); syncYamlPreview(); return; }
+      const delStep = t.getAttribute("data-del-step");
+      if (delStep !== null){ builderModel.steps.splice(Number(delStep),1); renderBuilderModel(); syncYamlPreview(); return; }
+    }
+    async function suggestNewPipelineName(){
+      const res = await fetch(`/api/builder/files`);
+      if(!res.ok) return "new_pipeline_1.yml";
+      const payload = await res.json();
+      const files = new Set((payload.files || []).map(x => String(x).toLowerCase()));
+      let i = 1;
+      while(files.has(`new_pipeline_${i}.yml`)) i++;
+      return `new_pipeline_${i}.yml`;
+    }
+    function openBuilderFilePicker(){
+      const picker = document.getElementById("b_file_picker");
+      picker.value = "";
+      picker.click();
+    }
+    async function loadBuilderSourceFromFilePicker(){
+      const picker = document.getElementById("b_file_picker");
+      const file = (picker.files || [])[0];
+      if(!file) return;
+      let chosen = String(file.webkitRelativePath || file.name || "").replaceAll("\\\\","/");
+      const marker = "/pipelines/";
+      const markerIdx = chosen.toLowerCase().lastIndexOf(marker);
+      if(markerIdx >= 0){
+        chosen = chosen.slice(markerIdx + marker.length);
+      }
+      const v = normalizeBuilderPipelineName(chosen || document.getElementById("b_pipeline_path").value);
+      if(!v){
+        document.getElementById("builder_msg").textContent = "No pipeline selected.";
+        return;
+      }
+      document.getElementById("b_pipeline_path").value = v;
+      builderLoaded = false;
+      await loadBuilderSource();
+    }
     async function loadBuilderSource(){
       if(!isBuilderView || builderLoaded) return;
-      const pipeline = document.getElementById("b_pipeline_path").value.trim();
+      let pipeline = normalizeBuilderPipelineName(document.getElementById("b_pipeline_path").value.trim());
       if(!pipeline){
-        document.getElementById("b_yaml").value = "vars: {}\\ndirs: {}\\nsteps:\\n  - name: step1\\n    script: echo.py\\n";
+        pipeline = await suggestNewPipelineName();
+        document.getElementById("b_pipeline_path").value = pipeline;
+        builderModel = ensureBuilderDefaultDirs({ vars: { env: "{env.name}" }, dirs: {}, requires_pipelines: [], steps: [] });
+        await loadBuilderPlugins();
+        renderBuilderModel();
+        syncYamlPreview();
         builderLoaded = true;
         return;
       }
+      document.getElementById("b_pipeline_path").value = pipeline;
       const res = await fetch(`/api/builder/source?pipeline=${encodeURIComponent(pipeline)}`);
       if(!res.ok){
         document.getElementById("builder_msg").textContent = await readMessage(res);
-        document.getElementById("b_yaml").value = "vars: {}\\ndirs: {}\\nsteps:\\n  - name: step1\\n    script: echo.py\\n";
+        builderModel = ensureBuilderDefaultDirs({ vars: { env: "{env.name}" }, dirs: {}, requires_pipelines: [], steps: [] });
       } else {
         const payload = await res.json();
-        document.getElementById("b_yaml").value = payload.yaml_text || "";
+        builderModel = ensureBuilderDefaultDirs(payload.model || { vars: {}, dirs: {}, requires_pipelines: [], steps: [] });
       }
+      await loadBuilderPlugins();
+      renderBuilderModel();
+      syncYamlPreview();
       builderLoaded = true;
     }
     async function saveBuilderDraft(){
@@ -489,6 +1042,8 @@ INDEX_HTML = """<!doctype html>
         msg.textContent = "pipeline path is required to save.";
         return;
       }
+      payload.pipeline = normalizeBuilderPipelineName(payload.pipeline);
+      document.getElementById("b_pipeline_path").value = payload.pipeline;
       msg.textContent = "Saving draft...";
       const encoded = encodeURIComponent(payload.pipeline);
       const update = await fetch(`/api/pipelines/${encoded}`, {
@@ -519,6 +1074,102 @@ INDEX_HTML = """<!doctype html>
       msg.textContent = `Updated ${data.pipeline}`;
       out.textContent = JSON.stringify(data, null, 2);
     }
+    async function runBuilderPipeline(){
+      const msg = document.getElementById("builder_msg");
+      const out = document.getElementById("builder_output");
+      const payload = builderPayload();
+      if (!payload.pipeline){
+        msg.textContent = "pipeline path is required to run.";
+        return;
+      }
+      const runMode = (document.getElementById("b_run_mode").value || "draft").trim().toLowerCase();
+      payload.pipeline = normalizeBuilderPipelineName(payload.pipeline);
+      document.getElementById("b_pipeline_path").value = payload.pipeline;
+      const pipelineRunId = `pipelines/${payload.pipeline}`;
+
+      builderPipelineRunning = true;
+      renderBuilderPipelineStatus();
+      msg.textContent = "Saving draft before run...";
+      const encoded = encodeURIComponent(payload.pipeline);
+      const update = await fetch(`/api/pipelines/${encoded}`, {
+        method:"PUT",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ yaml_text: payload.yaml_text }),
+      });
+      if(update.status === 404){
+        const create = await fetch(`/api/pipelines`, {
+          method:"POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ pipeline: payload.pipeline, yaml_text: payload.yaml_text }),
+        });
+        if(!create.ok){
+          builderPipelineRunState = "failed";
+          builderPipelineRunning = false;
+          renderBuilderPipelineStatus();
+          msg.textContent = await readMessage(create);
+          return;
+        }
+      } else if(!update.ok){
+        builderPipelineRunState = "failed";
+        builderPipelineRunning = false;
+        renderBuilderPipelineStatus();
+        msg.textContent = await readMessage(update);
+        return;
+      }
+
+      msg.textContent = "Validating draft...";
+      const validateRes = await fetch(`/api/builder/validate`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(payload),
+      });
+      if(!validateRes.ok){
+        builderValidationState = "unknown";
+        builderPipelineRunState = "failed";
+        builderPipelineRunning = false;
+        renderBuilderPipelineStatus();
+        msg.textContent = await readMessage(validateRes);
+        return;
+      }
+      builderValidationState = "valid";
+      renderBuilderPipelineStatus();
+
+      msg.textContent = "Submitting run...";
+      const runBody = {};
+      if(payload.global_config) runBody.global_config = payload.global_config;
+      if(payload.plugins_dir) runBody.plugins_dir = payload.plugins_dir;
+      if(payload.workdir) runBody.workdir = payload.workdir;
+      if(payload.max_retries !== undefined) runBody.max_retries = payload.max_retries;
+      if(payload.retry_delay_seconds !== undefined) runBody.retry_delay_seconds = payload.retry_delay_seconds;
+      runBody.dry_run = !!payload.dry_run;
+      if(runMode === "repro"){
+        runBody.execution_source = "auto";
+        runBody.allow_workspace_source = false;
+      } else {
+        // Draft mode uses workspace source so iterative edits do not require
+        // snapshot/bundle configuration.
+        runBody.execution_source = "workspace";
+        runBody.allow_workspace_source = true;
+      }
+      const runRes = await fetch(`/api/pipelines/${encodeURIComponent(pipelineRunId)}/run`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(runBody),
+      });
+      if(!runRes.ok){
+        builderPipelineRunState = "failed";
+        builderPipelineRunning = false;
+        renderBuilderPipelineStatus();
+        msg.textContent = await readMessage(runRes);
+        return;
+      }
+      const data = await runRes.json();
+      builderPipelineRunState = data.success === false ? "failed" : "run_ok";
+      builderPipelineRunning = false;
+      renderBuilderPipelineStatus();
+      msg.textContent = `Run ${data.run_id} (${data.state || "submitted"}) [${runMode}]`;
+      out.textContent = JSON.stringify(data, null, 2);
+    }
     async function generateBuilderDraft(){
       const msg = document.getElementById("builder_msg");
       const out = document.getElementById("builder_output");
@@ -538,7 +1189,12 @@ INDEX_HTML = """<!doctype html>
         return;
       }
       const data = await res.json();
-      document.getElementById("b_yaml").value = data.yaml_text || "";
+      builderModel = data.model || builderModel;
+      renderBuilderModel();
+      syncYamlPreview();
+      builderValidationState = data.valid ? "valid" : "unknown";
+      renderBuilderModel();
+      renderBuilderPipelineStatus();
       msg.textContent = data.valid ? `Generated valid draft (${data.step_count} steps)` : "Generated draft has validation issues";
       out.textContent = JSON.stringify(data, null, 2);
     }
@@ -552,29 +1208,63 @@ INDEX_HTML = """<!doctype html>
         body: JSON.stringify(builderPayload()),
       });
       if(!res.ok){
+        builderValidationState = "unknown";
+        builderPipelineRunState = "failed";
         msg.textContent = await readMessage(res);
+        renderBuilderModel();
+        renderBuilderPipelineStatus();
         return;
       }
       const payload = await res.json();
+      builderValidationState = "valid";
+      if(builderPipelineRunState !== "run_ok"){
+        builderPipelineRunState = "not-run";
+      }
       msg.textContent = `Valid draft: ${payload.step_count} steps`;
       out.textContent = JSON.stringify(payload, null, 2);
+      renderBuilderModel();
+      renderBuilderPipelineStatus();
     }
-    async function testBuilderStep(){
+    async function testBuilderStepAt(idx){
       const msg = document.getElementById("builder_msg");
       const out = document.getElementById("builder_output");
-      msg.textContent = "Testing step...";
-      const res = await fetch(`/api/builder/test-step`, {
+      builderStepTesting[idx] = true;
+      renderBuilderModel();
+      msg.textContent = `Validating draft before step ${idx + 1} test...`;
+      const validateRes = await fetch(`/api/builder/validate`, {
         method:"POST",
         headers: {"Content-Type":"application/json"},
         body: JSON.stringify(builderPayload()),
       });
+      if(!validateRes.ok){
+        builderValidationState = "unknown";
+        delete builderStepTesting[idx];
+        renderBuilderModel();
+        msg.textContent = await readMessage(validateRes);
+        return;
+      }
+      builderValidationState = "valid";
+      msg.textContent = `Testing step ${idx + 1}...`;
+      const payload = builderPayload();
+      payload.step_index = idx;
+      const res = await fetch(`/api/builder/test-step`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(payload),
+      });
       if(!res.ok){
+        builderStepStatus[idx] = "failed";
+        delete builderStepTesting[idx];
+        renderBuilderModel();
         msg.textContent = await readMessage(res);
         return;
       }
-      const payload = await res.json();
-      msg.textContent = `Step ${payload.step_name}: ${payload.success ? "ok" : "failed"}`;
-      out.textContent = JSON.stringify(payload, null, 2);
+      const data = await res.json();
+      builderStepStatus[idx] = data.success ? "run_ok" : "failed";
+      delete builderStepTesting[idx];
+      renderBuilderModel();
+      msg.textContent = `Step ${data.step_name}: ${data.success ? "successful" : "failed"}`;
+      out.textContent = JSON.stringify(data, null, 2);
     }
     async function loadRuns(){
       const res = isPipelineDetailView
@@ -824,11 +1514,28 @@ INDEX_HTML = """<!doctype html>
       if (!runId) return;
       window.location.href = `/runs/${encodeURIComponent(runId)}/live`;
     };
-    document.getElementById("btn_builder_load").onclick = async () => { builderLoaded = false; await tick(); };
+    document.getElementById("btn_builder_load").onclick = () => { openBuilderFilePicker(); };
+    document.getElementById("btn_builder_add_req").onclick = addBuilderRequire;
+    document.getElementById("btn_builder_add_var").onclick = addBuilderVar;
+    document.getElementById("btn_builder_add_dir").onclick = addBuilderDir;
+    document.getElementById("btn_builder_add_step").onclick = addBuilderStep;
     document.getElementById("btn_builder_save").onclick = saveBuilderDraft;
     document.getElementById("btn_builder_generate").onclick = generateBuilderDraft;
     document.getElementById("btn_builder_validate").onclick = validateBuilderDraft;
-    document.getElementById("btn_builder_test_step").onclick = testBuilderStep;
+    document.getElementById("btn_builder_run").onclick = runBuilderPipeline;
+    document.getElementById("b_requires").addEventListener("input", handleBuilderInput);
+    document.getElementById("b_vars").addEventListener("input", handleBuilderInput);
+    document.getElementById("b_dirs").addEventListener("input", handleBuilderInput);
+    document.getElementById("b_vars").addEventListener("change", handleBuilderInput);
+    document.getElementById("b_dirs").addEventListener("change", handleBuilderInput);
+    document.getElementById("b_steps").addEventListener("input", handleBuilderInput);
+    document.getElementById("b_steps").addEventListener("change", handleBuilderInput);
+    document.getElementById("b_requires").addEventListener("click", handleBuilderClicks);
+    document.getElementById("b_vars").addEventListener("click", handleBuilderClicks);
+    document.getElementById("b_dirs").addEventListener("click", handleBuilderClicks);
+    document.getElementById("b_steps").addEventListener("click", handleBuilderClicks);
+    document.getElementById("b_global_config").addEventListener("change", async () => { await loadBuilderPlugins(); });
+    document.getElementById("b_file_picker").addEventListener("change", async () => { await loadBuilderSourceFromFilePicker(); });
     tick(); setInterval(tick, 12000);
   </script>
 </body>
@@ -1024,16 +1731,11 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"Pipeline path not found: {pipeline_path}")
 
     global_config_raw = str(payload.get("global_config") or "").strip()
-    execution_config_raw = str(payload.get("execution_config") or "").strip()
+    environments_config_raw = str(payload.get("environments_config") or "").strip()
     env_name_raw = str(payload.get("env") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
-    execution_config_path = Path(execution_config_raw).expanduser() if execution_config_raw else None
+    environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
     env_name = env_name_raw or None
-
-    if execution_config_path and not env_name:
-        raise HTTPException(status_code=400, detail="`env` is required when `execution_config` is provided.")
-    if env_name and not execution_config_path:
-        raise HTTPException(status_code=400, detail="`execution_config` is required when `env` is provided.")
 
     executor = str(payload.get("executor") or "local").strip().lower()
     if executor not in {"local", "slurm"}:
@@ -1057,7 +1759,7 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
         "payload": payload,
         "pipeline_path": pipeline_path,
         "global_config_path": global_config_path,
-        "execution_config_path": execution_config_path,
+        "environments_config_path": environments_config_path,
         "env_name": env_name,
         "executor": executor,
         "plugins_dir": Path(payload.get("plugins_dir") or "plugins"),
@@ -1082,19 +1784,38 @@ def _resolve_global_vars(global_config_path: Optional[Path]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"Global config error: {exc}") from exc
 
 
-def _resolve_execution_env(execution_config_path: Optional[Path], env_name: Optional[str]) -> dict[str, Any]:
-    if not execution_config_path and not env_name:
-        return {}
+def _resolve_execution_env(
+    environments_config_path: Optional[Path],
+    env_name: Optional[str],
+    *,
+    executor: str,
+) -> tuple[dict[str, Any], Optional[Path], Optional[str]]:
     try:
-        envs = load_execution_config(execution_config_path)  # type: ignore[arg-type]
-        env = envs.get(str(env_name), {})
+        resolved = resolve_execution_config_path(environments_config_path)
+    except ExecutionConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
+    selected_env_name = str(env_name or "").strip() or ("local" if executor == "local" else None)
+    if not resolved and not selected_env_name:
+        return {}, None, None
+    if not resolved and selected_env_name:
+        if selected_env_name == "local" and not env_name:
+            return {}, None, selected_env_name
+        raise HTTPException(status_code=400, detail="`env` was provided but no environments config was found.")
+    if not resolved:
+        return {}, None, selected_env_name
+    try:
+        if not selected_env_name:
+            return {}, resolved, None
+        envs = load_execution_config(resolved)
+        env = envs.get(str(selected_env_name), {})
         if not env:
-            raise HTTPException(status_code=400, detail=f"Execution env '{env_name}' not found in config.")
-        return apply_execution_env_overrides(env)
+            raise HTTPException(status_code=400, detail=f"Execution env '{selected_env_name}' not found in config.")
+        validate_environment_executor(str(selected_env_name), env, executor=executor)
+        return apply_execution_env_overrides(env), resolved, selected_env_name
     except HTTPException:
         raise
     except ExecutionConfigError as exc:
-        raise HTTPException(status_code=400, detail=f"Execution config error: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
 
 
 def _parse_pipeline_from_yaml_text(
@@ -1119,12 +1840,120 @@ def _parse_pipeline_from_yaml_text(
             pass
 
 
+def _resolve_builder_plugins_dir(*, global_config_path: Optional[Path], plugins_dir: Optional[str]) -> Path:
+    if plugins_dir and str(plugins_dir).strip():
+        return Path(str(plugins_dir).strip()).expanduser()
+    global_vars = _resolve_global_vars(global_config_path)
+    cfg_plugins = str(global_vars.get("plugins_dir") or "").strip()
+    if cfg_plugins:
+        return Path(cfg_plugins).expanduser()
+    return Path("plugins")
+
+
+def _parse_step_script_for_builder(script: str) -> tuple[str, dict[str, Any]]:
+    try:
+        tokens = shlex.split(str(script or ""))
+    except Exception:
+        tokens = str(script or "").split()
+    if not tokens:
+        return "", {}
+    plugin_ref = tokens[0]
+    params: dict[str, Any] = {}
+    for tok in tokens[1:]:
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            params[k] = v
+    return plugin_ref, params
+
+
+def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
+    import yaml
+
+    try:
+        data = yaml.safe_load(yaml_text) or {}
+    except yaml.YAMLError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    vars_section = data.get("vars", {}) or {}
+    dirs_section = data.get("dirs", {}) or {}
+    reqs = data.get("requires_pipelines", []) or []
+    steps_section = data.get("steps", []) or []
+
+    model_steps: list[dict[str, Any]] = []
+    if isinstance(steps_section, list):
+        for raw in steps_section:
+            if not isinstance(raw, dict):
+                continue
+            step_map = raw.get("step") if isinstance(raw.get("step"), dict) else raw
+            if not isinstance(step_map, dict):
+                continue
+            plugin_ref, params = _parse_step_script_for_builder(str(step_map.get("script") or ""))
+            stype = "sequential"
+            if step_map.get("foreach"):
+                stype = "foreach"
+            elif step_map.get("parallel_with"):
+                stype = "parallel"
+            model_steps.append(
+                {
+                    "type": stype,
+                    "plugin": plugin_ref,
+                    "params": params,
+                    "output_var": str(step_map.get("output_var") or ""),
+                    "when": str(step_map.get("when") or ""),
+                    "parallel_with": str(step_map.get("parallel_with") or ""),
+                    "foreach": str(step_map.get("foreach") or ""),
+                }
+            )
+    return {
+        "vars": vars_section if isinstance(vars_section, dict) else {},
+        "dirs": dirs_section if isinstance(dirs_section, dict) else {},
+        "requires_pipelines": [str(x) for x in reqs if str(x).strip()] if isinstance(reqs, list) else [],
+        "steps": model_steps,
+    }
+
+
 def _validate_draft_yaml(yaml_text: str) -> tuple[Optional[Pipeline], Optional[str]]:
     try:
         pipeline = _parse_pipeline_from_yaml_text(yaml_text, global_config_path=None)
         return pipeline, None
     except HTTPException as exc:
         return None, str(exc.detail)
+
+
+def _dir_category(key: str) -> Optional[str]:
+    k = str(key or "").strip().lower()
+    if not k:
+        return None
+    if k in {"work", "workdir", "work_dir"}:
+        return "work"
+    if k in {"log", "logdir", "log_dir"}:
+        return "log"
+    if k in {"artifact", "artifactdir", "artifact_dir"}:
+        return "artifact"
+    if k in {"stage", "stagedir", "stage_dir"}:
+        return "stage"
+    if k in {"tmp", "temp", "tmpdir", "tmp_dir", "tempdir", "temp_dir"}:
+        return "tmp"
+    return None
+
+
+def _validate_pipeline_dir_contract(pipeline: Pipeline) -> None:
+    counts = {"work": 0, "log": 0, "artifact": 0, "stage": 0, "tmp": 0}
+    for key in (pipeline.dirs or {}).keys():
+        cat = _dir_category(str(key))
+        if cat:
+            counts[cat] += 1
+    errors: list[str] = []
+    if counts["work"] != 1:
+        errors.append(f"Exactly one work directory is required (found {counts['work']}).")
+    if counts["log"] != 1:
+        errors.append(f"Exactly one log directory is required (found {counts['log']}).")
+    for optional_name in ("artifact", "stage", "tmp"):
+        if counts[optional_name] > 1:
+            errors.append(f"At most one {optional_name} directory is allowed (found {counts[optional_name]}).")
+    if errors:
+        raise HTTPException(status_code=400, detail=" ".join(errors))
 
 
 def _record_pipeline_validation(
@@ -1169,16 +1998,22 @@ def _resolve_repo_relative_pipeline_path(pipeline: str) -> Path:
     if not raw:
         raise HTTPException(status_code=400, detail="`pipeline` is required.")
     repo_root = Path(".").resolve()
+    pipelines_root = (repo_root / "pipelines").resolve()
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
-        candidate = repo_root / candidate
+        parts = list(candidate.parts)
+        if parts and parts[0].lower() == "pipelines":
+            candidate = Path(*parts[1:]) if len(parts) > 1 else Path("")
+        if candidate.suffix.lower() not in {".yml", ".yaml"}:
+            candidate = candidate.with_suffix(".yml")
+        candidate = pipelines_root / candidate
     resolved = candidate.resolve()
     try:
-        resolved.relative_to(repo_root)
+        resolved.relative_to(pipelines_root)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Pipeline path must be inside repository: {raw}") from exc
+        raise HTTPException(status_code=400, detail=f"Pipeline path must be inside pipelines/: {raw}") from exc
     if resolved.suffix.lower() not in {".yml", ".yaml"}:
-        raise HTTPException(status_code=400, detail="Pipeline path must end with .yml or .yaml")
+        resolved = resolved.with_suffix(".yml")
     return resolved
 
 
@@ -1213,16 +2048,64 @@ def api_pipelines_update(pipeline_id: str, payload: Optional[dict[str, Any]] = B
 
 @app.get("/api/builder/source")
 def api_builder_source(pipeline: str = Query(default="")) -> dict:
-    path = Path((pipeline or "").strip()).expanduser()
-    if not pipeline:
+    raw = (pipeline or "").strip()
+    if not raw:
         raise HTTPException(status_code=400, detail="`pipeline` query param is required.")
+    repo_root = Path(".").resolve()
+    pipelines_root = (repo_root / "pipelines").resolve()
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        parts = list(path.parts)
+        if parts and parts[0].lower() == "pipelines":
+            path = Path(*parts[1:]) if len(parts) > 1 else Path("")
+        if path.suffix.lower() not in {".yml", ".yaml"}:
+            path = path.with_suffix(".yml")
+        path = (pipelines_root / path).resolve()
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"Pipeline file not found: {path}")
     try:
         text = path.read_text(encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Failed to read pipeline file: {exc}") from exc
-    return {"pipeline": str(path), "yaml_text": text}
+    return {"pipeline": str(path), "yaml_text": text, "model": _pipeline_to_builder_model_from_yaml(text)}
+
+
+@app.get("/api/builder/files")
+def api_builder_files() -> dict:
+    repo_root = Path(".").resolve()
+    pipelines_root = (repo_root / "pipelines").resolve()
+    pipelines_root.mkdir(parents=True, exist_ok=True)
+    files = sorted(p.relative_to(pipelines_root).as_posix() for p in pipelines_root.rglob("*.yml"))
+    return {"pipelines_root": str(pipelines_root), "files": files}
+
+
+@app.get("/api/builder/plugins")
+def api_builder_plugins(
+    global_config: Optional[str] = Query(default=None),
+    plugins_dir: Optional[str] = Query(default=None),
+) -> dict:
+    global_config_path = Path(global_config).expanduser() if (global_config or "").strip() else None
+    root = _resolve_builder_plugins_dir(global_config_path=global_config_path, plugins_dir=plugins_dir)
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"Plugins directory not found: {root}")
+    entries: list[dict[str, Any]] = []
+    for f in sorted(root.rglob("*.py")):
+        if f.name.startswith("_"):
+            continue
+        rel = f.relative_to(root).as_posix()
+        try:
+            pd = load_plugin(f)
+            entries.append(
+                {
+                    "path": rel,
+                    "name": pd.meta.name,
+                    "description": pd.meta.description,
+                    "params": pd.meta.params or {},
+                }
+            )
+        except PluginLoadError:
+            entries.append({"path": rel, "name": rel, "description": "unloadable plugin", "params": {}})
+    return {"plugins_dir": str(root), "plugins": entries}
 
 
 @app.post("/api/builder/validate")
@@ -1233,6 +2116,7 @@ def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None))
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
     try:
         pipeline = _parse_pipeline_from_yaml_text(str(payload.get("yaml_text") or ""), global_config_path=global_config_path)
+        _validate_pipeline_dir_contract(pipeline)
     except HTTPException as exc:
         _record_pipeline_validation(
             pipeline=pipeline_label,
@@ -1302,8 +2186,10 @@ def api_builder_generate(payload: Optional[dict[str, Any]] = Body(default=None))
             repair_error = str(exc)
 
     if pipeline is not None:
+        model_payload = _pipeline_to_builder_model_from_yaml(yaml_text)
         return {
             "yaml_text": yaml_text,
+            "model": model_payload,
             "valid": True,
             "repaired": repaired,
             "attempts": attempts,
@@ -1312,6 +2198,7 @@ def api_builder_generate(payload: Optional[dict[str, Any]] = Body(default=None))
         }
     return {
         "yaml_text": yaml_text,
+        "model": _pipeline_to_builder_model_from_yaml(yaml_text),
         "valid": False,
         "repaired": repaired,
         "attempts": attempts,
@@ -1328,22 +2215,50 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
     global_config_raw = str(payload.get("global_config") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
     pipeline = _parse_pipeline_from_yaml_text(str(payload.get("yaml_text") or ""), global_config_path=global_config_path)
+    _validate_pipeline_dir_contract(pipeline)
     step_name = str(payload.get("step_name") or "").strip()
+    step_index_raw = payload.get("step_index")
+    step_index: Optional[int] = None
+    if step_index_raw not in (None, ""):
+        try:
+            step_index = int(step_index_raw)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="`step_index` must be an integer.") from exc
+        if step_index < 0:
+            raise HTTPException(status_code=400, detail="`step_index` must be >= 0.")
     target_step: Optional[Step] = None
-    if step_name:
+    target_step_index: Optional[int] = None
+    if step_index is not None:
+        if step_index >= len(pipeline.steps):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Step index out of range: {step_index} (step_count={len(pipeline.steps)}).",
+            )
+        target_step = pipeline.steps[step_index]
+        target_step_index = step_index
+    elif step_name:
         for s in pipeline.steps:
             if s.name == step_name:
                 target_step = s
                 break
         if target_step is None:
             raise HTTPException(status_code=400, detail=f"Step not found in draft: {step_name}")
+        target_step_index = next((i for i, s in enumerate(pipeline.steps) if s.name == target_step.name), None)
     else:
         target_step = pipeline.steps[0] if pipeline.steps else None
+        target_step_index = 0 if target_step is not None else None
     if target_step is None:
         raise HTTPException(status_code=400, detail="Draft has no steps to test.")
 
     plugins_dir = Path(payload.get("plugins_dir") or "plugins")
-    workdir = Path(payload.get("workdir") or ".runs/builder")
+    workdir_raw = str(payload.get("workdir") or "").strip()
+    if not workdir_raw:
+        for key in ("work", "workdir", "work_dir"):
+            candidate = str(pipeline.dirs.get(key) or "").strip()
+            if candidate:
+                workdir_raw = candidate
+                break
+    workdir = Path(workdir_raw or ".runs/builder")
     dry_run = _parse_bool(payload.get("dry_run"), default=False)
     max_retries = int(payload.get("max_retries", 0) or 0)
     retry_delay_seconds = float(payload.get("retry_delay_seconds", 0.0) or 0.0)
@@ -1368,6 +2283,7 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
         "run_id": result.run_id,
         "artifact_dir": result.artifact_dir,
         "step_name": target_step.name,
+        "step_index": target_step_index,
         "success": bool(step_result.success if step_result else False),
         "skipped": bool(step_result.skipped if step_result else False),
         "error": step_result.error if step_result else "No step result produced.",
@@ -1392,7 +2308,11 @@ def _payload_with_pipeline(payload: Optional[dict[str, Any]], pipeline_id: str) 
 def api_action_validate(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     args = _parse_action_payload(payload)
     global_vars = _resolve_global_vars(args["global_config_path"])
-    execution_env = _resolve_execution_env(args["execution_config_path"], args["env_name"])
+    execution_env, environments_config_path, env_name = _resolve_execution_env(
+        args["environments_config_path"],
+        args["env_name"],
+        executor=args["executor"],
+    )
     try:
         pipeline = parse_pipeline(args["pipeline_path"], global_vars=global_vars, env_vars=execution_env)
     except (PipelineError, FileNotFoundError) as exc:
@@ -1425,7 +2345,11 @@ def api_action_validate(payload: Optional[dict[str, Any]] = Body(default=None)) 
 def api_action_run(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     args = _parse_action_payload(payload)
     global_vars = _resolve_global_vars(args["global_config_path"])
-    execution_env = _resolve_execution_env(args["execution_config_path"], args["env_name"])
+    execution_env, environments_config_path, env_name = _resolve_execution_env(
+        args["environments_config_path"],
+        args["env_name"],
+        executor=args["executor"],
+    )
     max_retries = (
         args["max_retries"] if args["max_retries"] is not None else int(execution_env.get("step_max_retries", 0) or 0)
     )
@@ -1450,7 +2374,7 @@ def api_action_run(payload: Optional[dict[str, Any]] = Body(default=None)) -> di
         repo_root=repo_root,
         pipeline_path=args["pipeline_path"],
         global_config_path=args["global_config_path"],
-        execution_config_path=args["execution_config_path"],
+        environments_config_path=environments_config_path,
         plugin_dir=args["plugins_dir"],
         pipeline=pipeline,
         cli_command=f"etl web run {args['pipeline_path']}",
@@ -1462,8 +2386,8 @@ def api_action_run(payload: Optional[dict[str, Any]] = Body(default=None)) -> di
             plugins_dir=args["plugins_dir"],
             workdir=args["workdir"],
             global_config=args["global_config_path"],
-            execution_config=args["execution_config_path"],
-            env_name=args["env_name"],
+            environments_config=environments_config_path,
+            env_name=env_name,
             dry_run=args["dry_run"],
             verbose=args["verbose"],
             enforce_git_checkout=True,
@@ -1625,7 +2549,7 @@ def api_resume_run(run_id: str, payload: Optional[dict[str, Any]] = Body(default
         repo_root=Path(".").resolve(),
         pipeline_path=pipeline_path,
         global_config_path=None,
-        execution_config_path=None,
+        environments_config_path=None,
         plugin_dir=plugins_dir,
         pipeline=pipeline,
         cli_command=f"etl web resume {run_id}",

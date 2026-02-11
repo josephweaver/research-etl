@@ -1,0 +1,6 @@
+vars:
+  env: "{env.name}"
+dirs:
+  {}
+steps:
+  - script: echo.py

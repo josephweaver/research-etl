@@ -1,5 +1,6 @@
 environments:
   hpcc_msu:
+    executor: slurm
     name: dev
     datadir: /mnt/scratch/Viens_AgroEco_Lab/data
     host: hpcc.msu.edu
@@ -27,6 +28,7 @@ environments:
     # Workspace mode is last-resort and least reproducible.
     allow_workspace_source: false
   hpcc_beta:
+    executor: slurm
     name: beta
     datadir: /hpcc/data
     host: beta.login.univ.edu

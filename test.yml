@@ -1,0 +1,7 @@
+vars:
+  env: "{env.name}"
+  var_1: "Hello World!"
+dirs:
+  {}
+steps:
+  - script: echo.py

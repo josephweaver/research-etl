@@ -79,7 +79,7 @@ def collect_run_provenance(
     repo_root: Path,
     pipeline_path: Path,
     global_config_path: Optional[Path],
-    execution_config_path: Optional[Path],
+    environments_config_path: Optional[Path],
     plugin_dir: Path,
     pipeline: Pipeline,
     cli_command: Optional[str],
@@ -96,7 +96,7 @@ def collect_run_provenance(
         "cli_command": cli_command,
         "pipeline_checksum": _sha256_file(pipeline_path),
         "global_config_checksum": _sha256_file(global_config_path),
-        "execution_config_checksum": _sha256_file(execution_config_path),
+        "execution_config_checksum": _sha256_file(environments_config_path),
         "plugin_checksums_json": plugin_checksums if plugin_checksums else None,
     }
 

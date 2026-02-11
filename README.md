@@ -84,7 +84,7 @@ def run(args, ctx):
 Templating is iterative (resolved repeatedly until values stop changing). Resolution context precedence is:
 
 1. `global.*` from `config/global.yml`, also loaded as flat keys.
-2. `env.*` from selected execution environment (`config/execution.yml --env ...`), also loaded as flat keys and overriding global flat collisions.
+2. `env.*` from selected execution environment (`config/environments.yml --env ...`), also loaded as flat keys and overriding global flat collisions.
 3. `pipe.*` from pipeline `vars`, also loaded as flat keys and overriding prior flat collisions.
 
 This supports patterns like:
@@ -170,8 +170,8 @@ Detailed platform install steps: `docs/install.md`.
 4) Add a plugin under `plugins/` (see `plugins/echo.py`).  
 5) Create a pipeline YAML (see `pipelines/sample.yml`).  
 6) (Optional) Create global config `config/global.yml` using `config/global.example.yml` and reference with `{global.data}` etc.  
-7) (Optional) Define execution environments in `config/execution.yml` (see `config/execution.example.yml`) and pick one with `--execution-config ... --env hpcc_alpha`.  
-8) Run: `etl validate pipelines/sample.yml --global-config config/global.yml` then `etl run pipelines/sample.yml --global-config config/global.yml --execution-config config/execution.yml --env hpcc_alpha`.  
+7) (Optional) Define execution environments in `config/environments.yml` (see `config/environments.example.yml`) and pick one with `--environments-config ... --env hpcc_alpha`.  
+8) Run: `etl validate pipelines/sample.yml --global-config config/global.yml` then `etl run pipelines/sample.yml --global-config config/global.yml --environments-config config/environments.yml --env hpcc_alpha`.  
 9) Inspect runs: `etl runs list` and `etl runs show <run_id>`.
 
 Defaults: plugins in `plugins/`, run artifacts in `.runs/`, run records in `.runs/runs.jsonl`.
@@ -193,9 +193,9 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 
 - `etl plugins list [-d plugins/]` â€“ list discovered plugins.  
 - `etl validate <pipeline.yml> [--global-config config/global.yml]` â€“ parse and validate pipeline syntax/templating.  
-- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --execution-config ... --env name --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.  
+- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --environments-config ... --env name --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.  
   - If `requires_pipelines` is set in the target pipeline, missing successful dependencies are run first automatically.
-  - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in execution config or env vars.  
+  - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in environments config or env vars.  
 - `etl runs list [--store .runs/runs.jsonl]` â€“ show recent recorded runs.  
 - `etl runs show <run_id> [--store ...]` â€“ show details for a specific run.
 - `etl diagnostics latest [--workdir .runs] [--show]` - print latest diagnostic report path; optional `--show` prints JSON contents.
@@ -277,10 +277,15 @@ Artifact browsing uses executor-specific retrieval methods. `local` reads local 
 
 ## Execution environments
 
-Define multiple clusters/targets in `config/execution.yml`:
+Define multiple clusters/targets in `config/environments.yml`:
 ```yaml
 environments:
+  local:
+    executor: local
+    workdir: .runs
+    logdir: .runs/logs
   hpcc_alpha:
+    executor: slurm
     host: alpha.login.univ.edu
     partition: compute
     account: proj123
@@ -291,18 +296,20 @@ environments:
     workdir: /scratch/work
     modules: ["gdal", "python/3.11"]
 ```
-Select with `--execution-config config/execution.yml --env hpcc_alpha`.
+Select with `--environments-config config/environments.yml --env hpcc_alpha`.
+If `--executor local` is used and no `--env` is provided, the tool automatically uses `environments.local` when available.
+Each environment can declare `executor: local|slurm`; mismatched selections are rejected.
 
 ### Remote execution (SLURM)
 
 Run the sample pipeline on the remote SLURM target:
 ```powershell
-etl run pipelines/sample.yml --executor slurm --execution-config config/execution.yml --env hpcc_msu --verbose
+etl run pipelines/sample.yml --executor slurm --environments-config config/environments.yml --env hpcc_msu --verbose
 ```
 
 Preview submission without executing jobs:
 ```powershell
-etl run pipelines/sample.yml --executor slurm --execution-config config/execution.yml --env hpcc_msu --verbose --dry-run
+etl run pipelines/sample.yml --executor slurm --environments-config config/environments.yml --env hpcc_msu --verbose --dry-run
 ```
 
 On remote submissions, the SLURM executor ensures `~/.secrets/etl` exists on the login host with `chmod 600`, writes/updates `export ETL_DATABASE_URL=...` in that file when local `ETL_DATABASE_URL` is available, and generated batch scripts source `~/.secrets/etl` so jobs inherit the DB URL. If the current shell does not contain the variable, Windows `setx` values are also checked from User/Machine environment entries. If neither local nor remote secret value exists, submission fails with a clear error.
@@ -314,8 +321,8 @@ On remote submissions, the SLURM executor ensures `~/.secrets/etl` exists on the
 - Set `logdir` and `workdir` to cluster-visible paths; logs default to `<logdir>/etl-<run_id>-%j.out`.
 - The current SLURM executor submits a setup job plus one or more dependent batch/array jobs that execute `etl/run_batch.py`.
 - Limits/concurrency overrides: config supports `job_limit`, `array_task_limit`, `max_parallel`; environment variables `ETL_SLURM_JOB_LIMIT`, `ETL_SLURM_ARRAY_LIMIT`, `ETL_MAX_PARALLEL` override at runtime.
-- Remote submission: set `ssh_host` (and optional `ssh_user`, `ssh_jump` for bastion/ProxyJump, `remote_repo`) in the execution config to submit `sbatch` via SSH to the cluster login node.
-- Optional repo sync: set `sync: true` and `remote_repo` in execution config to scp the current repo to the cluster before submission (requires `scp` and may be slow for large repos).
+- Remote submission: set `ssh_host` (and optional `ssh_user`, `ssh_jump` for bastion/ProxyJump, `remote_repo`) in the environments config to submit `sbatch` via SSH to the cluster login node.
+- Optional repo sync: set `sync: true` and `remote_repo` in environments config to scp the current repo to the cluster before submission (requires `scp` and may be slow for large repos).
 - SSH/SCP timeouts configurable per env (`ssh_timeout`, `scp_timeout`; defaults: 120s/300s).
 
 ## Architecture
