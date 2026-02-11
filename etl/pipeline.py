@@ -50,6 +50,8 @@ class Pipeline:
     vars: Dict[str, Any] = field(default_factory=dict)
     dirs: Dict[str, Any] = field(default_factory=dict)
     requires_pipelines: List[str] = field(default_factory=list)
+    project_id: Optional[str] = None
+    shared_with_projects: List[str] = field(default_factory=list)
     steps: List[Step] = field(default_factory=list)
 
 
@@ -161,6 +163,14 @@ def parse_pipeline(
     vars_section = data.get("vars", {}) or {}
     dirs_section = data.get("dirs", {}) or {}
     requires_section = data.get("requires_pipelines", []) or []
+    metadata_section = data.get("metadata", {}) or {}
+    project_id_raw = data.get("project_id")
+    shared_with_raw = data.get("shared_with_projects")
+    if isinstance(metadata_section, dict):
+        if project_id_raw is None:
+            project_id_raw = metadata_section.get("project_id")
+        if shared_with_raw is None:
+            shared_with_raw = metadata_section.get("shared_with_projects")
     steps_section = data.get("steps", []) or []
 
     if not isinstance(vars_section, dict):
@@ -172,6 +182,15 @@ def parse_pipeline(
     for idx, req in enumerate(requires_section):
         if not isinstance(req, str) or not req.strip():
             raise PipelineError(f"`requires_pipelines[{idx}]` must be a non-empty string")
+    if project_id_raw is not None and not isinstance(project_id_raw, str):
+        raise PipelineError("`project_id` must be a string when provided")
+    if shared_with_raw is None:
+        shared_with_raw = []
+    if not isinstance(shared_with_raw, list):
+        raise PipelineError("`shared_with_projects` must be a list when provided")
+    for idx, owner in enumerate(shared_with_raw):
+        if not isinstance(owner, str) or not owner.strip():
+            raise PipelineError(f"`shared_with_projects[{idx}]` must be a non-empty string")
     if not isinstance(steps_section, list):
         raise PipelineError("`steps` must be a list")
 
@@ -235,6 +254,8 @@ def parse_pipeline(
         vars=vars_interp,
         dirs=dirs_interp,
         requires_pipelines=[str(x).strip() for x in requires_section if str(x).strip()],
+        project_id=str(project_id_raw).strip() if isinstance(project_id_raw, str) and project_id_raw.strip() else None,
+        shared_with_projects=[str(x).strip() for x in shared_with_raw if str(x).strip()],
         steps=steps,
     )
     validate_pipeline(pipeline)  # raise if invalid

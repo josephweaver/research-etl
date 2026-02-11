@@ -26,6 +26,7 @@ from etl.execution_config import (
 )
 from etl.pipeline import parse_pipeline, PipelineError
 from etl.provenance import collect_run_provenance
+from etl.projects import resolve_project_id
 from etl.runner import run_pipeline, RunResult
 from etl.tracking import upsert_run_status, upsert_step_attempt, load_run_step_states
 
@@ -70,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workdir", default=".runs", help="Work directory base")
     parser.add_argument("--context-file", help="JSON file to load/save shared context", default=None)
     parser.add_argument("--run-id", help="Existing run_id (for chained batches)", default=None)
+    parser.add_argument("--project-id", help="Project partition id override", default=None)
     parser.add_argument("--resume-run-id", default=None, help="Prior run_id to resume from (skip successful steps)")
     parser.add_argument("--max-retries", type=int, default=0, help="Max step retries after first failure")
     parser.add_argument("--retry-delay-seconds", type=float, default=0.0, help="Delay between retries")
@@ -136,6 +138,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     ctx = load_context(Path(args.context_file)) if args.context_file else {}
+    project_id = resolve_project_id(
+        explicit_project_id=args.project_id or ctx.get("project_id"),
+        pipeline_project_id=getattr(full_pipeline, "project_id", None),
+        pipeline_path=args.pipeline,
+    )
 
     # slice pipeline steps
     indices = [int(x) for x in args.steps.split(",") if x.strip() != ""]
@@ -158,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     upsert_run_status(
         run_id=run_id,
         pipeline=args.pipeline,
+        project_id=project_id,
         status="running",
         success=False,
         started_at=batch_started_at,
@@ -199,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
                     started_at=att.get("started_at", batch_started_at),
                     ended_at=att.get("ended_at", batch_ended_at),
                     pipeline=args.pipeline,
+                    project_id=project_id,
                     artifact_dir=str(args.workdir),
                     executor="slurm",
                 )
@@ -215,11 +224,13 @@ def main(argv: list[str] | None = None) -> int:
                 started_at=batch_started_at,
                 ended_at=batch_ended_at,
                 pipeline=args.pipeline,
+                project_id=project_id,
                 artifact_dir=str(args.workdir),
                 executor="slurm",
             )
 
     # merge outputs into ctx (simple overwrite)
+    ctx["project_id"] = project_id
     for step_res in result.steps:
         if step_res.success and step_res.step.output_var:
             ctx[step_res.step.output_var] = step_res.outputs
@@ -233,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         upsert_run_status(
             run_id=run_id,
             pipeline=args.pipeline,
+            project_id=project_id,
             status="failed",
             success=False,
             started_at=batch_started_at,
@@ -252,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     upsert_run_status(
         run_id=run_id,
         pipeline=args.pipeline,
+        project_id=project_id,
         status="running",
         success=False,
         started_at=batch_started_at,
@@ -269,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         upsert_run_status(
             run_id=run_id,
             pipeline=args.pipeline,
+            project_id=project_id,
             status="succeeded",
             success=True,
             started_at=batch_started_at,

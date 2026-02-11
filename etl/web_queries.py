@@ -37,6 +37,7 @@ def fetch_runs(
     status: Optional[str] = None,
     executor: Optional[str] = None,
     q: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     limit = max(1, min(int(limit), 500))
     try:
@@ -54,11 +55,14 @@ def fetch_runs(
                     where_parts.append("(run_id ILIKE %s OR pipeline ILIKE %s)")
                     like = f"%{q}%"
                     params.extend([like, like])
+                if project_id:
+                    where_parts.append("project_id = %s")
+                    params.append(project_id)
                 where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
                 cur.execute(
                     f"""
                     SELECT
-                        run_id, pipeline, status, success, started_at, ended_at,
+                        run_id, pipeline, project_id, status, success, started_at, ended_at,
                         message, executor, artifact_dir
                     FROM etl_runs
                     {where_sql}
@@ -79,13 +83,14 @@ def fetch_runs(
             {
                 "run_id": row[0],
                 "pipeline": row[1],
-                "status": row[2],
-                "success": bool(row[3]),
-                "started_at": row[4].isoformat() if row[4] is not None else None,
-                "ended_at": row[5].isoformat() if row[5] is not None else None,
-                "message": row[6],
-                "executor": row[7],
-                "artifact_dir": row[8],
+                "project_id": row[2],
+                "status": row[3],
+                "success": bool(row[4]),
+                "started_at": row[5].isoformat() if row[5] is not None else None,
+                "ended_at": row[6].isoformat() if row[6] is not None else None,
+                "message": row[7],
+                "executor": row[8],
+                "artifact_dir": row[9],
             }
         )
     return out
@@ -95,6 +100,7 @@ def fetch_pipelines(
     limit: int = 100,
     *,
     q: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     limit = max(1, min(int(limit), 500))
     try:
@@ -105,20 +111,25 @@ def fetch_pipelines(
                 if q:
                     where_sql = "WHERE pipeline ILIKE %s"
                     params.append(f"%{q}%")
+                if project_id:
+                    where_sql = f"{where_sql} {'AND' if where_sql else 'WHERE'} project_id = %s"
+                    params.append(project_id)
                 cur.execute(
                     f"""
                     WITH grouped AS (
                         SELECT
                             pipeline,
+                            project_id,
                             COUNT(*) AS total_runs,
                             SUM(CASE WHEN status = 'failed' OR NOT success THEN 1 ELSE 0 END) AS failed_runs,
                             MAX(started_at) AS last_started_at
                         FROM etl_runs
                         {where_sql}
-                        GROUP BY pipeline
+                        GROUP BY pipeline, project_id
                     )
                     SELECT
                         g.pipeline,
+                        g.project_id,
                         g.total_runs,
                         g.failed_runs,
                         g.last_started_at,
@@ -129,6 +140,7 @@ def fetch_pipelines(
                         SELECT status, executor
                         FROM etl_runs rr
                         WHERE rr.pipeline = g.pipeline
+                          AND COALESCE(rr.project_id, '') = COALESCE(g.project_id, '')
                         ORDER BY rr.started_at DESC NULLS LAST, rr.run_id DESC
                         LIMIT 1
                     ) r ON TRUE
@@ -145,48 +157,57 @@ def fetch_pipelines(
 
     out: List[Dict[str, Any]] = []
     for row in rows:
-        total_runs = int(row[1] or 0)
-        failed_runs = int(row[2] or 0)
+        total_runs = int(row[2] or 0)
+        failed_runs = int(row[3] or 0)
         failure_rate = (failed_runs / total_runs) if total_runs else 0.0
         out.append(
             {
                 "pipeline": row[0],
+                "project_id": row[1],
                 "total_runs": total_runs,
                 "failed_runs": failed_runs,
                 "failure_rate": failure_rate,
-                "last_started_at": row[3].isoformat() if row[3] is not None else None,
-                "last_status": row[4],
-                "last_executor": row[5],
+                "last_started_at": row[4].isoformat() if row[4] is not None else None,
+                "last_status": row[5],
+                "last_executor": row[6],
             }
         )
     return out
 
 
-def fetch_pipeline_detail(pipeline: str) -> Optional[Dict[str, Any]]:
+def fetch_pipeline_detail(pipeline: str, *, project_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     pipeline = (pipeline or "").strip()
     if not pipeline:
         return None
     try:
         with _connect() as conn:
             with conn.cursor() as cur:
+                where_project = ""
+                params: list[Any] = [pipeline]
+                if project_id:
+                    where_project = "AND project_id = %s"
+                    params.append(project_id)
                 cur.execute(
-                    """
+                    f"""
                     WITH stats AS (
                         SELECT
                             pipeline,
+                            MAX(project_id) AS project_id,
                             COUNT(*) AS total_runs,
                             SUM(CASE WHEN status = 'failed' OR NOT success THEN 1 ELSE 0 END) AS failed_runs,
                             MAX(started_at) AS last_started_at
                         FROM etl_runs
-                        WHERE pipeline = %s
+                        WHERE pipeline = %s {where_project}
                         GROUP BY pipeline
                     )
                     SELECT
                         s.pipeline,
+                        s.project_id,
                         s.total_runs,
                         s.failed_runs,
                         s.last_started_at,
                         r.run_id,
+                        r.project_id,
                         r.status,
                         r.executor,
                         r.started_at,
@@ -208,11 +229,12 @@ def fetch_pipeline_detail(pipeline: str) -> Optional[Dict[str, Any]]:
                             pipeline_checksum, global_config_checksum, execution_config_checksum, plugin_checksums_json
                         FROM etl_runs rr
                         WHERE rr.pipeline = s.pipeline
+                          AND COALESCE(rr.project_id, '') = COALESCE(s.project_id, '')
                         ORDER BY rr.started_at DESC NULLS LAST, rr.run_id DESC
                         LIMIT 1
                     ) r ON TRUE
                     """,
-                    (pipeline,),
+                    tuple(params),
                 )
                 row = cur.fetchone()
     except WebQueryError:
@@ -222,32 +244,34 @@ def fetch_pipeline_detail(pipeline: str) -> Optional[Dict[str, Any]]:
 
     if not row:
         return None
-    total_runs = int(row[1] or 0)
-    failed_runs = int(row[2] or 0)
+    total_runs = int(row[2] or 0)
+    failed_runs = int(row[3] or 0)
     failure_rate = (failed_runs / total_runs) if total_runs else 0.0
     return {
         "pipeline": row[0],
+        "project_id": row[1],
         "total_runs": total_runs,
         "failed_runs": failed_runs,
         "failure_rate": failure_rate,
-        "last_started_at": row[3].isoformat() if row[3] is not None else None,
+        "last_started_at": row[4].isoformat() if row[4] is not None else None,
         "latest_run": {
-            "run_id": row[4],
-            "status": row[5],
-            "executor": row[6],
-            "started_at": row[7].isoformat() if row[7] is not None else None,
-            "ended_at": row[8].isoformat() if row[8] is not None else None,
+            "run_id": row[5],
+            "project_id": row[6],
+            "status": row[7],
+            "executor": row[8],
+            "started_at": row[9].isoformat() if row[9] is not None else None,
+            "ended_at": row[10].isoformat() if row[10] is not None else None,
         },
         "latest_provenance": {
-            "git_commit_sha": row[9],
-            "git_branch": row[10],
-            "git_tag": row[11],
-            "git_is_dirty": row[12],
-            "cli_command": row[13],
-            "pipeline_checksum": row[14],
-            "global_config_checksum": row[15],
-            "execution_config_checksum": row[16],
-            "plugin_checksums_json": _jsonify(row[17]),
+            "git_commit_sha": row[11],
+            "git_branch": row[12],
+            "git_tag": row[13],
+            "git_is_dirty": row[14],
+            "cli_command": row[15],
+            "pipeline_checksum": row[16],
+            "global_config_checksum": row[17],
+            "execution_config_checksum": row[18],
+            "plugin_checksums_json": _jsonify(row[19]),
         },
     }
 
@@ -258,6 +282,7 @@ def fetch_pipeline_runs(
     *,
     status: Optional[str] = None,
     executor: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     pipeline = (pipeline or "").strip()
     if not pipeline:
@@ -274,10 +299,13 @@ def fetch_pipeline_runs(
                 if executor:
                     where_parts.append("executor = %s")
                     params.append(executor)
+                if project_id:
+                    where_parts.append("project_id = %s")
+                    params.append(project_id)
                 cur.execute(
                     f"""
                     SELECT
-                        run_id, pipeline, status, success, started_at, ended_at,
+                        run_id, pipeline, project_id, status, success, started_at, ended_at,
                         message, executor, artifact_dir
                     FROM etl_runs
                     WHERE {' AND '.join(where_parts)}
@@ -298,13 +326,14 @@ def fetch_pipeline_runs(
             {
                 "run_id": row[0],
                 "pipeline": row[1],
-                "status": row[2],
-                "success": bool(row[3]),
-                "started_at": row[4].isoformat() if row[4] is not None else None,
-                "ended_at": row[5].isoformat() if row[5] is not None else None,
-                "message": row[6],
-                "executor": row[7],
-                "artifact_dir": row[8],
+                "project_id": row[2],
+                "status": row[3],
+                "success": bool(row[4]),
+                "started_at": row[5].isoformat() if row[5] is not None else None,
+                "ended_at": row[6].isoformat() if row[6] is not None else None,
+                "message": row[7],
+                "executor": row[8],
+                "artifact_dir": row[9],
             }
         )
     return out
@@ -313,6 +342,8 @@ def fetch_pipeline_runs(
 def fetch_pipeline_validations(
     pipeline: str,
     limit: int = 50,
+    *,
+    project_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     pipeline = (pipeline or "").strip()
     if not pipeline:
@@ -321,16 +352,21 @@ def fetch_pipeline_validations(
     try:
         with _connect() as conn:
             with conn.cursor() as cur:
+                where_sql = "WHERE pipeline = %s"
+                params: list[Any] = [pipeline]
+                if project_id:
+                    where_sql += " AND project_id = %s"
+                    params.append(project_id)
                 cur.execute(
-                    """
+                    f"""
                     SELECT
-                        validation_id, pipeline, valid, step_count, step_names_json, error, source, requested_at
+                        validation_id, pipeline, project_id, valid, step_count, step_names_json, error, source, requested_at
                     FROM etl_pipeline_validations
-                    WHERE pipeline = %s
+                    {where_sql}
                     ORDER BY requested_at DESC, validation_id DESC
                     LIMIT %s
                     """,
-                    (pipeline, limit),
+                    (*params, limit),
                 )
                 rows = cur.fetchall()
     except WebQueryError:
@@ -344,12 +380,13 @@ def fetch_pipeline_validations(
             {
                 "validation_id": int(row[0]),
                 "pipeline": row[1],
-                "valid": bool(row[2]),
-                "step_count": int(row[3] or 0),
-                "step_names": _jsonify(row[4]) or [],
-                "error": row[5],
-                "source": row[6],
-                "requested_at": row[7].isoformat() if row[7] is not None else None,
+                "project_id": row[2],
+                "valid": bool(row[3]),
+                "step_count": int(row[4] or 0),
+                "step_names": _jsonify(row[5]) or [],
+                "error": row[6],
+                "source": row[7],
+                "requested_at": row[8].isoformat() if row[8] is not None else None,
             }
         )
     return out
@@ -361,7 +398,7 @@ def fetch_run_header(run_id: str) -> Optional[Dict[str, Any]]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT run_id, pipeline, executor, status, artifact_dir
+                    SELECT run_id, pipeline, project_id, executor, status, artifact_dir
                     FROM etl_runs
                     WHERE run_id = %s
                     """,
@@ -373,9 +410,10 @@ def fetch_run_header(run_id: str) -> Optional[Dict[str, Any]]:
                 return {
                     "run_id": row[0],
                     "pipeline": row[1],
-                    "executor": row[2],
-                    "status": row[3],
-                    "artifact_dir": row[4],
+                    "project_id": row[2],
+                    "executor": row[3],
+                    "status": row[4],
+                    "artifact_dir": row[5],
                 }
     except WebQueryError:
         raise
@@ -390,7 +428,7 @@ def fetch_run_detail(run_id: str) -> Optional[Dict[str, Any]]:
                 cur.execute(
                     """
                     SELECT
-                        run_id, pipeline, status, success, started_at, ended_at, message, executor, artifact_dir,
+                        run_id, pipeline, project_id, status, success, started_at, ended_at, message, executor, artifact_dir,
                         git_commit_sha, git_branch, git_tag, git_is_dirty, cli_command,
                         pipeline_checksum, global_config_checksum, execution_config_checksum, plugin_checksums_json
                     FROM etl_runs
@@ -481,23 +519,24 @@ def fetch_run_detail(run_id: str) -> Optional[Dict[str, Any]]:
     return {
         "run_id": run_row[0],
         "pipeline": run_row[1],
-        "status": run_row[2],
-        "success": bool(run_row[3]),
-        "started_at": run_row[4].isoformat() if run_row[4] is not None else None,
-        "ended_at": run_row[5].isoformat() if run_row[5] is not None else None,
-        "message": run_row[6],
-        "executor": run_row[7],
-        "artifact_dir": run_row[8],
+        "project_id": run_row[2],
+        "status": run_row[3],
+        "success": bool(run_row[4]),
+        "started_at": run_row[5].isoformat() if run_row[5] is not None else None,
+        "ended_at": run_row[6].isoformat() if run_row[6] is not None else None,
+        "message": run_row[7],
+        "executor": run_row[8],
+        "artifact_dir": run_row[9],
         "provenance": {
-            "git_commit_sha": run_row[9],
-            "git_branch": run_row[10],
-            "git_tag": run_row[11],
-            "git_is_dirty": run_row[12],
-            "cli_command": run_row[13],
-            "pipeline_checksum": run_row[14],
-            "global_config_checksum": run_row[15],
-            "execution_config_checksum": run_row[16],
-            "plugin_checksums_json": _jsonify(run_row[17]),
+            "git_commit_sha": run_row[10],
+            "git_branch": run_row[11],
+            "git_tag": run_row[12],
+            "git_is_dirty": run_row[13],
+            "cli_command": run_row[14],
+            "pipeline_checksum": run_row[15],
+            "global_config_checksum": run_row[16],
+            "execution_config_checksum": run_row[17],
+            "plugin_checksums_json": _jsonify(run_row[18]),
         },
         "steps": steps,
         "attempts": attempts,

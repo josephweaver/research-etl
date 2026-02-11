@@ -165,6 +165,7 @@ class LocalExecutor(Executor):
             executor=self.name,
             artifact_dir=getattr(run_result, "artifact_dir", None),
             provenance=context.get("provenance"),
+            project_id=context.get("project_id"),
         )
         return SubmissionResult(run_id=run_result.run_id, message=status.message)
 

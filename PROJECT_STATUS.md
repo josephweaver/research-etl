@@ -25,6 +25,13 @@
   - `etl_run_steps`
   - `etl_run_step_attempts`
   - `etl_run_events`
+- Project partitioning + access scaffolding is active:
+  - `project_id` stamped on runs/validations/artifacts.
+  - New DB objects: `etl_projects`, `etl_user_projects`, `etl_users`.
+  - Seeded memberships:
+    - `land-core` -> `land_core`
+    - `gee-lee` -> `gee_lee`
+    - `admin` -> `land_core`, `gee_lee`
 - Provenance is persisted on all run paths (local/slurm/run_batch/resume):
   - git fields, including `git_origin_url` and `git_repo_name`
   - CLI command
@@ -59,9 +66,18 @@
 - Pipeline draft persistence APIs are live:
   - `POST /api/pipelines`
   - `PUT /api/pipelines/{pipeline_id}`
+- API access scoping is active (service-mode scaffold):
+  - user scope via `X-ETL-User` header or `as_user` query param
+  - project checks enforced on run/pipeline list/detail/action routes
+  - optional `project_id` query filtering for runs/pipelines/validations
+- Top-nav user selector is live in web UI:
+  - `admin`
+  - `land-core`
+  - `gee-lee`
+  - selection persists in browser local storage and auto-applies to API calls.
 
 ## Test status
-- Current local run: `86 passed` (`python -m pytest -q`).
+- Current local run: `98 passed` (`python -m pytest -q`).
 - Coverage includes:
   - DB migration bootstrap
   - tracking write paths
@@ -75,7 +91,7 @@
 - Web resume currently supports `local` executor only (SLURM resume still via CLI).
 - SLURM artifact browsing supports only local-visible paths; remote-only cluster paths still need SSH-based retrieval.
 - No central reconciliation loop for missing/late SLURM events.
-- No auth/authorization on web UI (dev/local usage model currently).
+- Current access model is a lightweight scaffold (`X-ETL-User`/`as_user`); no real authentication provider/session/JWT yet.
 - Builder persistence is file-backed; DB-backed draft/version history is not implemented.
 - AI draft generation currently uses a single repair pass and no schema-constrained decoding.
 - Config/pipeline/plugin catalog tables are not yet populated by runtime snapshots.

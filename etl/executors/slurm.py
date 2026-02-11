@@ -376,6 +376,7 @@ class SlurmExecutor(Executor):
                     venv_path,
                     req_path,
                     python_bin,
+                    project_id=context.get("project_id"),
                     resume_run_id=resume_run_id,
                     global_config_path=global_config_remote,
                     environments_config_path=environments_config_remote,
@@ -409,6 +410,7 @@ class SlurmExecutor(Executor):
                         venv_path,
                         req_path,
                         python_bin,
+                        project_id=context.get("project_id"),
                         resume_run_id=resume_run_id,
                         global_config_path=global_config_remote,
                         environments_config_path=environments_config_remote,
@@ -424,6 +426,7 @@ class SlurmExecutor(Executor):
         upsert_run_status(
             run_id=run_id,
             pipeline=pipeline_path,
+            project_id=context.get("project_id"),
             status="queued",
             success=False,
             started_at=ts.isoformat() + "Z",
@@ -582,6 +585,7 @@ class SlurmExecutor(Executor):
         venv_path: str,
         req_path: str,
         python_bin: str,
+        project_id: Optional[str] = None,
         resume_run_id: Optional[str] = None,
         global_config_path: Optional[str] = None,
         environments_config_path: Optional[str] = None,
@@ -645,6 +649,8 @@ class SlurmExecutor(Executor):
         ]
         cmd += ["--context-file", context_file]
         cmd += ["--run-id", run_id]
+        if project_id:
+            cmd += ["--project-id", str(project_id)]
         if resume_run_id:
             cmd += ["--resume-run-id", str(resume_run_id)]
         cmd += ["--max-retries", str(self.step_max_retries)]

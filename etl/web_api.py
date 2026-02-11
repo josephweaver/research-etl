@@ -3,11 +3,12 @@ from __future__ import annotations
 import tempfile
 import json
 import shlex
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 import psycopg
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from .config import ConfigError, load_global_config
@@ -24,6 +25,7 @@ from .executors.local import LocalExecutor
 from .executors.slurm import SlurmExecutor
 from .pipeline import Pipeline, Step, parse_pipeline, PipelineError
 from .provenance import collect_run_provenance
+from .projects import infer_project_id_from_pipeline_path, normalize_project_id, resolve_project_id
 from .plugins.base import PluginLoadError, load_plugin
 from .runner import run_pipeline
 from .web_queries import (
@@ -41,6 +43,12 @@ from .web_queries import (
 app = FastAPI(title="Research ETL UI", version="0.1.0")
 
 MAX_FILE_VIEW_BYTES = 256 * 1024
+
+
+@dataclass(frozen=True)
+class UserScope:
+    user_id: str
+    allowed_projects: set[str]
 
 
 INDEX_HTML = """<!doctype html>
@@ -61,6 +69,9 @@ INDEX_HTML = """<!doctype html>
     .topnav .jump { display:flex; gap:6px; align-items:center; }
     .topnav .jump input { width:180px; padding:4px 6px; font-size:12px; }
     .topnav .jump button { padding:4px 8px; font-size:12px; }
+    .topnav .who { display:flex; gap:6px; align-items:center; }
+    .topnav .who label { font-size:12px; color:#496184; }
+    .topnav .who select { padding:4px 6px; font-size:12px; border-radius:6px; }
     .head { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; gap:10px; flex-wrap:wrap; }
     h1 { margin:0; font-size:24px; }
     .muted { color:var(--muted); font-size:13px; }
@@ -120,6 +131,14 @@ INDEX_HTML = """<!doctype html>
         <a id="nav_context_back" class="context" href="#" style="display:none;">Back</a>
       </div>
       <div class="jump">
+        <div class="who">
+          <label for="nav_user">User</label>
+          <select id="nav_user">
+            <option value="admin">admin</option>
+            <option value="land-core">land-core</option>
+            <option value="gee-lee">gee-lee</option>
+          </select>
+        </div>
         <input id="nav_live_id" placeholder="run id for live view" />
         <button id="btn_nav_live">Live</button>
       </div>
@@ -323,6 +342,50 @@ INDEX_HTML = """<!doctype html>
     let builderStepTesting = {};
     let builderPipelineRunState = "not-run";
     let builderPipelineRunning = false;
+    const USER_STORAGE_KEY = "etl_ui_user";
+    const VALID_UI_USERS = new Set(["admin", "land-core", "gee-lee"]);
+    const _nativeFetch = window.fetch.bind(window);
+    function currentAsUser(){
+      const el = document.getElementById("nav_user");
+      const raw = el ? String(el.value || "").trim() : "";
+      const val = raw || "admin";
+      return VALID_UI_USERS.has(val) ? val : "admin";
+    }
+    function withAsUserUrl(inputUrl){
+      const txt = String(inputUrl || "");
+      if(!txt.startsWith("/api/")){
+        return txt;
+      }
+      const u = new URL(txt, window.location.origin);
+      if(!u.searchParams.get("as_user")){
+        u.searchParams.set("as_user", currentAsUser());
+      }
+      return u.pathname + (u.search || "") + (u.hash || "");
+    }
+    window.fetch = function(input, init){
+      if(typeof input === "string"){
+        return _nativeFetch(withAsUserUrl(input), init);
+      }
+      return _nativeFetch(input, init);
+    };
+    function initUserScope(){
+      const sel = document.getElementById("nav_user");
+      if(!sel) return;
+      let fromQuery = "";
+      try {
+        const qp = new URLSearchParams(window.location.search);
+        fromQuery = String(qp.get("as_user") || "").trim();
+      } catch {}
+      const stored = String(localStorage.getItem(USER_STORAGE_KEY) || "").trim();
+      const chosen = fromQuery || stored || "admin";
+      sel.value = VALID_UI_USERS.has(chosen) ? chosen : "admin";
+      localStorage.setItem(USER_STORAGE_KEY, sel.value);
+      sel.onchange = async () => {
+        const next = String(sel.value || "admin").trim();
+        localStorage.setItem(USER_STORAGE_KEY, VALID_UI_USERS.has(next) ? next : "admin");
+        await tick();
+      };
+    }
     function defaultBuilderDirs(){
       return {
         workdir: "{workdir}/{pipe.name}/{run_id}",
@@ -1503,6 +1566,7 @@ INDEX_HTML = """<!doctype html>
     }
     initViewMode();
     setActiveNav();
+    initUserScope();
     document.getElementById("btn_apply").onclick = tick;
     document.getElementById("btn_ops_refresh").onclick = tick;
     document.getElementById("btn_pipelines").onclick = tick;
@@ -1512,7 +1576,8 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("btn_nav_live").onclick = () => {
       const runId = document.getElementById("nav_live_id").value.trim();
       if (!runId) return;
-      window.location.href = `/runs/${encodeURIComponent(runId)}/live`;
+      const asUser = encodeURIComponent(currentAsUser());
+      window.location.href = `/runs/${encodeURIComponent(runId)}/live?as_user=${asUser}`;
     };
     document.getElementById("btn_builder_load").onclick = () => { openBuilderFilePicker(); };
     document.getElementById("btn_builder_add_req").onclick = addBuilderRequire;
@@ -1578,45 +1643,206 @@ def health() -> dict:
     return {"ok": True}
 
 
+def _normalize_user_id(value: Optional[str]) -> str:
+    raw = str(value or "").strip().lower().replace("_", "-")
+    return raw or "admin"
+
+
+def _static_user_projects(user_id: str) -> set[str]:
+    mapping = {
+        "admin": {"land_core", "gee_lee"},
+        "land-core": {"land_core"},
+        "gee-lee": {"gee_lee"},
+    }
+    return set(mapping.get(user_id, set()))
+
+
+def _load_user_projects_from_db(user_id: str) -> Optional[set[str]]:
+    db_url = get_database_url()
+    if not db_url:
+        return None
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT up.project_id
+                    FROM etl_user_projects up
+                    JOIN etl_projects p ON p.project_id = up.project_id
+                    WHERE up.user_id = %s
+                      AND p.is_active = TRUE
+                    """,
+                    (user_id,),
+                )
+                rows = cur.fetchall() or []
+        return {str(r[0]) for r in rows if str(r[0]).strip()}
+    except Exception:
+        return None
+
+
+def _resolve_user_scope(request: Request) -> UserScope:
+    raw_user = request.headers.get("X-ETL-User") or request.query_params.get("as_user")
+    user_id = _normalize_user_id(raw_user)
+    projects = _load_user_projects_from_db(user_id)
+    if projects is None:
+        projects = _static_user_projects(user_id)
+    if not projects:
+        raise HTTPException(status_code=403, detail=f"User has no project access: {user_id}")
+    return UserScope(user_id=user_id, allowed_projects=projects)
+
+
+def _require_project_access(scope: UserScope, project_id: Optional[str]) -> Optional[str]:
+    normalized = normalize_project_id(project_id)
+    if not normalized:
+        return None
+    if normalized not in scope.allowed_projects:
+        raise HTTPException(
+            status_code=403,
+            detail=f"User '{scope.user_id}' is not allowed for project '{normalized}'.",
+        )
+    return normalized
+
+
+def _combine_project_scoped_rows(
+    rows_by_project: list[list[dict[str, Any]]],
+    *,
+    limit: int,
+    dedupe_key: str,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rows in rows_by_project:
+        for row in rows:
+            key = str(row.get(dedupe_key) or "")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            merged.append(row)
+    merged.sort(key=lambda r: str(r.get("started_at") or r.get("last_started_at") or ""), reverse=True)
+    return merged[:limit]
+
+
+def _resolve_request_project_filter(
+    *,
+    request: Request,
+    project_id: Optional[str],
+    pipeline_id: Optional[str] = None,
+) -> tuple[UserScope, Optional[str]]:
+    scope = _resolve_user_scope(request)
+    requested = normalize_project_id(project_id)
+    inferred = normalize_project_id(infer_project_id_from_pipeline_path(pipeline_id)) if pipeline_id else None
+    if requested and inferred and requested != inferred:
+        raise HTTPException(
+            status_code=400,
+            detail=f"project_id '{requested}' does not match pipeline path project '{inferred}'.",
+        )
+    selected = _require_project_access(scope, requested or inferred)
+    if selected:
+        return scope, selected
+    if len(scope.allowed_projects) == 1:
+        return scope, sorted(scope.allowed_projects)[0]
+    return scope, None
+
+
 @app.get("/api/pipelines")
 def api_pipelines(
+    request: Request,
     limit: int = Query(default=100, ge=1, le=500),
     q: Optional[str] = Query(default=None),
+    project_id: Optional[str] = Query(default=None),
 ) -> list[dict]:
+    scope, selected_project = _resolve_request_project_filter(request=request, project_id=project_id)
     try:
-        return fetch_pipelines(limit=limit, q=q)
+        if selected_project:
+            return fetch_pipelines(limit=limit, q=q, project_id=selected_project)
+        rows_by_project = [
+            fetch_pipelines(limit=limit, q=q, project_id=pid)
+            for pid in sorted(scope.allowed_projects)
+        ]
+        return _combine_project_scoped_rows(rows_by_project, limit=limit, dedupe_key="pipeline")
     except WebQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/pipelines/{pipeline_id:path}/runs")
 def api_pipeline_runs(
+    request: Request,
     pipeline_id: str,
     limit: int = Query(default=50, ge=1, le=500),
     status: Optional[str] = Query(default=None),
     executor: Optional[str] = Query(default=None),
+    project_id: Optional[str] = Query(default=None),
 ) -> list[dict]:
+    scope, selected_project = _resolve_request_project_filter(
+        request=request,
+        project_id=project_id,
+        pipeline_id=pipeline_id,
+    )
     try:
-        return fetch_pipeline_runs(pipeline_id, limit=limit, status=status, executor=executor)
+        if selected_project:
+            return fetch_pipeline_runs(
+                pipeline_id,
+                limit=limit,
+                status=status,
+                executor=executor,
+                project_id=selected_project,
+            )
+        rows_by_project = [
+            fetch_pipeline_runs(
+                pipeline_id,
+                limit=limit,
+                status=status,
+                executor=executor,
+                project_id=pid,
+            )
+            for pid in sorted(scope.allowed_projects)
+        ]
+        return _combine_project_scoped_rows(rows_by_project, limit=limit, dedupe_key="run_id")
     except WebQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/pipelines/{pipeline_id:path}/validations")
 def api_pipeline_validations(
+    request: Request,
     pipeline_id: str,
     limit: int = Query(default=50, ge=1, le=500),
+    project_id: Optional[str] = Query(default=None),
 ) -> list[dict]:
+    scope, selected_project = _resolve_request_project_filter(
+        request=request,
+        project_id=project_id,
+        pipeline_id=pipeline_id,
+    )
     try:
-        return fetch_pipeline_validations(pipeline_id, limit=limit)
+        if selected_project:
+            return fetch_pipeline_validations(pipeline_id, limit=limit, project_id=selected_project)
+        rows_by_project = [
+            fetch_pipeline_validations(pipeline_id, limit=limit, project_id=pid)
+            for pid in sorted(scope.allowed_projects)
+        ]
+        return _combine_project_scoped_rows(rows_by_project, limit=limit, dedupe_key="validation_id")
     except WebQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/pipelines/{pipeline_id:path}")
-def api_pipeline_detail(pipeline_id: str) -> dict:
+def api_pipeline_detail(request: Request, pipeline_id: str, project_id: Optional[str] = Query(default=None)) -> dict:
+    scope, selected_project = _resolve_request_project_filter(
+        request=request,
+        project_id=project_id,
+        pipeline_id=pipeline_id,
+    )
     try:
-        payload = fetch_pipeline_detail(pipeline_id)
+        payload = None
+        if selected_project:
+            payload = fetch_pipeline_detail(pipeline_id, project_id=selected_project)
+        else:
+            for pid in sorted(scope.allowed_projects):
+                payload = fetch_pipeline_detail(pipeline_id, project_id=pid)
+                if payload is not None:
+                    break
     except WebQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if payload is None:
@@ -1626,25 +1852,48 @@ def api_pipeline_detail(pipeline_id: str) -> dict:
 
 @app.get("/api/runs")
 def api_runs(
+    request: Request,
     limit: int = Query(default=50, ge=1, le=500),
     status: Optional[str] = Query(default=None),
     executor: Optional[str] = Query(default=None),
     q: Optional[str] = Query(default=None),
+    project_id: Optional[str] = Query(default=None),
 ) -> list[dict]:
+    scope, selected_project = _resolve_request_project_filter(request=request, project_id=project_id)
     try:
-        return fetch_runs(limit=limit, status=status, executor=executor, q=q)
+        if selected_project:
+            return fetch_runs(
+                limit=limit,
+                status=status,
+                executor=executor,
+                q=q,
+                project_id=selected_project,
+            )
+        rows_by_project = [
+            fetch_runs(
+                limit=limit,
+                status=status,
+                executor=executor,
+                q=q,
+                project_id=pid,
+            )
+            for pid in sorted(scope.allowed_projects)
+        ]
+        return _combine_project_scoped_rows(rows_by_project, limit=limit, dedupe_key="run_id")
     except WebQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/runs/{run_id}/live")
-def api_run_live(run_id: str) -> dict:
+def api_run_live(run_id: str, request: Request) -> dict:
+    scope = _resolve_user_scope(request)
     try:
         payload = fetch_run_detail(run_id)
     except WebQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if payload is None:
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    _require_project_access(scope, payload.get("project_id"))
 
     attempts = payload.get("attempts") or []
     events = payload.get("events") or []
@@ -1661,6 +1910,7 @@ def api_run_live(run_id: str) -> dict:
     return {
         "run_id": payload.get("run_id"),
         "pipeline": payload.get("pipeline"),
+        "project_id": payload.get("project_id"),
         "status": payload.get("status"),
         "success": bool(payload.get("success")),
         "executor": payload.get("executor"),
@@ -1678,13 +1928,15 @@ def api_run_live(run_id: str) -> dict:
 
 
 @app.get("/api/runs/{run_id}")
-def api_run_detail(run_id: str) -> dict:
+def api_run_detail(run_id: str, request: Request) -> dict:
+    scope = _resolve_user_scope(request)
     try:
         payload = fetch_run_detail(run_id)
     except WebQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if payload is None:
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    _require_project_access(scope, payload.get("project_id"))
     return payload
 
 
@@ -1772,6 +2024,7 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
         "source_bundle": str(payload.get("source_bundle") or "").strip() or None,
         "source_snapshot": str(payload.get("source_snapshot") or "").strip() or None,
         "allow_workspace_source": _parse_bool(payload.get("allow_workspace_source"), default=False),
+        "project_id": normalize_project_id(str(payload.get("project_id") or "").strip() or None),
     }
 
 
@@ -1959,6 +2212,7 @@ def _validate_pipeline_dir_contract(pipeline: Pipeline) -> None:
 def _record_pipeline_validation(
     *,
     pipeline: str,
+    project_id: Optional[str] = None,
     valid: bool,
     step_count: int = 0,
     step_names: Optional[list[str]] = None,
@@ -1974,12 +2228,13 @@ def _record_pipeline_validation(
                 cur.execute(
                     """
                     INSERT INTO etl_pipeline_validations (
-                        pipeline, valid, step_count, step_names_json, error, source
+                        pipeline, project_id, valid, step_count, step_names_json, error, source
                     )
-                    VALUES (%s, %s, %s, %s::jsonb, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
                     """,
                     (
                         pipeline,
+                        project_id,
                         bool(valid),
                         int(step_count),
                         json.dumps(step_names or []),
@@ -2018,9 +2273,18 @@ def _resolve_repo_relative_pipeline_path(pipeline: str) -> Path:
 
 
 @app.post("/api/pipelines")
-def api_pipelines_create(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+def api_pipelines_create(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    scope = _resolve_user_scope(request)
     payload = payload or {}
     pipeline_path = _resolve_repo_relative_pipeline_path(str(payload.get("pipeline") or ""))
+    req_project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
+    path_project_id = infer_project_id_from_pipeline_path(pipeline_path)
+    if req_project_id and path_project_id and req_project_id != path_project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Requested project_id '{req_project_id}' does not match pipeline path project '{path_project_id}'.",
+        )
+    _require_project_access(scope, req_project_id or path_project_id)
     yaml_text = str(payload.get("yaml_text") or "")
     _ = _parse_pipeline_from_yaml_text(yaml_text, global_config_path=None)
     overwrite = _parse_bool(payload.get("overwrite"), default=False)
@@ -2032,11 +2296,20 @@ def api_pipelines_create(payload: Optional[dict[str, Any]] = Body(default=None))
 
 
 @app.put("/api/pipelines/{pipeline_id:path}")
-def api_pipelines_update(pipeline_id: str, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+def api_pipelines_update(request: Request, pipeline_id: str, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    scope = _resolve_user_scope(request)
     payload = payload or {}
     if "pipeline" in payload and str(payload.get("pipeline") or "").strip() not in {"", pipeline_id}:
         raise HTTPException(status_code=400, detail="Payload pipeline does not match URL pipeline_id.")
     pipeline_path = _resolve_repo_relative_pipeline_path(pipeline_id)
+    req_project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
+    path_project_id = infer_project_id_from_pipeline_path(pipeline_path)
+    if req_project_id and path_project_id and req_project_id != path_project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Requested project_id '{req_project_id}' does not match pipeline path project '{path_project_id}'.",
+        )
+    _require_project_access(scope, req_project_id or path_project_id)
     if not pipeline_path.exists():
         raise HTTPException(status_code=404, detail=f"Pipeline file not found: {pipeline_path}")
     yaml_text = str(payload.get("yaml_text") or "")
@@ -2305,8 +2578,14 @@ def _payload_with_pipeline(payload: Optional[dict[str, Any]], pipeline_id: str) 
 
 
 @app.post("/api/actions/validate")
-def api_action_validate(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+def api_action_validate(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    scope = _resolve_user_scope(request)
     args = _parse_action_payload(payload)
+    requested_project_id = (
+        normalize_project_id(args.get("project_id"))
+        or normalize_project_id(infer_project_id_from_pipeline_path(args["pipeline_path"]))
+    )
+    _require_project_access(scope, requested_project_id)
     global_vars = _resolve_global_vars(args["global_config_path"])
     execution_env, environments_config_path, env_name = _resolve_execution_env(
         args["environments_config_path"],
@@ -2318,6 +2597,7 @@ def api_action_validate(payload: Optional[dict[str, Any]] = Body(default=None)) 
     except (PipelineError, FileNotFoundError) as exc:
         _record_pipeline_validation(
             pipeline=str(args["pipeline_path"]),
+            project_id=requested_project_id,
             valid=False,
             step_count=0,
             step_names=[],
@@ -2325,8 +2605,14 @@ def api_action_validate(payload: Optional[dict[str, Any]] = Body(default=None)) 
             source="api_validate",
         )
         raise HTTPException(status_code=400, detail=f"Invalid pipeline: {exc}") from exc
+    project_id = resolve_project_id(
+        explicit_project_id=requested_project_id,
+        pipeline_project_id=getattr(pipeline, "project_id", None),
+        pipeline_path=args["pipeline_path"],
+    )
     _record_pipeline_validation(
         pipeline=str(args["pipeline_path"]),
+        project_id=project_id,
         valid=True,
         step_count=len(pipeline.steps),
         step_names=[s.name for s in pipeline.steps],
@@ -2342,8 +2628,14 @@ def api_action_validate(payload: Optional[dict[str, Any]] = Body(default=None)) 
 
 
 @app.post("/api/actions/run")
-def api_action_run(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    scope = _resolve_user_scope(request)
     args = _parse_action_payload(payload)
+    requested_project_id = (
+        normalize_project_id(args.get("project_id"))
+        or normalize_project_id(infer_project_id_from_pipeline_path(args["pipeline_path"]))
+    )
+    _require_project_access(scope, requested_project_id)
     global_vars = _resolve_global_vars(args["global_config_path"])
     execution_env, environments_config_path, env_name = _resolve_execution_env(
         args["environments_config_path"],
@@ -2368,6 +2660,11 @@ def api_action_run(payload: Optional[dict[str, Any]] = Body(default=None)) -> di
         pipeline = parse_pipeline(args["pipeline_path"], global_vars=global_vars, env_vars=execution_env)
     except (PipelineError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid pipeline: {exc}") from exc
+    project_id = resolve_project_id(
+        explicit_project_id=requested_project_id,
+        pipeline_project_id=getattr(pipeline, "project_id", None),
+        pipeline_path=args["pipeline_path"],
+    )
 
     repo_root = Path(".").resolve()
     provenance = collect_run_provenance(
@@ -2425,6 +2722,7 @@ def api_action_run(payload: Optional[dict[str, Any]] = Body(default=None)) -> di
                 "source_bundle": source_bundle,
                 "source_snapshot": source_snapshot,
                 "allow_workspace_source": allow_workspace_source,
+                "project_id": project_id,
             },
         )
         st = ex.status(submit.run_id)
@@ -2436,6 +2734,7 @@ def api_action_run(payload: Optional[dict[str, Any]] = Body(default=None)) -> di
         "state": state,
         "pipeline": str(args["pipeline_path"]),
         "executor": args["executor"],
+        "project_id": project_id,
         "job_ids": submit.job_ids or [],
         "message": st.message or submit.message or "",
     }
@@ -2443,27 +2742,32 @@ def api_action_run(payload: Optional[dict[str, Any]] = Body(default=None)) -> di
 
 @app.post("/api/pipelines/{pipeline_id:path}/validate")
 def api_pipeline_validate(
+    request: Request,
     pipeline_id: str,
     payload: Optional[dict[str, Any]] = Body(default=None),
 ) -> dict:
-    return api_action_validate(_payload_with_pipeline(payload, pipeline_id))
+    return api_action_validate(request, _payload_with_pipeline(payload, pipeline_id))
 
 
 @app.post("/api/pipelines/{pipeline_id:path}/run")
 def api_pipeline_run(
+    request: Request,
     pipeline_id: str,
     payload: Optional[dict[str, Any]] = Body(default=None),
 ) -> dict:
-    return api_action_run(_payload_with_pipeline(payload, pipeline_id))
+    return api_action_run(request, _payload_with_pipeline(payload, pipeline_id))
 
 
-def _resolve_run_header(run_id: str) -> dict:
+def _resolve_run_header(run_id: str, *, request: Optional[Request] = None) -> dict:
     try:
         hdr = fetch_run_header(run_id)
     except WebQueryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if hdr is None:
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    if request is not None:
+        scope = _resolve_user_scope(request)
+        _require_project_access(scope, hdr.get("project_id"))
     return hdr
 
 
@@ -2482,8 +2786,8 @@ def _resolve_artifact_dir(hdr: dict) -> str:
 
 
 @app.get("/api/runs/{run_id}/files")
-def api_run_files(run_id: str) -> dict:
-    hdr = _resolve_run_header(run_id)
+def api_run_files(run_id: str, request: Request) -> dict:
+    hdr = _resolve_run_header(run_id, request=request)
     artifact_dir = _resolve_artifact_dir(hdr)
     ex = _artifact_executor_for(hdr)
     try:
@@ -2495,8 +2799,8 @@ def api_run_files(run_id: str) -> dict:
 
 
 @app.get("/api/runs/{run_id}/file")
-def api_run_file(run_id: str, path: str = Query(default="")) -> dict:
-    hdr = _resolve_run_header(run_id)
+def api_run_file(run_id: str, request: Request, path: str = Query(default="")) -> dict:
+    hdr = _resolve_run_header(run_id, request=request)
     artifact_dir = _resolve_artifact_dir(hdr)
     ex = _artifact_executor_for(hdr)
     try:
@@ -2511,7 +2815,8 @@ def api_run_file(run_id: str, path: str = Query(default="")) -> dict:
 
 
 @app.post("/api/runs/{run_id}/resume")
-def api_resume_run(run_id: str, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+def api_resume_run(run_id: str, request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    scope = _resolve_user_scope(request)
     payload = payload or {}
     try:
         hdr = fetch_run_header(run_id)
@@ -2519,6 +2824,7 @@ def api_resume_run(run_id: str, payload: Optional[dict[str, Any]] = Body(default
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if hdr is None:
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    _require_project_access(scope, hdr.get("project_id"))
 
     executor_name = (payload.get("executor") or hdr.get("executor") or "local").strip().lower()
     if executor_name != "local":
@@ -2573,6 +2879,7 @@ def api_resume_run(run_id: str, payload: Optional[dict[str, Any]] = Body(default
             context={
                 "pipeline": pipeline,
                 "resume_run_id": run_id,
+                "project_id": hdr.get("project_id"),
                 "provenance": provenance,
                 "repo_root": Path(".").resolve(),
                 "execution_source": execution_source,

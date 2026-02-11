@@ -1,13 +1,18 @@
 # 3-Week Product Plan (ResearchETL v0)
 
-Last updated: 2026-02-09
+Last updated: 2026-02-11
 
 ## Current status snapshot
 - [x] `P0` Core engine + retry/resume/provenance + SLURM event tracking.
 - [x] `P0` Minimal web UI/API scaffold is live.
 - [x] `P0` Web supports run list/detail, artifact browsing, resume action (local), and run/validate actions.
 - [x] `P0` Test suite green locally (`47 passed`).
-- [ ] `P0` Pipeline-centric web UX (catalog/detail/builder/live view) not yet implemented.
+- [x] `P0` Pipeline-centric web UX (catalog/detail/builder/live view) implemented.
+- [x] `P0` Project partitioning scaffold added (`project_id` on runs/validations/artifacts + user/project membership tables).
+- [x] `P0` Service-mode access controls added (scoped by `X-ETL-User` or `as_user`), with seeded users:
+  - [x] `land-core`
+  - [x] `gee-lee`
+  - [x] `admin` (access to both projects)
 
 ## Product direction update (agreed)
 - [x] `P0` Treat `Pipeline` as primary object in the web app.
@@ -61,6 +66,7 @@ Last updated: 2026-02-09
   - [x] provenance summary per run
 - [x] `P0` Add operations landing page (failed/running triage + quick actions).
 - [x] `P0` Add live run view (event timeline + currently active step + log tail).
+- [x] `P0` Add top-nav user selector for scoped service views (`admin`, `land-core`, `gee-lee`).
 - [ ] `P1` Add data dictionary draft generator path (LLM-backed; can be template-first).
 
 ## Week 3 - Demo + validation + release prep (P0/P1)
@@ -104,7 +110,7 @@ Last updated: 2026-02-09
 
 ## Cut list if schedule slips (defer first)
 - [ ] `P2` Advanced UI styling
-- [ ] `P2` Multi-user auth
+- [ ] `P2` Full authentication integration (OIDC/JWT/session).  
 - [ ] `P2` Additional non-SLURM backends
 - [ ] `P2` Advanced LLM planning heuristics
 - [ ] `P2` Auto plugin catalog enrichment

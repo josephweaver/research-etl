@@ -28,19 +28,19 @@ class _FakeCursor:
     def fetchall(self):
         if "WITH grouped AS" in self._last_sql:
             return [
-                ("pipelines/sample.yml", 3, 1, datetime(2026, 2, 8, 1, 2, 3), "failed", "local"),
+                ("pipelines/sample.yml", "land_core", 3, 1, datetime(2026, 2, 8, 1, 2, 3), "failed", "local"),
             ]
         if "FROM etl_pipeline_validations" in self._last_sql:
             return [
-                (7, "pipelines/sample.yml", True, 2, ["s1", "s2"], None, "api_validate", datetime(2026, 2, 8, 1, 2, 3)),
+                (7, "pipelines/sample.yml", "land_core", True, 2, ["s1", "s2"], None, "api_validate", datetime(2026, 2, 8, 1, 2, 3)),
             ]
         if "WHERE pipeline = %s" in self._last_sql and "SELECT\n                        run_id" in self._last_sql:
             return [
-                ("r1", "pipelines/sample.yml", "failed", False, datetime(2026, 2, 8, 1, 2, 3), datetime(2026, 2, 8, 1, 2, 4), "", "local", ".runs/x")
+                ("r1", "pipelines/sample.yml", "land_core", "failed", False, datetime(2026, 2, 8, 1, 2, 3), datetime(2026, 2, 8, 1, 2, 4), "", "local", ".runs/x")
             ]
         if "FROM etl_runs" in self._last_sql:
             return [
-                ("r1", "p.yml", "succeeded", True, datetime(2026, 2, 8, 1, 2, 3), datetime(2026, 2, 8, 1, 2, 4), "", "local", ".runs/x")
+                ("r1", "p.yml", "land_core", "succeeded", True, datetime(2026, 2, 8, 1, 2, 3), datetime(2026, 2, 8, 1, 2, 4), "", "local", ".runs/x")
             ]
         if "FROM etl_run_steps" in self._last_sql:
             return [("s1", "echo.py", True, False, None, {"ok": True})]
@@ -54,10 +54,12 @@ class _FakeCursor:
         if "WITH stats AS" in self._last_sql:
             return (
                 "pipelines/sample.yml",
+                "land_core",
                 5,
                 2,
                 datetime(2026, 2, 8, 1, 2, 3),
                 "r5",
+                "land_core",
                 "succeeded",
                 "slurm",
                 datetime(2026, 2, 8, 1, 2, 3),
@@ -74,10 +76,11 @@ class _FakeCursor:
             )
         if "FROM etl_runs" in self._last_sql:
             if "artifact_dir" in self._last_sql and "git_commit_sha" not in self._last_sql:
-                return ("r1", "p.yml", "local", "succeeded", ".runs/x")
+                return ("r1", "p.yml", "land_core", "local", "succeeded", ".runs/x")
             return (
                 "r1",
                 "p.yml",
+                "land_core",
                 "succeeded",
                 True,
                 datetime(2026, 2, 8, 1, 2, 3),
@@ -131,6 +134,15 @@ def test_fetch_runs_applies_filters(monkeypatch):
     assert conn.last_params == ("failed", "local", "%sample%", "%sample%", 10)
 
 
+def test_fetch_runs_applies_project_filter(monkeypatch):
+    conn = _FakeConn()
+    monkeypatch.setattr(wq, "get_database_url", lambda: "postgresql://u:p@h/db")
+    monkeypatch.setattr(wq.psycopg, "connect", lambda *_: conn)
+    _ = wq.fetch_runs(limit=5, project_id="land_core")
+    assert "WHERE project_id = %s" in conn.last_sql
+    assert conn.last_params == ("land_core", 5)
+
+
 def test_fetch_run_detail_returns_payload(monkeypatch):
     monkeypatch.setattr(wq, "get_database_url", lambda: "postgresql://u:p@h/db")
     monkeypatch.setattr(wq.psycopg, "connect", lambda *_: _FakeConn())
@@ -158,6 +170,7 @@ def test_fetch_pipelines_returns_rows(monkeypatch):
     rows = wq.fetch_pipelines(limit=10)
     assert len(rows) == 1
     assert rows[0]["pipeline"] == "pipelines/sample.yml"
+    assert rows[0]["project_id"] == "land_core"
     assert rows[0]["total_runs"] == 3
     assert rows[0]["failed_runs"] == 1
     assert rows[0]["failure_rate"] == pytest.approx(1 / 3)
@@ -178,6 +191,7 @@ def test_fetch_pipeline_detail(monkeypatch):
     payload = wq.fetch_pipeline_detail("pipelines/sample.yml")
     assert payload is not None
     assert payload["pipeline"] == "pipelines/sample.yml"
+    assert payload["project_id"] == "land_core"
     assert payload["total_runs"] == 5
     assert payload["failed_runs"] == 2
     assert payload["latest_run"]["run_id"] == "r5"
@@ -190,6 +204,7 @@ def test_fetch_pipeline_runs(monkeypatch):
     rows = wq.fetch_pipeline_runs("pipelines/sample.yml", limit=10)
     assert len(rows) == 1
     assert rows[0]["pipeline"] == "pipelines/sample.yml"
+    assert rows[0]["project_id"] == "land_core"
     assert rows[0]["status"] == "failed"
 
 
@@ -199,6 +214,7 @@ def test_fetch_pipeline_validations(monkeypatch):
     rows = wq.fetch_pipeline_validations("pipelines/sample.yml", limit=10)
     assert len(rows) == 1
     assert rows[0]["validation_id"] == 7
+    assert rows[0]["project_id"] == "land_core"
     assert rows[0]["valid"] is True
     assert rows[0]["step_names"] == ["s1", "s2"]
     assert rows[0]["source"] == "api_validate"

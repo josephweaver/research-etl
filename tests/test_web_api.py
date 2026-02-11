@@ -17,27 +17,27 @@ def test_web_api_endpoints(monkeypatch):
     monkeypatch.setattr(
         web_api,
         "fetch_runs",
-        lambda limit=50, status=None, executor=None, q=None: [{"run_id": "r1", "status": "succeeded"}],
+        lambda limit=50, status=None, executor=None, q=None, project_id=None: [{"run_id": "r1", "status": "succeeded"}],
     )
     monkeypatch.setattr(
         web_api,
         "fetch_pipelines",
-        lambda limit=100, q=None: [{"pipeline": "pipelines/sample.yml", "total_runs": 2, "failed_runs": 0}],
+        lambda limit=100, q=None, project_id=None: [{"pipeline": "pipelines/sample.yml", "total_runs": 2, "failed_runs": 0}],
     )
     monkeypatch.setattr(
         web_api,
         "fetch_pipeline_detail",
-        lambda pipeline_id: {"pipeline": pipeline_id, "total_runs": 2, "failed_runs": 0, "latest_provenance": {}},
+        lambda pipeline_id, project_id=None: {"pipeline": pipeline_id, "total_runs": 2, "failed_runs": 0, "latest_provenance": {}},
     )
     monkeypatch.setattr(
         web_api,
         "fetch_pipeline_runs",
-        lambda pipeline_id, limit=50, status=None, executor=None: [{"run_id": "r1", "pipeline": pipeline_id}],
+        lambda pipeline_id, limit=50, status=None, executor=None, project_id=None: [{"run_id": "r1", "pipeline": pipeline_id}],
     )
     monkeypatch.setattr(
         web_api,
         "fetch_pipeline_validations",
-        lambda pipeline_id, limit=50: [{"validation_id": 1, "pipeline": pipeline_id, "valid": True}],
+        lambda pipeline_id, limit=50, project_id=None: [{"validation_id": 1, "pipeline": pipeline_id, "valid": True}],
     )
     monkeypatch.setattr(web_api, "fetch_run_detail", lambda run_id: {"run_id": run_id, "status": "succeeded"})
 
@@ -88,6 +88,51 @@ def test_web_api_endpoints(monkeypatch):
     r8 = client.get("/api/pipelines/pipelines%2Fsample.yml/validations")
     assert r8.status_code == 200
     assert r8.json()[0]["pipeline"] == "pipelines/sample.yml"
+
+
+def test_web_api_project_filters(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    called = {}
+
+    def _fetch_runs(limit=50, status=None, executor=None, q=None, project_id=None):
+        called["project_id"] = project_id
+        return []
+
+    monkeypatch.setattr(web_api, "fetch_runs", _fetch_runs)
+    client = TestClient(web_api.app)
+    r = client.get("/api/runs", params={"project_id": "Land Core"})
+    assert r.status_code == 200
+    assert called["project_id"] == "land_core"
+
+
+def test_web_api_denies_cross_project_access(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(web_api, "fetch_runs", lambda **kwargs: [])
+    client = TestClient(web_api.app)
+    r = client.get("/api/runs", params={"project_id": "gee_lee", "as_user": "land-core"})
+    assert r.status_code == 403
+
+
+def test_web_api_admin_reads_multiple_projects(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    def _fetch_runs(limit=50, status=None, executor=None, q=None, project_id=None):
+        return [{"run_id": f"r-{project_id}", "project_id": project_id, "started_at": "2026-02-11T00:00:00Z"}]
+
+    monkeypatch.setattr(web_api, "fetch_runs", _fetch_runs)
+    client = TestClient(web_api.app)
+    r = client.get("/api/runs", params={"as_user": "admin"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert {x["project_id"] for x in payload} == {"land_core", "gee_lee"}
 
 
 def test_web_api_builder_source_and_validate(tmp_path: Path):

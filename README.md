@@ -15,6 +15,7 @@ This project has moved from a local prototype toward an operational research run
   - `etl_run_steps`
   - `etl_run_step_attempts` (retry-ready)
   - `etl_run_events`
+- Project partitioning: run/validation/artifact metadata is tagged with `project_id`; project/user membership tables are available for multi-project service operation.
 - Provenance: run records capture Git and snapshot context (commit/branch/tag/dirty state, CLI command, and checksums for pipeline/config/plugins).
 - Strict source pinning: run paths execute from explicit source selection (git checkout / bundle / snapshot / workspace override), with git-pinned mode as default.
 - Git is the source of truth for pipeline/config content; DB stores checksums and run provenance only (no full pipeline/config text blobs).
@@ -22,7 +23,7 @@ This project has moved from a local prototype toward an operational research run
 - Artifacts: timestamp-first run paths for easier debugging:
   - `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>/`
 - Quality: pytest suite + GitHub Actions test workflow.
-- Web UX: compact nav with Operations, Pipelines, New Pipeline, and Live Run jump; builder and live run routes are active.
+- Web UX: compact nav with Operations, Pipelines, New Pipeline, and Live Run jump; builder and live run routes are active, with a top-nav user selector (`admin`, `land-core`, `gee-lee`) for scoped views.
 
 ## Plugin Script
 
@@ -52,6 +53,32 @@ Each plugin is a Python module under `plugins/` that exposes:
 
 If descriptors are not provided, ResearchETL infers artifact paths from step outputs heuristically and auto-registers them.
 
+### AI dataset research plugin
+
+`plugins/ai_dataset_research.py` lets a pipeline call ChatGPT to draft catalog-ready dataset explanations.
+
+Requirements:
+- `OPENAI_API_KEY` in environment.
+- Optional `OPENAI_MODEL` (default `gpt-4.1-mini`).
+
+Typical pipeline pattern for multiple datasets:
+
+```yaml
+vars:
+  datasets:
+    - serve.demo_a_v1
+    - serve.demo_b_v1
+steps:
+  - name: ai_catalog_research
+    foreach: datasets
+    parallel_with: ai_research
+    script: 'ai_dataset_research.py dataset_id="{item}" specs_file="config/catalog_ai_specs.yml" output_dir=".runs/catalog_ai"'
+```
+
+The plugin writes one JSON file per dataset and returns an explicit `_artifacts` descriptor so outputs are auto-registered.
+`specs_file` can optionally provide per-dataset defaults (`title`, `data_class`, `artifact_uri`, `notes`, file hints) keyed by `dataset_id`.
+See `config/catalog_ai_specs.example.yml` for a starter format.
+
 Example skeleton:
 ```python
 # plugins/project_raster.py
@@ -76,6 +103,8 @@ def run(args, ctx):
 ## Pipeline file format
 
 - `requires_pipelines` (optional): list of prerequisite pipeline YAML paths. `etl run` auto-runs missing successful dependencies first (cycle-safe).
+- `project_id` (optional): canonical project partition for the pipeline (for example `land_core`).
+- `shared_with_projects` (optional): list of additional project ids that can consume the pipeline by policy.
 - `vars`: pipeline variables (also exposed as `pipe.*` namespace during resolution).
 - `dirs`: derived paths or other computed values; also templated.
 - `steps`: list of steps; each step supports:
@@ -214,7 +243,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 
 - `etl plugins list [-d plugins/]` â€“ list discovered plugins.  
 - `etl validate <pipeline.yml> [--global-config config/global.yml]` â€“ parse and validate pipeline syntax/templating.  
-- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --environments-config ... --env name --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.  
+- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --environments-config ... --env name --project-id <project_id> --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.  
   - If `requires_pipelines` is set in the target pipeline, missing successful dependencies are run first automatically.
   - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in environments config or env vars.  
 - `etl runs list [--store .runs/runs.jsonl]` â€“ show recent recorded runs.  
@@ -222,6 +251,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 - `etl diagnostics latest [--workdir .runs] [--show]` - print latest diagnostic report path; optional `--show` prints JSON contents.
 - `etl web [--host 127.0.0.1 --port 8000 --reload]` - run minimal FastAPI UI/API for runs and details.
 - `etl artifacts enforce [--config config/artifacts.yml --dry-run --limit 2000]` - enforce artifact policies (canonical-location checks + retention cleanup for filesystem-backed locations).
+- `etl ai research --dataset-id <id> [--data-class SERVE --title ... --artifact-uri ... --sample-file path --schema-file path --notes ... --model ... --output path]` - ask ChatGPT to draft dataset explanations/usage/quality notes as structured JSON for catalog docs.
 
 ### Error reports
 
@@ -239,6 +269,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
    - `Pipelines` for catalog/detail views
    - `New Pipeline` for draft builder
    - quick Live Run jump by run id
+   - `User` selector to scope API/UI access (`admin`, `land-core`, `gee-lee`)
 5) In Operations, select failed runs and use `Resume` or `View` cards (resume currently local executor only).
 6) In builder (`/pipelines/new` or `/pipelines/{pipeline_id}/edit`), use:
    - `Load` (from existing YAML)
@@ -255,7 +286,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 
 API endpoints:
 - `GET /api/health`
-- `GET /api/runs?limit=50&status=failed&executor=local&q=sample`
+- `GET /api/runs?limit=50&status=failed&executor=local&q=sample&project_id=land_core&as_user=land-core`
 - `GET /api/runs/{run_id}`
 - `GET /api/runs/{run_id}/live`
 - `POST /api/runs/{run_id}/resume`
@@ -273,6 +304,14 @@ API endpoints:
 - `POST /api/builder/test-step`
 - `POST /api/builder/generate`
 
+Access scoping notes:
+- API user scope can be provided with `X-ETL-User` header or `as_user` query parameter.
+- Current seeded users/projects:
+  - `land-core` -> `land_core`
+  - `gee-lee` -> `gee_lee`
+  - `admin` -> both `land_core` and `gee_lee`
+- Most list/detail endpoints accept optional `project_id` filtering; access is validated against user scope.
+
 Artifact browsing uses executor-specific retrieval methods. `local` reads local filesystem artifacts directly. `slurm` currently supports local-visible artifact paths and returns a clear message when only remote cluster paths are available.
 
 ### Builder + AI notes
@@ -280,6 +319,7 @@ Artifact browsing uses executor-specific retrieval methods. `local` reads local 
 - AI draft generation endpoint (`POST /api/builder/generate`) requires `OPENAI_API_KEY`.
 - Optional model override: `OPENAI_MODEL` (default in code: `gpt-4.1-mini`).
 - Generation flow performs one automatic repair pass if the first draft fails parser/validator checks.
+- CLI dataset research (`etl ai research`) also uses `OPENAI_API_KEY` and returns JSON fields you can map into data catalog YAML (`description`, `how_to_use`, `quality`, `tags`, lineage hints).
 
 ## Local runner behavior
 

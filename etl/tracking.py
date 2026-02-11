@@ -29,6 +29,7 @@ class RunRecord:
     status: str
     started_at: str
     ended_at: str
+    project_id: Optional[str] = None
     message: str = ""
     steps: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -81,14 +82,15 @@ def _upsert_run_db(
             cur.execute(
                 """
                 INSERT INTO etl_runs (
-                    run_id, pipeline, success, status, started_at, ended_at, message, executor, artifact_dir,
+                    run_id, pipeline, project_id, success, status, started_at, ended_at, message, executor, artifact_dir,
                     git_commit_sha, git_branch, git_tag, git_is_dirty, cli_command, pipeline_checksum,
                     global_config_checksum, execution_config_checksum, plugin_checksums_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (run_id)
                 DO UPDATE SET
                     pipeline = EXCLUDED.pipeline,
+                    project_id = COALESCE(EXCLUDED.project_id, etl_runs.project_id),
                     success = EXCLUDED.success,
                     status = EXCLUDED.status,
                     started_at = LEAST(etl_runs.started_at, EXCLUDED.started_at),
@@ -109,6 +111,7 @@ def _upsert_run_db(
                 (
                     rec.run_id,
                     rec.pipeline,
+                    rec.project_id,
                     rec.success,
                     rec.status,
                     rec.started_at,
@@ -257,6 +260,7 @@ def upsert_run_status(
     provenance: Optional[Dict[str, Any]] = None,
     event_type: Optional[str] = None,
     event_details: Optional[Dict[str, Any]] = None,
+    project_id: Optional[str] = None,
 ) -> None:
     db_url = get_database_url()
     if not db_url:
@@ -280,14 +284,15 @@ def upsert_run_status(
             cur.execute(
                 """
                 INSERT INTO etl_runs (
-                    run_id, pipeline, success, status, started_at, ended_at, message, executor, artifact_dir,
+                    run_id, pipeline, project_id, success, status, started_at, ended_at, message, executor, artifact_dir,
                     git_commit_sha, git_branch, git_tag, git_is_dirty, cli_command, pipeline_checksum,
                     global_config_checksum, execution_config_checksum, plugin_checksums_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (run_id)
                 DO UPDATE SET
                     pipeline = EXCLUDED.pipeline,
+                    project_id = COALESCE(EXCLUDED.project_id, etl_runs.project_id),
                     success = EXCLUDED.success,
                     status = EXCLUDED.status,
                     started_at = LEAST(etl_runs.started_at, EXCLUDED.started_at),
@@ -308,6 +313,7 @@ def upsert_run_status(
                 (
                     run_id,
                     pipeline,
+                    project_id,
                     success,
                     status,
                     started,
@@ -351,6 +357,7 @@ def upsert_step_attempt(
     started_at: Optional[str] = None,
     ended_at: Optional[str] = None,
     pipeline: Optional[str] = None,
+    project_id: Optional[str] = None,
     artifact_dir: Optional[str] = None,
     executor: Optional[str] = None,
 ) -> None:
@@ -425,6 +432,7 @@ def upsert_step_attempt(
             register_step_artifacts(
                 run_id=run_id,
                 pipeline=pipeline,
+                project_id=project_id,
                 step_name=step_name,
                 outputs=outputs,
                 executor=executor,
@@ -442,6 +450,7 @@ def record_run(
     executor: Optional[str] = None,
     artifact_dir: Optional[str] = None,
     provenance: Optional[Dict[str, Any]] = None,
+    project_id: Optional[str] = None,
 ) -> RunRecord:
     store.parent.mkdir(parents=True, exist_ok=True)
     started = getattr(run_result, "started_at", None) or _now_iso()
@@ -449,6 +458,7 @@ def record_run(
     rec = RunRecord(
         run_id=run_result.run_id,
         pipeline=str(pipeline_path),
+        project_id=project_id,
         success=run_result.success,
         status="succeeded" if run_result.success else "failed",
         started_at=started,
@@ -463,6 +473,7 @@ def record_run(
         register_run_artifacts(
             run_id=rec.run_id,
             pipeline=rec.pipeline,
+            project_id=rec.project_id,
             artifact_dir=artifact_dir or getattr(run_result, "artifact_dir", None),
             steps=rec.steps,
             executor=executor,

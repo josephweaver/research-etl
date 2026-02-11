@@ -13,12 +13,14 @@ execution wiring will be layered in later.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
 from etl import __version__
+from etl.ai_research import AIResearchError, generate_dataset_research
 from etl.artifacts import (
     ArtifactPolicyError,
     enforce_artifact_policies,
@@ -32,6 +34,7 @@ from etl.executors import LocalExecutor, SlurmExecutor
 from etl.executors.slurm import SlurmSubmitError
 from etl.pipeline import PipelineError, parse_pipeline
 from etl.provenance import collect_run_provenance
+from etl.projects import resolve_project_id
 from etl.plugins.base import describe_plugin, discover_plugins, PluginLoadError
 from etl.tracking import load_runs, find_run
 from etl.execution_config import (
@@ -142,6 +145,11 @@ def _submit_pipeline_run(
     source_bundle = args.source_bundle or exec_env.get("source_bundle")
     source_snapshot = args.source_snapshot or exec_env.get("source_snapshot")
     allow_workspace_source = bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False))
+    project_id = resolve_project_id(
+        explicit_project_id=args.project_id,
+        pipeline_project_id=getattr(pipeline, "project_id", None),
+        pipeline_path=pipeline_path,
+    )
 
     if args.executor == "slurm":
         executor = SlurmExecutor(
@@ -190,6 +198,7 @@ def _submit_pipeline_run(
                 "source_bundle": source_bundle,
                 "source_snapshot": source_snapshot,
                 "allow_workspace_source": allow_workspace_source,
+                "project_id": project_id,
             },
         )
     except Exception as exc:  # noqa: BLE001
@@ -513,6 +522,55 @@ def cmd_artifacts_enforce(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ai_research(args: argparse.Namespace) -> int:
+    dataset_id = str(args.dataset_id or "").strip()
+    if not dataset_id:
+        print("AI research error: --dataset-id is required.", file=sys.stderr)
+        return 1
+
+    sample_text = None
+    if args.sample_file:
+        sample_path = Path(args.sample_file)
+        if not sample_path.exists():
+            print(f"AI research error: sample file not found: {sample_path}", file=sys.stderr)
+            return 1
+        sample_text = sample_path.read_text(encoding="utf-8", errors="replace")
+
+    schema_text = None
+    if args.schema_file:
+        schema_path = Path(args.schema_file)
+        if not schema_path.exists():
+            print(f"AI research error: schema file not found: {schema_path}", file=sys.stderr)
+            return 1
+        schema_text = schema_path.read_text(encoding="utf-8", errors="replace")
+
+    try:
+        payload = generate_dataset_research(
+            dataset_id=dataset_id,
+            data_class=args.data_class,
+            title=args.title,
+            artifact_uri=args.artifact_uri,
+            sample_text=sample_text,
+            schema_text=schema_text,
+            notes=args.notes,
+            model=args.model,
+        )
+    except AIResearchError as exc:
+        print(f"AI research error: {exc}", file=sys.stderr)
+        return 1
+
+    out = json.dumps(payload, indent=2, ensure_ascii=True)
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(out + "\n", encoding="utf-8")
+        print(f"Wrote AI research output: {out_path}")
+        return 0
+
+    print(out)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="etl", description="ETL pipeline runner")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -537,6 +595,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     p_run.add_argument("--env", help="Execution environment name (from environments config)", default=None)
+    p_run.add_argument("--project-id", default=None, help="Project partition id override (default inferred from pipeline metadata/path).")
     p_run.add_argument("--plugins-dir", default="plugins", help="Directory containing plugins")
     p_run.add_argument("--workdir", default=".runs", help="Directory to store run artifacts")
     p_run.add_argument("--dry-run", action="store_true", help="Parse and plan without executing plugins")
@@ -614,6 +673,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max number of artifact records to inspect per run.",
     )
     p_artifacts_enforce.set_defaults(func=cmd_artifacts_enforce)
+
+    p_ai = subparsers.add_parser("ai", help="AI-assisted research/documentation helpers")
+    ai_sub = p_ai.add_subparsers(dest="ai_command", required=True)
+
+    p_ai_research = ai_sub.add_parser("research", help="Generate dataset explanation draft JSON")
+    p_ai_research.add_argument("--dataset-id", required=True, help="Catalog dataset_id (e.g., serve.example_v1)")
+    p_ai_research.add_argument("--data-class", default=None, help="Catalog data_class hint (RAW|EXT|STAGE|MODEL_IN|MODEL_OUT|SERVE|REF)")
+    p_ai_research.add_argument("--title", default=None, help="Optional dataset title hint")
+    p_ai_research.add_argument("--artifact-uri", default=None, help="Optional storage URI/path hint")
+    p_ai_research.add_argument("--sample-file", default=None, help="Optional sample data excerpt file")
+    p_ai_research.add_argument("--schema-file", default=None, help="Optional schema/column description file")
+    p_ai_research.add_argument("--notes", default=None, help="Optional analyst notes/instructions")
+    p_ai_research.add_argument("--model", default=None, help="Optional OpenAI model override")
+    p_ai_research.add_argument("--output", default=None, help="Write JSON output to file path instead of stdout")
+    p_ai_research.set_defaults(func=cmd_ai_research)
 
     return parser
 

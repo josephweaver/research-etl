@@ -198,6 +198,7 @@ def _upsert_artifact_and_location(
     *,
     run_id: str,
     pipeline: str,
+    project_id: Optional[str],
     step_name: str,
     artifact_class: str,
     location_type: str,
@@ -215,12 +216,13 @@ def _upsert_artifact_and_location(
         cur.execute(
             """
             INSERT INTO etl_artifacts (
-                artifact_key, artifact_class, pipeline, run_id, step_name, size_bytes, checksum, metadata_json, created_at, updated_at
+                artifact_key, artifact_class, project_id, pipeline, run_id, step_name, size_bytes, checksum, metadata_json, created_at, updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW(), NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW(), NOW())
             ON CONFLICT (artifact_key)
             DO UPDATE SET
                 artifact_class = EXCLUDED.artifact_class,
+                project_id = COALESCE(EXCLUDED.project_id, etl_artifacts.project_id),
                 pipeline = EXCLUDED.pipeline,
                 run_id = EXCLUDED.run_id,
                 step_name = EXCLUDED.step_name,
@@ -230,7 +232,7 @@ def _upsert_artifact_and_location(
                 updated_at = NOW()
             RETURNING artifact_id
             """,
-            (key, artifact_class, pipeline, run_id, step_name, size_bytes, checksum, metadata_json),
+            (key, artifact_class, project_id, pipeline, run_id, step_name, size_bytes, checksum, metadata_json),
         )
         row = cur.fetchone()
         artifact_id = int(row[0]) if row else 0
@@ -315,6 +317,7 @@ def register_step_artifacts(
     *,
     run_id: str,
     pipeline: str,
+    project_id: Optional[str] = None,
     step_name: str,
     outputs: Optional[Dict[str, Any]],
     executor: Optional[str] = None,
@@ -351,6 +354,7 @@ def register_step_artifacts(
                 conn,
                 run_id=run_id,
                 pipeline=pipeline,
+                project_id=project_id,
                 step_name=step_name,
                 artifact_class=artifact_class,
                 location_type=location_type,
@@ -380,6 +384,7 @@ def register_step_artifacts(
                 conn,
                 run_id=run_id,
                 pipeline=pipeline,
+                project_id=project_id,
                 step_name=step_name,
                 artifact_class=artifact_class,
                 location_type=location_type,
@@ -399,6 +404,7 @@ def register_run_artifacts(
     *,
     run_id: str,
     pipeline: str,
+    project_id: Optional[str] = None,
     artifact_dir: Optional[str],
     steps: Iterable[Dict[str, Any]],
     executor: Optional[str] = None,
@@ -421,6 +427,7 @@ def register_run_artifacts(
                 conn,
                 run_id=run_id,
                 pipeline=pipeline,
+                project_id=project_id,
                 step_name="_run",
                 artifact_class="run_log",
                 location_type="run_artifact",
@@ -444,6 +451,7 @@ def register_run_artifacts(
         inserted += register_step_artifacts(
             run_id=run_id,
             pipeline=pipeline,
+            project_id=project_id,
             step_name=step_name,
             outputs=outputs,
             executor=executor,
