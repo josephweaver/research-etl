@@ -1581,10 +1581,12 @@ INDEX_HTML = """<!doctype html>
       builderStepTesting[idx] = true;
       renderBuilderModel();
       msg.textContent = `Validating draft before step ${idx + 1} test...`;
+      const prePayload = builderPayload();
+      prePayload.require_dir_contract = false;
       const validateRes = await fetch(`/api/builder/validate`, {
         method:"POST",
         headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(builderPayload()),
+        body: JSON.stringify(prePayload),
       });
       if(!validateRes.ok){
         builderValidationState = "unknown";
@@ -2719,9 +2721,11 @@ def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None))
     pipeline_label = str(payload.get("pipeline") or "<builder:draft>")
     global_config_raw = str(payload.get("global_config") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
+    require_dir_contract = _parse_bool(payload.get("require_dir_contract"), default=True)
     try:
         pipeline = _parse_pipeline_from_yaml_text(str(payload.get("yaml_text") or ""), global_config_path=global_config_path)
-        _validate_pipeline_dir_contract(pipeline)
+        if require_dir_contract:
+            _validate_pipeline_dir_contract(pipeline)
     except HTTPException as exc:
         _record_pipeline_validation(
             pipeline=pipeline_label,
@@ -2820,7 +2824,6 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
     global_config_raw = str(payload.get("global_config") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
     pipeline = _parse_pipeline_from_yaml_text(str(payload.get("yaml_text") or ""), global_config_path=global_config_path)
-    _validate_pipeline_dir_contract(pipeline)
     step_name = str(payload.get("step_name") or "").strip()
     step_index_raw = payload.get("step_index")
     step_index: Optional[int] = None

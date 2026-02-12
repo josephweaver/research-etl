@@ -157,6 +157,20 @@ def test_web_api_builder_source_and_validate(tmp_path: Path):
     assert v.json()["step_count"] == 1
 
 
+def test_web_api_builder_validate_can_skip_dir_contract() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "steps:\n  - name: s1\n    script: echo.py\n"
+    r = client.post("/api/builder/validate", json={"yaml_text": yaml_text, "require_dir_contract": False})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["valid"] is True
+    assert payload["step_count"] == 1
+
+
 def test_web_api_builder_source_parses_plugin_args_model(tmp_path: Path):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
