@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import types
 import zipfile
 from pathlib import Path
 
@@ -84,3 +85,61 @@ def test_evidence_bundle_reads_zip_member_inventory(tmp_path: Path) -> None:
     assert any(item["path"].endswith("README.md") for item in manifest["readme_excerpts"])
     assert any(item["path"].endswith("attrib.csv") for item in manifest["schema_candidates"])
     assert any(item["source"] == "zip_member" for item in manifest["raster_details"])
+
+
+def test_evidence_bundle_reads_7z_member_inventory_with_py7zr(tmp_path: Path, monkeypatch) -> None:
+    plugin = load_plugin(Path("plugins/ai_dataset_evidence_bundle.py"))
+    assert plugin.module is not None
+
+    archive = tmp_path / "yanroy_tiles.7z"
+    archive.write_bytes(b"fake-7z")
+
+    archive_store = {
+        archive.resolve().as_posix(): {
+            "h00v00/field_id.tif": b"x",
+            "h00v00/field_id.tfw": b"30\n0\n0\n-30\n255000\n4980000\n",
+            "h00v00/attrib.csv": b"id,value\n1,10\n2,11\n",
+            "README.md": b"YanRoy 7z package",
+        }
+    }
+
+    class _Fake7zFile:
+        def __init__(self, path, mode="r"):
+            self.path = Path(path).resolve().as_posix()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def getnames(self):
+            return list(archive_store.get(self.path, {}).keys())
+
+        def read(self, targets=None, **_kwargs):
+            targets = list(targets or [])
+            payload = archive_store.get(self.path, {})
+            out = {}
+            for t in targets:
+                if t in payload:
+                    out[t] = payload[t]
+            return out
+
+    monkeypatch.setattr(plugin.module, "py7zr", types.SimpleNamespace(SevenZipFile=_Fake7zFile))
+
+    outputs = plugin.run(
+        {
+            "dataset_id": "serve.yanroy_v1",
+            "input_path": str(archive),
+            "output_dir": str(tmp_path / "out"),
+        },
+        _ctx(tmp_path),
+    )
+
+    manifest = json.loads(Path(outputs["manifest_file"]).read_text(encoding="utf-8"))
+    assert manifest["counts"]["archive_count"] == 1
+    assert manifest["counts"]["file_records"] == 4
+    assert "h00v00" in manifest["tile_segments"]
+    assert any(item["path"].endswith("README.md") for item in manifest["readme_excerpts"])
+    assert any(item["path"].endswith("attrib.csv") for item in manifest["schema_candidates"])
+    assert any(item["source"] == "archive_member" for item in manifest["raster_details"])

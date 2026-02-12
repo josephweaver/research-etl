@@ -21,6 +21,7 @@ import shlex
 import time
 import uuid
 from datetime import datetime
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -175,6 +176,95 @@ def _format_value(value: Any, ctx: Dict[str, Any]) -> Any:
     return value
 
 
+_TPL_RE = re.compile(r"\{([^{}]+)\}")
+
+
+def _lookup_ctx_path(ctx: Dict[str, Any], dotted: str) -> tuple[Any, bool]:
+    cur: Any = ctx
+    for part in str(dotted or "").split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+            continue
+        return None, False
+    return cur, True
+
+
+def _resolve_text_with_ctx(value: str, ctx: Dict[str, Any]) -> str:
+    text = str(value or "")
+
+    def _repl(match: re.Match[str]) -> str:
+        key = str(match.group(1) or "")
+        found, ok = _lookup_ctx_path(ctx, key)
+        if not ok or isinstance(found, (dict, list)):
+            return match.group(0)
+        return str(found)
+
+    return _TPL_RE.sub(_repl, text)
+
+
+def _resolve_with_ctx(value: Any, ctx: Dict[str, Any], *, max_passes: int = 20) -> Any:
+    def _walk(v: Any) -> Any:
+        if isinstance(v, str):
+            return _resolve_text_with_ctx(v, ctx)
+        if isinstance(v, list):
+            return [_walk(x) for x in v]
+        if isinstance(v, dict):
+            return {k: _walk(x) for k, x in v.items()}
+        return v
+
+    cur = value
+    for _ in range(max_passes):
+        nxt = _walk(cur)
+        if nxt == cur:
+            return cur
+        cur = nxt
+    return cur
+
+
+def _with_runtime_sys(
+    base_ctx: Dict[str, Any],
+    *,
+    run_id: str,
+    run_started: datetime,
+    job_name: str = "",
+    step_name: str = "",
+    step_index: Optional[int] = None,
+) -> Dict[str, Any]:
+    out = dict(base_ctx or {})
+    sys_ns = {
+        "run": {
+            "id": str(run_id),
+            "short_id": str(run_id)[:8],
+        },
+        "job": {
+            "id": str(run_id),
+            "name": str(job_name or ""),
+        },
+        "step": {
+            "id": str(step_name or ""),
+            "name": str(step_name or ""),
+            "index": "" if step_index is None else str(step_index),
+        },
+        "now": {
+            "iso_utc": run_started.isoformat() + "Z",
+            "yymmdd": run_started.strftime("%y%m%d"),
+            "hhmmss": run_started.strftime("%H%M%S"),
+            "yymmdd_hhmmss": run_started.strftime("%y%m%d-%H%M%S"),
+        },
+    }
+    out["sys"] = sys_ns
+    # Convenience flat aliases used in historical templates.
+    out["run_id"] = sys_ns["run"]["id"]
+    out["job_id"] = sys_ns["job"]["id"]
+    out["job_name"] = sys_ns["job"]["name"]
+    out["step_id"] = sys_ns["step"]["id"]
+    out["step_name"] = sys_ns["step"]["name"]
+    out["step_index"] = sys_ns["step"]["index"]
+    out["date"] = sys_ns["now"]["yymmdd"]
+    out["time"] = sys_ns["now"]["hhmmss"]
+    return out
+
+
 def run_pipeline(
     pipeline: Pipeline,
     *,
@@ -207,6 +297,12 @@ def run_pipeline(
     step_results: List[StepResult] = []
     ctx_vars: Dict[str, Any] = dict(pipeline.vars)
     ctx_vars.update(pipeline.dirs)
+    ctx_vars = _with_runtime_sys(
+        ctx_vars,
+        run_id=run_id,
+        run_started=ts,
+        job_name=str((pipeline.vars or {}).get("jobname") or ""),
+    )
     prior_step_outputs = prior_step_outputs or {}
 
     expanded_steps: List[Step] = []
@@ -216,13 +312,20 @@ def run_pipeline(
             if not isinstance(items, (list, tuple)):
                 raise RunError(f"`foreach` expects a list; got {type(items)} for {step.foreach}")
             for idx, item in enumerate(items):
-                local_ctx = dict(ctx_vars)
+                local_ctx = _with_runtime_sys(
+                    dict(ctx_vars),
+                    run_id=run_id,
+                    run_started=ts,
+                    job_name=str((pipeline.vars or {}).get("jobname") or ""),
+                    step_name=f"{step.name}_{idx}",
+                    step_index=idx,
+                )
                 local_ctx["item"] = item
                 new_step = Step(
                     name=f"{step.name}_{idx}",
-                    script=_format_value(step.script, local_ctx),
+                    script=str(_resolve_with_ctx(step.script, local_ctx)),
                     output_var=f"{step.output_var}_{idx}" if step.output_var else None,
-                    env=_format_value(step.env, local_ctx),
+                    env=_resolve_with_ctx(step.env, local_ctx),
                     when=step.when,
                     parallel_with=step.parallel_with,
                     foreach=None,
@@ -262,6 +365,7 @@ def run_pipeline(
             res = _execute_step(
                 step,
                 run_id,
+                ts,
                 plugin_dir,
                 base_workdir,
                 dry_run,
@@ -269,6 +373,7 @@ def run_pipeline(
                 retry_delay_seconds,
                 log,
                 ctx_vars,
+                step_index=len(step_results),
             )
             step_results.append(res)
             if res.success and step.output_var:
@@ -285,6 +390,7 @@ def run_pipeline(
                             _execute_step,
                             step,
                             run_id,
+                            ts,
                             plugin_dir,
                             base_workdir,
                             dry_run,
@@ -292,6 +398,7 @@ def run_pipeline(
                             retry_delay_seconds,
                             log,
                             dict(ctx_vars),  # snapshot
+                            None,
                         )
                     )
                 for fut in as_completed(futures):
@@ -309,6 +416,7 @@ def run_pipeline(
 def _execute_step(
     step: Step,
     run_id: str,
+    run_started: datetime,
     plugin_dir: Path,
     base_workdir: Path,
     dry_run: bool,
@@ -316,14 +424,24 @@ def _execute_step(
     retry_delay_seconds: float,
     log,
     ctx_vars: Dict[str, Any],
+    step_index: Optional[int] = None,
 ) -> StepResult:
     log(f"step {step.name}")
+    runtime_ctx = _with_runtime_sys(
+        dict(ctx_vars),
+        run_id=run_id,
+        run_started=run_started,
+        job_name=str(ctx_vars.get("job_name") or ""),
+        step_name=step.name,
+        step_index=step_index,
+    )
 
-    if not _eval_when(step.when, ctx_vars):
+    if not _eval_when(step.when, runtime_ctx):
         log(f"step {step.name} skipped (when={step.when})")
         return StepResult(step=step, success=True, skipped=True, attempt_no=0, attempts=[])
-
-    plugin_ref, arg_tokens = _parse_script(step.script)
+    script_runtime = str(_resolve_with_ctx(step.script, runtime_ctx))
+    env_runtime = _resolve_with_ctx(step.env, runtime_ctx)
+    plugin_ref, arg_tokens = _parse_script(script_runtime)
     try:
         plugin_path = _resolve_plugin_path(plugin_dir, plugin_ref)
         plugin = load_plugin(plugin_path)
@@ -332,7 +450,7 @@ def _execute_step(
 
     args = _parse_args(arg_tokens)
     args = _apply_param_types(args, plugin.meta.params)
-    args["env"] = step.env
+    args["env"] = env_runtime
 
     step_workdir = base_workdir / step.name
     step_workdir.mkdir(parents=True, exist_ok=True)
@@ -375,7 +493,7 @@ def _execute_step(
         original_env = os.environ.copy()
         started = datetime.utcnow().isoformat() + "Z"
         try:
-            os.environ.update({str(k): str(v) for k, v in step.env.items()})
+            os.environ.update({str(k): str(v) for k, v in dict(env_runtime or {}).items()})
             outputs = plugin.run(args, ctx)
             if plugin.validate:
                 plugin.validate(args, outputs, ctx)

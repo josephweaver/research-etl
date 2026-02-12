@@ -1,43 +1,40 @@
-﻿project_id: land_core
-shared_with_projects:
-  - gee_lee
+﻿# This pipeline downloads the YanRoy field boundary data from Google Drive, 
+# builds an AI dataset evidence bundle, catalogs the dataset in the AI research 
+# catalog, and syncs the catalog metadata to a GitHub repository.
 
+project_id: land_core
 vars:
   dataset_id: "raw.yanroy_download_v1"
-  pipe:
-    name: yanroy
-    datadir: "{env.datadir}/{pipe.name}"
-    cache_dir: "{pipe.datadir}/cache"
-    gdrive:
-      src: "Data/Field_Boundaries"
-      glob: "ReleaseData.7z"
-      shared_drive_name: "Land Core Risk Model Development"
-      # Shared drive ID is optional; if set it overrides shared_drive_name in the plugin.
-      shared_drive_id: "0AKJcAvvAyp4oUk9PVA"
-
+  name: yanroy
+  gdrive_src: "Data/Field_Boundaries"
+  gdrive_glob: "ReleaseData.7z"
+  gdrive_shared_drive_name: "Land Core Risk Model Development"
+  # Shared drive ID is optional; if set it overrides shared_drive_name in the plugin.
+  gdrive_shared_drive_id: "0AKJcAvvAyp4oUk9PVA"
 dirs:
-  raw_cache: "{pipe.cache_dir}/raw"
-  raw_extracted: "{pipe.cache_dir}/raw_extracted"
+  workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  logdir: "{workdir}/logs"
+  cachedir: "{env.workdir}/cache/{name}/raw"
 
 steps:
   - name: stage_raw_from_gdrive
     plugin: gdrive_download.py
     args:
       rclone_bin: "{env.rclone_bin}"
-      src: "{pipe.gdrive.src}"
-      out: "{dirs.raw_cache}"
-      glob: "{pipe.gdrive.glob}"
+      src: "{gdrive_src}"
+      out: "{cachedir}"
+      glob: "{gdrive_glob}"
       recursive: true
-      shared_drive: "{pipe.gdrive.shared_drive_name}"
-      shared_drive_id: "{pipe.gdrive.shared_drive_id}"
+      shared_drive: "{gdrive_shared_drive_name}"
+      shared_drive_id: "{gdrive_shared_drive_id}"
     output_var: staged_raw
 
   - name: build_catalog_evidence
     plugin: ai_dataset_evidence_bundle.py
     args:
-      dataset_id: "{vars.dataset_id}"
-      input_path: "{dirs.raw_cache}"
-      output_dir: "{env.workdir}/ai_context"
+      dataset_id: "{dataset_id}"
+      input_path: "{cachedir}"
+      output_dir: "{workdir}/ai_context"
       notes: "YanRoy field identifier release data from Google Drive."
       supplemental_urls:
         - https://www.researchgate.net/profile/David-Roy-16/publication/284132251_Conterminous_United_States_crop_field_size_quantification_from_multi-temporal_Landsat_data/links/564c906b08ae020ae9fabbb9/Conterminous-United-States-crop-field-size-quantification-from-multi-temporal-Landsat-data.pdf
@@ -46,18 +43,18 @@ steps:
   - name: catalog_ai_research
     plugin: ai_dataset_research.py
     args:
-      dataset_id: "{vars.dataset_id}"
-      sample_file: "{env.workdir}/ai_context/{vars.dataset_id}/sample_summary.json"
-      schema_file: "{env.workdir}/ai_context/{vars.dataset_id}/schema_summary.json"
-      notes_file: "{env.workdir}/ai_context/{vars.dataset_id}/notes_for_ai.txt"
-      supplemental_urls_file: "{env.workdir}/ai_context/{vars.dataset_id}/supplemental_urls.txt"
-      output_dir: "{env.workdir}/catalog_ai"
+      dataset_id: "{dataset_id}"
+      sample_file: "{workdir}/ai_context/{dataset_id}/sample_summary.json"
+      schema_file: "{workdir}/ai_context/{dataset_id}/schema_summary.json"
+      notes_file: "{workdir}/ai_context/{dataset_id}/notes_for_ai.txt"
+      supplemental_urls_file: "{workdir}/ai_context/{dataset_id}/supplemental_urls.txt"
+      output_dir: "{workdir}/catalog_ai"
     output_var: catalog_ai
 
   - name: catalog_json_upsert
     plugin: catalog_json_upsert.py
     args:
-      research_file: "{env.workdir}/catalog_ai/{vars.dataset_id}.research.json"
+      research_file: "{workdir}/catalog_ai/{dataset_id}.research.json"
       catalog_json: "{env.workdir}/catalog/catalog.json"
     output_var: catalog_json
 

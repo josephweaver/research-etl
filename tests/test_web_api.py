@@ -171,6 +171,379 @@ def test_web_api_builder_validate_can_skip_dir_contract() -> None:
     assert payload["step_count"] == 1
 
 
+def test_web_api_builder_validate_rejects_unresolved_step_inputs() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "dirs:",
+            "  workdir: .out/work",
+            "  logdir: .out/log",
+            "steps:",
+            "  - name: s1",
+            "    plugin: echo.py",
+            "    args:",
+            "      src: \"{env.datadir}/x\"",
+        ]
+    ) + "\n"
+    r = client.post("/api/builder/validate", json={"yaml_text": yaml_text})
+    assert r.status_code == 400
+    detail = r.json().get("detail")
+    assert isinstance(detail, dict)
+    assert "Unresolved step inputs detected" in str(detail.get("message"))
+    assert isinstance(detail.get("unresolved_inputs"), list)
+
+
+def test_web_api_builder_validate_can_allow_unresolved_step_inputs() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "dirs:",
+            "  workdir: .out/work",
+            "  logdir: .out/log",
+            "steps:",
+            "  - name: s1",
+            "    plugin: echo.py",
+            "    args:",
+            "      src: \"{env.datadir}/x\"",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/validate",
+        json={"yaml_text": yaml_text, "require_resolved_inputs": False},
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["valid"] is True
+    unresolved = payload.get("unresolved_inputs") or []
+    assert len(unresolved) == 1
+    assert unresolved[0]["field"] == "args.src"
+
+
+def test_web_api_builder_validate_allows_sys_placeholders_in_step_inputs() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "dirs:",
+            "  workdir: .out/work",
+            "  logdir: .out/log",
+            "steps:",
+            "  - name: s1",
+            "    plugin: echo.py",
+            "    args:",
+            "      run_tag: \"{sys.now.yymmdd}-{sys.run.short_id}\"",
+        ]
+    ) + "\n"
+    r = client.post("/api/builder/validate", json={"yaml_text": yaml_text})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["valid"] is True
+
+
+def test_web_api_builder_resolve_text() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "vars:",
+            "  name: demo",
+            "dirs:",
+            "  workdir: .out/work",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post("/api/builder/resolve-text", json={"yaml_text": yaml_text, "value": "{dirs.workdir}/{vars.name}"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["resolved"] == ".out/work/demo"
+    assert payload["changed"] is True
+
+
+def test_web_api_builder_environments_lists_envs(monkeypatch, tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    env_cfg = cfg / "environments.yml"
+    env_cfg.write_text(
+        "\n".join(
+            [
+                "environments:",
+                "  local:",
+                "    executor: local",
+                "    datadir: .out/work",
+                "  hpcc_alpha:",
+                "    executor: slurm",
+                "    datadir: /scratch/work",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    r = client.get("/api/builder/environments", params={"environments_config": str(env_cfg)})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["environments"] == ["hpcc_alpha", "local"]
+
+
+def test_web_api_builder_resolve_text_with_env_context(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    env_cfg = cfg / "environments.yml"
+    env_cfg.write_text(
+        "\n".join(
+            [
+                "environments:",
+                "  local:",
+                "    executor: local",
+                "    datadir: .out/work",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "vars:",
+            "  pipe:",
+            "    name: yanroy",
+            "dirs:",
+            "  raw_cache: \"{env.datadir}/{pipe.name}/cache/raw\"",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/resolve-text",
+        json={
+            "yaml_text": yaml_text,
+            "value": "{dirs.raw_cache}",
+            "environments_config": str(env_cfg),
+            "env": "local",
+        },
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["resolved"] == ".out/work/yanroy/cache/raw"
+
+
+def test_web_api_builder_resolve_text_with_sys_placeholder() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "dirs:",
+            "  workdir: .out/work",
+            "  logdir: .out/log",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/resolve-text",
+        json={"yaml_text": yaml_text, "value": "{sys.run.short_id}"},
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["resolved"] == "abcd0123"
+
+
+def test_web_api_builder_namespace_endpoint(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    env_cfg = cfg / "environments.yml"
+    env_cfg.write_text(
+        "\n".join(
+            [
+                "environments:",
+                "  local:",
+                "    executor: local",
+                "    datadir: .out/work",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "vars:",
+            "  pipe:",
+            "    name: yanroy",
+            "dirs:",
+            "  raw_cache: \"{env.datadir}/{pipe.name}/cache/raw\"",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/namespace",
+        json={
+            "yaml_text": yaml_text,
+            "environments_config": str(env_cfg),
+            "env": "local",
+        },
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    ns = payload["namespace"]
+    assert "sys" in ns
+    assert "now" in ns["sys"]
+    assert "yymmdd_hhmmss" in ns["sys"]["now"]
+    assert "run" in ns["sys"]
+    assert "id" in ns["sys"]["run"]
+    assert ns["sys"]["run"]["short_id"] == "abcd0123"
+    assert ns["dirs"]["raw_cache"] == ".out/work/yanroy/cache/raw"
+    assert ns["raw_cache"] == ".out/work/yanroy/cache/raw"
+    assert ns["env"]["datadir"] == ".out/work"
+    assert ns["resolution"]["max_passes"] == 20
+    assert payload["counts"]["sys"] >= 1
+
+
+def test_web_api_builder_namespace_precedence_global_env_vars(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    global_cfg = cfg / "global.yml"
+    global_cfg.write_text(
+        "\n".join(
+            [
+                "workdir: /g/work",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env_cfg = cfg / "environments.yml"
+    env_cfg.write_text(
+        "\n".join(
+            [
+                "environments:",
+                "  local:",
+                "    executor: local",
+                "    workdir: /e/work",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "vars:",
+            "  workdir: \"{env.workdir}/pipe\"",
+            "dirs:",
+            "  stage: \"{workdir}/stage\"",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/namespace",
+        json={
+            "yaml_text": yaml_text,
+            "global_config": str(global_cfg),
+            "environments_config": str(env_cfg),
+            "env": "local",
+        },
+    )
+    assert r.status_code == 200
+    ns = r.json()["namespace"]
+    assert ns["global"]["workdir"] == "/g/work"
+    assert ns["env"]["workdir"] == "/e/work"
+    assert ns["vars"]["workdir"] == "/e/work/pipe"
+    assert ns["workdir"] == "/e/work/pipe"
+    assert ns["dirs"]["stage"] == "/e/work/pipe/stage"
+
+
+def test_web_api_builder_namespace_resolves_sys_tokens_in_flat_preview() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "vars:",
+            "  name: demo",
+            "dirs:",
+            "  workdir: \"{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}\"",
+            "  logdir: \"{workdir}/logs\"",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/namespace",
+        json={
+            "yaml_text": yaml_text,
+            "env": "local",
+        },
+    )
+    assert r.status_code == 200
+    ns = r.json()["namespace"]
+    assert "abcd0123" in str(ns["workdir"])
+    assert "abcd0123" in str(ns["logdir"])
+    assert "{sys.now.yymmdd}" not in str(ns["workdir"])
+    assert "{sys.now.hhmmss}" not in str(ns["workdir"])
+
+
+def test_web_api_builder_namespace_preview_avoids_self_recursive_growth() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "dirs:",
+            "  workdir: \"{workdir}/{pipe.name}/{run_id}\"",
+            "  logdir: \"{workdir}/logs\"",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post("/api/builder/namespace", json={"yaml_text": yaml_text})
+    assert r.status_code == 200
+    ns = r.json()["namespace"]
+    # Should not explode via recursive self-substitution.
+    assert len(str(ns["workdir"])) < 200
+    assert str(ns["workdir"]).count("{pipe.name}") <= 1
+
+
 def test_web_api_builder_source_parses_plugin_args_model(tmp_path: Path):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
@@ -334,7 +707,7 @@ def test_web_api_builder_test_step(monkeypatch):
     monkeypatch.setattr(
         web_api,
         "_parse_pipeline_from_yaml_text",
-        lambda yaml_text, global_config_path=None: Pipeline(
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
             dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
             steps=[Step(name="s1", script="echo.py")],
         ),
@@ -368,7 +741,7 @@ def test_web_api_builder_test_step_with_step_index(monkeypatch):
     monkeypatch.setattr(
         web_api,
         "_parse_pipeline_from_yaml_text",
-        lambda yaml_text, global_config_path=None: Pipeline(
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
             dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
             steps=[
                 Step(name="s1", script="echo.py"),
@@ -407,7 +780,7 @@ def test_web_api_builder_test_step_uses_work_dir_from_dirs(monkeypatch):
     monkeypatch.setattr(
         web_api,
         "_parse_pipeline_from_yaml_text",
-        lambda yaml_text, global_config_path=None: Pipeline(
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
             dirs={"workdir": ".runs/from_dirs", "logdir": ".runs/log"},
             steps=[Step(name="s1", script="echo.py")],
         ),

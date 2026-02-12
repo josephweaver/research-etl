@@ -161,11 +161,30 @@ def _read_archive_members(path: Path) -> List[str]:
     return []
 
 
-def _read_zip_member_text(zip_path: Path, member: str, max_chars: int = 200000) -> str:
-    with zipfile.ZipFile(zip_path, mode="r") as zf:
-        with zf.open(member, mode="r") as f:
-            raw = f.read(max_chars)
-    return raw.decode("utf-8", errors="replace")
+def _read_archive_member_text(archive_path: Path, member: str, max_chars: int = 200000) -> str:
+    suffix = archive_path.suffix.lower()
+    if suffix == ".zip":
+        with zipfile.ZipFile(archive_path, mode="r") as zf:
+            with zf.open(member, mode="r") as f:
+                raw = f.read(max_chars)
+        return raw.decode("utf-8", errors="replace")
+    if suffix == ".7z" and py7zr is not None:
+        with py7zr.SevenZipFile(archive_path, mode="r") as zf:
+            try:
+                data = zf.read([member])
+            except TypeError:
+                data = zf.read(targets=[member])
+        blob = data.get(member) if isinstance(data, dict) else None
+        if blob is None and isinstance(data, dict) and data:
+            blob = next(iter(data.values()))
+        if hasattr(blob, "read"):
+            raw = blob.read(max_chars)
+        elif isinstance(blob, (bytes, bytearray)):
+            raw = bytes(blob)[:max_chars]
+        else:
+            raw = b""
+        return raw.decode("utf-8", errors="replace")
+    return ""
 
 
 def _suffix(path_like: str) -> str:
@@ -257,32 +276,52 @@ def _infer_tabular_schema_from_text(text: str, suffix: str, sample_rows: int, sc
     return {"format": suffix.lstrip("."), "fields": [], "sample_rows": []}
 
 
-def _collect_zip_records(path: Path, max_files: int) -> List[Dict[str, Any]]:
-    records: List[Dict[str, Any]] = []
-    with zipfile.ZipFile(path, mode="r") as zf:
-        for info in zf.infolist():
-            rel = str(info.filename).replace("\\", "/").strip("/")
-            if not rel or rel.endswith("/"):
-                continue
+def _collect_archive_records(path: Path, max_files: int) -> List[Dict[str, Any]]:
+    suffix = path.suffix.lower()
+    if suffix == ".zip":
+        records: List[Dict[str, Any]] = []
+        with zipfile.ZipFile(path, mode="r") as zf:
+            for info in zf.infolist():
+                rel = str(info.filename).replace("\\", "/").strip("/")
+                if not rel or rel.endswith("/"):
+                    continue
+                records.append(
+                    {
+                        "path": f"{path.resolve().as_posix()}::{rel}",
+                        "rel_path": rel,
+                        "size_bytes": int(getattr(info, "file_size", 0)),
+                        "suffix": _suffix(rel),
+                        "archive_path": path.resolve().as_posix(),
+                        "archive_type": "zip",
+                    }
+                )
+                if len(records) >= max_files:
+                    break
+        return records
+    if suffix == ".7z":
+        members = _read_archive_members(path)
+        records = []
+        for rel in members[:max_files]:
             records.append(
                 {
                     "path": f"{path.resolve().as_posix()}::{rel}",
                     "rel_path": rel,
-                    "size_bytes": int(getattr(info, "file_size", 0)),
+                    "size_bytes": None,
                     "suffix": _suffix(rel),
                     "archive_path": path.resolve().as_posix(),
-                    "archive_type": "zip",
+                    "archive_type": "7z",
                 }
             )
-            if len(records) >= max_files:
-                break
-    return records
+        return records
+    return []
 
 
-def _extract_zip_raster_details(zip_path: Path, zip_records: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
+def _extract_archive_raster_details(archive_path: Path, archive_records: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
     out: List[Dict[str, Any]] = []
-    member_set = {str(r.get("rel_path") or "") for r in zip_records}
-    for rec in zip_records:
+    member_set = {str(r.get("rel_path") or "") for r in archive_records}
+    archive_type = archive_path.suffix.lower().lstrip(".")
+    for rec in archive_records:
         suffix = str(rec.get("suffix") or "").lower()
         if suffix not in _RASTER_EXTS:
             continue
@@ -293,18 +332,18 @@ def _extract_zip_raster_details(zip_path: Path, zip_records: List[Dict[str, Any]
         detail: Dict[str, Any] = {
             "path": rec["path"],
             "suffix": suffix,
-            "source": "zip_member",
+            "source": "zip_member" if archive_type == "zip" else "archive_member",
             "has_prj_sidecar": prj_rel in member_set,
             "has_world_file_sidecar": tfw_rel in member_set,
         }
         if prj_rel in member_set:
             try:
-                detail["crs_wkt_excerpt"] = _read_zip_member_text(zip_path, prj_rel, max_chars=max_chars)[:1200]
+                detail["crs_wkt_excerpt"] = _read_archive_member_text(archive_path, prj_rel, max_chars=max_chars)[:1200]
             except Exception:  # noqa: BLE001
                 pass
         if tfw_rel in member_set:
             try:
-                tfw_text = _read_zip_member_text(zip_path, tfw_rel, max_chars=max_chars)
+                tfw_text = _read_archive_member_text(archive_path, tfw_rel, max_chars=max_chars)
                 parsed = parse_world_file_text(tfw_text)
                 if parsed:
                     detail["world_file"] = parsed
@@ -365,14 +404,13 @@ def run(args, ctx):
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
     regular_files: List[Dict[str, str]] = []
-    zip_records_all: List[Dict[str, Any]] = []
+    archive_records_all: List[Dict[str, Any]] = []
     archive_members: Dict[str, List[str]] = {}
     for root in roots:
         if root.is_file() and root.suffix.lower() in {".zip", ".7z"}:
             members = _read_archive_members(root)
             archive_members[root.resolve().as_posix()] = members
-            if root.suffix.lower() == ".zip":
-                zip_records_all.extend(_collect_zip_records(root, max_files=max_files))
+            archive_records_all.extend(_collect_archive_records(root, max_files=max_files))
             continue
         if root.is_file():
             regular_files.append({"abs_path": root.resolve().as_posix(), "rel_path": root.name})
@@ -395,22 +433,8 @@ def run(args, ctx):
                 "suffix": path.suffix.lower(),
             }
         )
-    for rec in zip_records_all[:max_files]:
+    for rec in archive_records_all[:max_files]:
         file_records.append(rec)
-    for archive_path, members in archive_members.items():
-        if archive_path.lower().endswith(".zip"):
-            continue
-        for rel in members[:max_files]:
-            file_records.append(
-                {
-                    "path": f"{archive_path}::{rel}",
-                    "rel_path": rel,
-                    "size_bytes": None,
-                    "suffix": _suffix(rel),
-                    "archive_path": archive_path,
-                    "archive_type": "7z",
-                }
-            )
 
     suffix_counts = Counter(record["suffix"] for record in file_records if record["suffix"])
     top_segment_counts = Counter(_top_segment(str(record.get("rel_path") or record["path"])) for record in file_records)
@@ -435,17 +459,17 @@ def run(args, ctx):
         excerpt = _read_text_excerpt(path, max_text_chars)
         if excerpt.strip():
             text_excerpts.append({"path": path.as_posix(), "excerpt": excerpt})
-    zip_readmes = [
+    archive_readmes = [
         rec
         for rec in file_records
-        if str(rec.get("archive_type") or "") == "zip"
+        if str(rec.get("archive_type") or "") in {"zip", "7z"}
         and ("readme" in Path(str(rec.get("rel_path") or "")).name.lower() or Path(str(rec.get("rel_path") or "")).name.lower() in _READ_ME_NAMES)
     ]
-    for rec in zip_readmes[:8]:
+    for rec in archive_readmes[:8]:
         archive_path = Path(str(rec.get("archive_path") or ""))
         rel = str(rec.get("rel_path") or "")
         try:
-            excerpt = _read_zip_member_text(archive_path, rel, max_chars=max_text_chars)
+            excerpt = _read_archive_member_text(archive_path, rel, max_chars=max_text_chars)
         except Exception:  # noqa: BLE001
             excerpt = ""
         if excerpt.strip():
@@ -467,16 +491,16 @@ def run(args, ctx):
             )
         except Exception as exc:  # noqa: BLE001
             schema_candidates.append({"path": path.as_posix(), "error": str(exc)})
-    zip_tabular_candidates = [
+    archive_tabular_candidates = [
         rec
         for rec in file_records
-        if str(rec.get("archive_type") or "") == "zip" and str(rec.get("suffix") or "").lower() in _TABULAR_EXTS
+        if str(rec.get("archive_type") or "") in {"zip", "7z"} and str(rec.get("suffix") or "").lower() in _TABULAR_EXTS
     ]
-    for rec in zip_tabular_candidates[:3]:
+    for rec in archive_tabular_candidates[:3]:
         archive_path = Path(str(rec.get("archive_path") or ""))
         rel = str(rec.get("rel_path") or "")
         try:
-            text = _read_zip_member_text(archive_path, rel)
+            text = _read_archive_member_text(archive_path, rel)
             schema_candidates.append(
                 {
                     "path": str(rec.get("path") or ""),
@@ -506,10 +530,10 @@ def run(args, ctx):
         except Exception as exc:  # noqa: BLE001
             raster_details.append({"path": path.as_posix(), "source": "filesystem", "error": str(exc)})
     for root in roots:
-        if not (root.is_file() and root.suffix.lower() == ".zip"):
+        if not (root.is_file() and root.suffix.lower() in {".zip", ".7z"}):
             continue
-        root_zip_records = [r for r in zip_records_all if str(r.get("archive_path") or "") == root.resolve().as_posix()]
-        raster_details.extend(_extract_zip_raster_details(root, root_zip_records, max_chars=max_text_chars))
+        root_records = [r for r in archive_records_all if str(r.get("archive_path") or "") == root.resolve().as_posix()]
+        raster_details.extend(_extract_archive_raster_details(root, root_records, max_chars=max_text_chars))
 
     pipeline_globs = _split_csvish(str(args.get("pipeline_glob") or ""))
     code_globs = _split_csvish(str(args.get("code_glob") or ""))

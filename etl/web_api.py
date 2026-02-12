@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import json
 import shlex
+import re
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -11,7 +13,7 @@ import psycopg
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
-from .config import ConfigError, load_global_config
+from .config import ConfigError, load_global_config, resolve_global_config_path
 from .ai_pipeline import AIPipelineError, generate_pipeline_draft
 from .db import get_database_url
 from .execution_config import (
@@ -23,7 +25,7 @@ from .execution_config import (
 )
 from .executors.local import LocalExecutor
 from .executors.slurm import SlurmExecutor
-from .pipeline import Pipeline, Step, parse_pipeline, PipelineError
+from .pipeline import DEFAULT_RESOLVE_MAX_PASSES, Pipeline, Step, parse_pipeline, PipelineError
 from .provenance import collect_run_provenance
 from .projects import infer_project_id_from_pipeline_path, normalize_project_id, resolve_project_id
 from .plugins.base import PluginLoadError, load_plugin
@@ -43,6 +45,7 @@ from .web_queries import (
 app = FastAPI(title="Research ETL UI", version="0.1.0")
 
 MAX_FILE_VIEW_BYTES = 256 * 1024
+_TPL_RE = re.compile(r"\{([^{}]+)\}")
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,8 @@ INDEX_HTML = """<!doctype html>
     .builder-item { border:1px dashed var(--line); border-radius:8px; padding:8px; background:#fff; }
     .builder-item .controls { margin-bottom:6px; }
     .builder-item h5 { margin:0 0 6px 0; font-size:13px; color:#334e73; }
+    .builder-insert-row { display:flex; justify-content:center; margin:4px 0; }
+    .builder-insert-row button { background:#eef3ff; color:#274066; border-color:#b9c8e6; font-size:12px; padding:4px 10px; }
     .step-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
     .status-pill { display:inline-block; border-radius:999px; padding:2px 8px; font-size:11px; border:1px solid var(--line); background:#f4f7ff; color:#3b4f70; text-transform:lowercase; }
     .status-pill.not-run { background:#f3f4f6; color:#4b5563; border-color:#d1d5db; }
@@ -122,7 +127,10 @@ INDEX_HTML = """<!doctype html>
     .param-panel-title { font-size:12px; color:#4a648a; font-weight:600; margin-bottom:6px; text-transform:uppercase; letter-spacing:.03em; }
     .param-grid { display:grid; grid-template-columns:1fr; gap:6px; }
     .param-row { display:grid; grid-template-columns: 180px minmax(0,1fr); gap:8px; align-items:center; }
-    .param-label { font-size:12px; color:#334e73; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .param-label { font-size:12px; color:#334e73; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px; }
+    .param-label.issue { color:#8b1e1e; font-weight:600; }
+    .param-issue-badge { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:999px; border:1px solid #e2a9a9; color:#8b1e1e; background:#fff1f1; font-size:11px; font-weight:700; line-height:1; cursor:help; }
+    .param-value input.issue, .param-value select.issue { border-color:#e2a9a9; background:#fff7f7; }
     .param-value { display:flex; align-items:center; gap:8px; }
     .param-value input[type="text"], .param-value input[type="number"], .param-value select { width:100%; }
     .combo-picker { position:relative; flex:1 1 460px; min-width:280px; max-width:700px; }
@@ -130,12 +138,35 @@ INDEX_HTML = """<!doctype html>
     .combo-dropdown { position:absolute; left:0; right:0; top:calc(100% + 4px); display:none; z-index:35; border:1px solid var(--line); border-radius:8px; background:#fff; box-shadow:0 10px 22px rgba(10,25,60,.15); padding:6px; }
     .combo-picker.open .combo-dropdown { display:block; }
     #b_pipeline_tree { max-height:260px; overflow:auto; }
+    #builder_namespace_tree { max-height:260px; overflow:auto; border:1px solid var(--line); border-radius:8px; background:#fff; padding:6px; margin-bottom:8px; }
+    #builder_namespace_tree .ns-row { display:grid; grid-template-columns: minmax(140px, 38%) minmax(0, 1fr); gap:8px; width:100%; align-items:center; }
+    #builder_namespace_tree .ns-key { font-weight:600; color:#304a70; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    #builder_namespace_tree .ns-value { color:#4f6384; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-family:Consolas,monospace; font-size:11px; }
+    #builder_namespace_tree .jstree-ocl { display:none !important; width:0 !important; }
+    #builder_namespace_tree .jstree-anchor { width:calc(100% - 2px); display:flex; align-items:center; gap:4px; padding:1px 2px; }
+    #builder_namespace_tree .jstree-themeicon { flex:0 0 auto; margin-right:0; width:14px; height:14px; background:none !important; }
+    #builder_namespace_tree .jstree-anchor .ns-row { flex:1 1 auto; min-width:0; }
+    #builder_namespace_tree .jstree-themeicon.ns-folder-closed::before { content:"[+]"; color:#36557e; font-size:10px; }
+    #builder_namespace_tree .jstree-themeicon.ns-folder-open::before { content:"[-]"; color:#36557e; font-size:10px; }
+    #builder_namespace_tree .jstree-themeicon.ns-var-leaf::before { content:"*"; color:#5e6f89; font-size:10px; }
     .builder-preview-collapsed #builder_preview_body { display:none; }
     .builder-preview-collapsed #btn_builder_toggle_preview { background:#eef3ff; color:#274066; border-color:#b9c8e6; }
+    .builder-subsection { border:1px solid var(--line); border-radius:8px; background:#fff; margin-bottom:8px; overflow:hidden; }
+    .builder-subsection-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; background:#f7faff; border-bottom:1px solid var(--line); }
+    .builder-subsection-head h4 { margin:0; font-size:12px; color:#36557e; text-transform:uppercase; letter-spacing:.02em; }
+    .builder-subsection-head button { padding:3px 8px; font-size:11px; line-height:1.2; background:#eef3ff; color:#274066; border-color:#b9c8e6; }
+    .builder-subsection-body { padding:8px; }
+    .builder-subsection.collapsed .builder-subsection-body { display:none; }
     .spin-btn { position:relative; min-width:96px; }
     .spin-btn.loading { color:transparent; }
     .spin-btn .spin { display:none; position:absolute; right:10px; top:50%; width:13px; height:13px; margin-top:-6.5px; border:2px solid rgba(255,255,255,.55); border-top-color:#fff; border-radius:50%; animation:spin .8s linear infinite; }
     .spin-btn.loading .spin { display:block; }
+    .step-output { border:1px solid var(--line); border-radius:8px; background:#f9fbff; margin-top:6px; overflow:hidden; }
+    .step-output-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 8px; background:#f3f7ff; border-bottom:1px solid var(--line); }
+    .step-output-head .title { font-size:12px; color:#47638a; font-weight:600; }
+    .step-output-head button { background:#eef3ff; color:#274066; border-color:#b9c8e6; font-size:11px; padding:2px 8px; }
+    .step-output pre { margin:0; border:0; border-radius:0; background:#fff; padding:8px; max-height:220px; overflow:auto; }
+    .step-output.collapsed pre { display:none; }
     @keyframes spin { to { transform:rotate(360deg); } }
     @media (max-width: 1280px) {
       .builder-surface { grid-template-columns: 1fr; }
@@ -246,7 +277,6 @@ INDEX_HTML = """<!doctype html>
                     <div id="b_pipeline_tree"></div>
                   </div>
                 </div>
-                <button id="btn_builder_load">Load</button>
                 <button id="btn_builder_import_local">Import Local</button>
                 <button id="btn_builder_save">Save Draft</button>
                 <button id="btn_builder_generate">Generate</button>
@@ -259,7 +289,9 @@ INDEX_HTML = """<!doctype html>
                 <input id="b_constraints" placeholder="constraints (optional)" />
               </div>
               <div class="controls">
-                <input id="b_global_config" placeholder="global_config (optional)" />
+                <select id="b_env_name">
+                  <option value="">env (optional)</option>
+                </select>
                 <select id="b_run_mode">
                   <option value="draft">Draft Mode (workspace)</option>
                   <option value="repro">Repro Mode (auto/git-pinned)</option>
@@ -306,10 +338,34 @@ INDEX_HTML = """<!doctype html>
                 <button id="btn_builder_toggle_preview" type="button">Expand</button>
               </div>
               <div id="builder_preview_body">
-                <h4>YAML Preview (read-only)</h4>
-                <textarea id="b_yaml" readonly style="width:100%; min-height:420px; font-family:Consolas,monospace; font-size:12px;"></textarea>
-                <h4>Builder Output</h4>
-                <pre id="builder_output">No draft action yet.</pre>
+                <section class="builder-subsection" id="builder_section_yaml">
+                  <div class="builder-subsection-head">
+                    <h4>YAML Preview (read-only)</h4>
+                    <button id="btn_builder_toggle_yaml" type="button">Collapse</button>
+                  </div>
+                  <div class="builder-subsection-body">
+                    <textarea id="b_yaml" readonly style="width:100%; min-height:420px; font-family:Consolas,monospace; font-size:12px;"></textarea>
+                  </div>
+                </section>
+                <section class="builder-subsection" id="builder_section_output">
+                  <div class="builder-subsection-head">
+                    <h4>Builder Output</h4>
+                    <button id="btn_builder_toggle_output" type="button">Collapse</button>
+                  </div>
+                  <div class="builder-subsection-body">
+                    <pre id="builder_output">No draft action yet.</pre>
+                  </div>
+                </section>
+                <section class="builder-subsection" id="builder_section_vars">
+                  <div class="builder-subsection-head">
+                    <h4>Variable Tracker</h4>
+                    <button id="btn_builder_toggle_vars" type="button">Collapse</button>
+                  </div>
+                  <div class="builder-subsection-body">
+                    <div id="builder_namespace_tree"></div>
+                    <pre id="builder_namespace">Loading...</pre>
+                  </div>
+                </section>
               </div>
             </div>
           </div>
@@ -384,11 +440,20 @@ INDEX_HTML = """<!doctype html>
     let builderValidationState = "unknown";
     let builderStepStatus = {};
     let builderStepTesting = {};
+    let builderStepOutput = {};
+    let builderStepOutputCollapsed = {};
+    let builderParamIssues = {};
     let builderPipelineRunState = "not-run";
     let builderPipelineRunning = false;
-    let builderPreviewCollapsed = true;
+    let builderPreviewCollapsed = false;
+    let builderPreviewSectionCollapsed = { yaml: false, output: false, vars: false };
     let builderTreeFiles = [];
     let builderTreeFileSelection = "";
+    let builderNamespaceTimer = null;
+    let builderLastTextTarget = null;
+    let builderAutoValidateTimer = null;
+    let builderValidateInFlight = false;
+    let builderNamespaceDigest = "";
     const USER_STORAGE_KEY = "etl_ui_user";
     const VALID_UI_USERS = new Set(["admin", "land-core", "gee-lee"]);
     const _nativeFetch = window.fetch.bind(window);
@@ -740,9 +805,16 @@ INDEX_HTML = """<!doctype html>
         builderValidationState = "unknown";
         builderStepStatus = {};
         builderStepTesting = {};
+        builderStepOutput = {};
+        builderStepOutputCollapsed = {};
+        builderParamIssues = {};
         builderPipelineRunState = "not-run";
       }
       renderBuilderPipelineStatus();
+      if (builderNamespaceTimer) {
+        clearTimeout(builderNamespaceTimer);
+      }
+      builderNamespaceTimer = setTimeout(() => { refreshBuilderNamespace(); }, 120);
     }
     function builderPipelineStatusMeta(){
       if(builderPipelineRunState === "failed"){
@@ -780,31 +852,63 @@ INDEX_HTML = """<!doctype html>
       surface.classList.toggle("builder-right-collapsed", !!builderPreviewCollapsed);
       btn.textContent = builderPreviewCollapsed ? "Expand Preview" : "Collapse Preview";
     }
+    function renderBuilderPreviewSections(){
+      const defs = [
+        { key: "yaml", sectionId: "builder_section_yaml", btnId: "btn_builder_toggle_yaml", title: "YAML" },
+        { key: "output", sectionId: "builder_section_output", btnId: "btn_builder_toggle_output", title: "Output" },
+        { key: "vars", sectionId: "builder_section_vars", btnId: "btn_builder_toggle_vars", title: "Variables" },
+      ];
+      for(const d of defs){
+        const section = document.getElementById(d.sectionId);
+        const btn = document.getElementById(d.btnId);
+        if(!section || !btn) continue;
+        const collapsed = !!builderPreviewSectionCollapsed[d.key];
+        section.classList.toggle("collapsed", collapsed);
+        btn.textContent = collapsed ? `Expand ${d.title}` : `Collapse ${d.title}`;
+      }
+    }
     function builderPayload(){
       const body = { yaml_text: document.getElementById("b_yaml").value || "" };
       const pipeline = normalizeBuilderPipelineName(document.getElementById("b_pipeline_path").value.trim());
       const intent = document.getElementById("b_intent").value.trim();
       const constraints = document.getElementById("b_constraints").value.trim();
-      const globalConfig = document.getElementById("b_global_config").value.trim();
+      const envName = document.getElementById("b_env_name").value.trim();
       const workdir = deriveBuilderWorkdir();
       const retries = document.getElementById("b_max_retries").value.trim();
       const delay = document.getElementById("b_retry_delay").value.trim();
       if (pipeline) body.pipeline = pipeline;
       if (intent) body.intent = intent;
       if (constraints) body.constraints = constraints;
-      if (globalConfig) body.global_config = globalConfig;
+      if (envName) body.env = envName;
       if (workdir) body.workdir = workdir;
       if (retries) body.max_retries = Number(retries);
       if (delay) body.retry_delay_seconds = Number(delay);
       body.dry_run = document.getElementById("b_dry_run").checked;
       return body;
     }
+    async function loadBuilderEnvironments(){
+      if(!isBuilderView) return;
+      const sel = document.getElementById("b_env_name");
+      const current = String(sel.value || "").trim();
+      const qp = new URLSearchParams();
+      const res = await fetch(`/api/builder/environments?${qp.toString()}`);
+      if(!res.ok){
+        document.getElementById("builder_msg").textContent = await readMessage(res);
+        sel.innerHTML = `<option value="">env (optional)</option>`;
+        return;
+      }
+      const payload = await res.json();
+      const envs = Array.isArray(payload.environments) ? payload.environments : [];
+      sel.innerHTML = `<option value="">env (optional)</option>` + envs.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join("");
+      if(current && envs.includes(current)){
+        sel.value = current;
+      } else if(envs.includes("local")){
+        sel.value = "local";
+      }
+    }
     async function loadBuilderPlugins(){
       if(!isBuilderView) return;
-      const gc = document.getElementById("b_global_config").value.trim();
-      const qp = new URLSearchParams();
-      if(gc) qp.set("global_config", gc);
-      const res = await fetch(`/api/builder/plugins?${qp.toString()}`);
+      const res = await fetch(`/api/builder/plugins`);
       if(!res.ok){
         document.getElementById("builder_msg").textContent = await readMessage(res);
         return;
@@ -864,6 +968,15 @@ INDEX_HTML = """<!doctype html>
       const firstPlugin = builderPlugins.length ? builderPlugins[0].path : "echo.py";
       builderModel.steps = builderModel.steps || [];
       builderModel.steps.push({ type:"sequential", plugin:firstPlugin, params:{}, output_var:"", when:"", parallel_with:"", foreach:"" });
+      renderBuilderModel();
+      syncYamlPreview();
+    }
+    function insertBuilderStepAt(index){
+      const firstPlugin = builderPlugins.length ? builderPlugins[0].path : "echo.py";
+      const steps = builderModel.steps || [];
+      const idx = Math.max(0, Math.min(Number(index || 0), steps.length));
+      steps.splice(idx, 0, { type:"sequential", plugin:firstPlugin, params:{}, output_var:"", when:"", parallel_with:"", foreach:"" });
+      builderModel.steps = steps;
       renderBuilderModel();
       syncYamlPreview();
     }
@@ -928,6 +1041,28 @@ INDEX_HTML = """<!doctype html>
       }
       return { klass: "not-run", text: "not run" };
     }
+    function setBuilderParamIssues(issues){
+      builderParamIssues = {};
+      for(const issue of (Array.isArray(issues) ? issues : [])){
+        const sidx = Number(issue?.step_index);
+        const field = String(issue?.field || "").trim();
+        if(!Number.isFinite(sidx) || !field) continue;
+        builderParamIssues[`${sidx}|${field}`] = issue;
+      }
+    }
+    function issueMetaForField(stepIndex, field){
+      const issue = builderParamIssues[`${stepIndex}|${String(field || "")}`];
+      if(!issue){
+        return { labelClass:"", inputClass:"", badge:"" };
+      }
+      const tokens = Array.isArray(issue.tokens) ? issue.tokens.join(", ") : "";
+      const title = `Unresolved: ${tokens || "unknown token"}`;
+      return {
+        labelClass: " issue",
+        inputClass: "issue",
+        badge: `<span class="param-issue-badge" title="${esc(title)}">!</span>`,
+      };
+    }
     function renderBuilderModel(){
       const reqEl = document.getElementById("b_requires");
       const varEl = document.getElementById("b_vars");
@@ -961,6 +1096,13 @@ INDEX_HTML = """<!doctype html>
 
       const steps = builderModel.steps || [];
       const stepLabels = stepDisplayLabels(steps);
+      const renderInsertRow = (insertIdx) => {
+        const row = document.createElement("div");
+        row.className = "builder-insert-row";
+        row.innerHTML = `<button data-insert-step="${insertIdx}">+ Insert Step</button>`;
+        stepsEl.appendChild(row);
+      };
+      renderInsertRow(0);
       function defaultForSpec(pspec){
         if(pspec && Object.prototype.hasOwnProperty.call(pspec, "default")) return pspec.default;
         return "";
@@ -988,6 +1130,7 @@ INDEX_HTML = """<!doctype html>
           const pvalRaw = (st.params || {})[pk];
           const pval = pvalRaw !== undefined ? pvalRaw : pdefault;
           const hint = pspec?.description ? ` title="${esc(String(pspec.description))}"` : "";
+          const issueMeta = issueMetaForField(idx, `args.${pk}`);
           if(pchoices.length){
             const options = [`<option value="">(empty)</option>`]
               .concat(pchoices.map(opt => {
@@ -998,14 +1141,14 @@ INDEX_HTML = """<!doctype html>
               .join("");
             paramsHtml += `
               <div class="param-row">
-                <div class="param-label" title="${esc(pk)}">${esc(pk)}</div>
-                <div class="param-value"><select data-kind="step-param-select" data-idx="${idx}" data-param="${esc(pk)}" data-ptype="${esc(ptype)}"${hint}>${options}</select></div>
+                <div class="param-label${issueMeta.labelClass}" title="${esc(pk)}">${esc(pk)}${issueMeta.badge}</div>
+                <div class="param-value"><select class="${issueMeta.inputClass}" data-kind="step-param-select" data-idx="${idx}" data-param="${esc(pk)}" data-ptype="${esc(ptype)}"${hint}>${options}</select></div>
               </div>
             `;
           } else if(ptype === "bool"){
             paramsHtml += `
               <div class="param-row">
-                <div class="param-label" title="${esc(pk)}">${esc(pk)}</div>
+                <div class="param-label${issueMeta.labelClass}" title="${esc(pk)}">${esc(pk)}${issueMeta.badge}</div>
                 <div class="param-value"><label class="muted"><input type="checkbox" data-kind="step-param-bool" data-idx="${idx}" data-param="${esc(pk)}" ${isBoolLike(pval)?"checked":""}${hint} /> enabled</label></div>
               </div>
             `;
@@ -1013,15 +1156,15 @@ INDEX_HTML = """<!doctype html>
             const nval = toNumberLike(pval, ptype);
             paramsHtml += `
               <div class="param-row">
-                <div class="param-label" title="${esc(pk)}">${esc(pk)}</div>
-                <div class="param-value"><input type="number" data-kind="step-param-number" data-idx="${idx}" data-param="${esc(pk)}" data-ptype="${esc(ptype)}" value="${esc(nval)}" placeholder="${esc(ptype)}"${ptype==="int" ? ' step="1"' : ' step="any"'}${hint} /></div>
+                <div class="param-label${issueMeta.labelClass}" title="${esc(pk)}">${esc(pk)}${issueMeta.badge}</div>
+                <div class="param-value"><input class="${issueMeta.inputClass}" type="number" data-kind="step-param-number" data-idx="${idx}" data-param="${esc(pk)}" data-ptype="${esc(ptype)}" value="${esc(nval)}" placeholder="${esc(ptype)}"${ptype==="int" ? ' step="1"' : ' step="any"'}${hint} /></div>
               </div>
             `;
           } else {
             paramsHtml += `
               <div class="param-row">
-                <div class="param-label" title="${esc(pk)}">${esc(pk)}</div>
-                <div class="param-value"><input data-kind="step-param" data-idx="${idx}" data-param="${esc(pk)}" data-ptype="${esc(ptype)}" value="${esc(pval ?? "")}" placeholder="${esc(ptype)}"${hint} /></div>
+                <div class="param-label${issueMeta.labelClass}" title="${esc(pk)}">${esc(pk)}${issueMeta.badge}</div>
+                <div class="param-value"><input class="${issueMeta.inputClass}" data-kind="step-param" data-idx="${idx}" data-param="${esc(pk)}" data-ptype="${esc(ptype)}" value="${esc(pval ?? "")}" placeholder="${esc(ptype)}"${hint} /></div>
               </div>
             `;
           }
@@ -1062,8 +1205,16 @@ INDEX_HTML = """<!doctype html>
             <input data-kind="step-when" data-idx="${idx}" value="${esc(st.when || "")}" placeholder="when (optional)" />
           </div>
           ${typeSpecificHtml}
+          <div class="step-output ${builderStepOutputCollapsed[idx] ? "collapsed" : ""}">
+            <div class="step-output-head">
+              <span class="title">Step Output</span>
+              <button type="button" data-toggle-step-output="${idx}">${builderStepOutputCollapsed[idx] ? "Expand" : "Collapse"}</button>
+            </div>
+            <pre>${esc(builderStepOutput[idx] || "No step output yet.")}</pre>
+          </div>
         `;
         stepsEl.appendChild(card);
+        renderInsertRow(idx + 1);
       });
     }
     function handleBuilderInput(ev){
@@ -1091,6 +1242,7 @@ INDEX_HTML = """<!doctype html>
           changed = true;
         }
       } else if (kind === "var-val"){
+        if (eventType === "input") return;
         const key = t.getAttribute("data-key") || "";
         if(key){
           builderModel.vars[key] = t.value;
@@ -1178,6 +1330,15 @@ INDEX_HTML = """<!doctype html>
         }
         return;
       }
+      const ins = t.getAttribute("data-insert-step");
+      if (ins !== null){ insertBuilderStepAt(Number(ins)); return; }
+      const tog = t.getAttribute("data-toggle-step-output");
+      if (tog !== null){
+        const idx = Number(tog);
+        builderStepOutputCollapsed[idx] = !builderStepOutputCollapsed[idx];
+        renderBuilderModel();
+        return;
+      }
       const delReq = t.getAttribute("data-del-req");
       if (delReq !== null){ builderModel.requires_pipelines.splice(Number(delReq),1); renderBuilderModel(); syncYamlPreview(); return; }
       const delVar = t.getAttribute("data-del-var");
@@ -1185,7 +1346,15 @@ INDEX_HTML = """<!doctype html>
       const delDir = t.getAttribute("data-del-dir");
       if (delDir !== null){ delete builderModel.dirs[delDir]; renderBuilderModel(); syncYamlPreview(); return; }
       const delStep = t.getAttribute("data-del-step");
-      if (delStep !== null){ builderModel.steps.splice(Number(delStep),1); renderBuilderModel(); syncYamlPreview(); return; }
+      if (delStep !== null){
+        const didx = Number(delStep);
+        builderModel.steps.splice(didx,1);
+        delete builderStepOutput[didx];
+        delete builderStepOutputCollapsed[didx];
+        renderBuilderModel();
+        syncYamlPreview();
+        return;
+      }
     }
     async function suggestNewPipelineName(){
       const res = await fetch(`/api/builder/files`);
@@ -1253,23 +1422,29 @@ INDEX_HTML = """<!doctype html>
           return String(na?.text || "").localeCompare(String(nb?.text || ""));
         },
       });
-      $holder.on("changed.jstree", function(_ev, payload){
+      $holder.on("select_node.jstree", async function(_ev, payload){
         const node = payload?.node;
-        if(!node || node.original?.type !== "file") return;
+        if(!node) return;
+        const inst = $holder.jstree(true);
+        const ntype = String(node.original?.type || "");
+        if(ntype === "dir"){
+          if(inst){
+            if(inst.is_open(node)) inst.close_node(node);
+            else inst.open_node(node);
+          }
+          return;
+        }
+        if(ntype !== "file") return;
         const rel = String(node.original.relpath || "").trim();
         if(!rel) return;
         builderTreeFileSelection = rel;
         document.getElementById("b_pipeline_path").value = normalizeBuilderPipelineName(rel);
         hideBuilderTreeDropdown();
+        builderLoaded = false;
+        await loadBuilderSource();
       });
-      $holder.on("ready.jstree", function(){
-        if(!builderTreeFileSelection) return;
-        const id = `f:${builderTreeFileSelection}`;
-        if($holder.jstree(true).get_node(id)){
-          $holder.jstree(true).deselect_all();
-          $holder.jstree(true).select_node(id);
-        }
-      });
+      // Avoid auto-select on ready: selecting during rapid destroy/recreate
+      // can race and trigger jsTree internals on a torn-down instance.
     }
     async function refreshBuilderTreeFiles(){
       const msg = document.getElementById("builder_msg");
@@ -1302,7 +1477,9 @@ INDEX_HTML = """<!doctype html>
       const inst = $(holder).jstree(true);
       if(!inst) return;
       const term = String(input.value || "").trim();
-      inst.search(term);
+      try {
+        inst.search(term);
+      } catch {}
     }
     async function initBuilderTreeComboBehavior(){
       const input = document.getElementById("b_pipeline_path");
@@ -1361,7 +1538,7 @@ INDEX_HTML = """<!doctype html>
       if(!pipeline){
         pipeline = await suggestNewPipelineName();
         document.getElementById("b_pipeline_path").value = pipeline;
-        builderModel = ensureBuilderDefaultDirs({ vars: { env: "{env.name}" }, dirs: {}, requires_pipelines: [], steps: [] });
+        builderModel = ensureBuilderDefaultDirs({ vars: {}, dirs: {}, requires_pipelines: [], steps: [] });
         await loadBuilderPlugins();
         renderBuilderModel();
         syncYamlPreview();
@@ -1374,7 +1551,7 @@ INDEX_HTML = """<!doctype html>
       const res = await fetch(`/api/builder/source?pipeline=${encodeURIComponent(pipeline)}`);
       if(!res.ok){
         document.getElementById("builder_msg").textContent = await readMessage(res);
-        builderModel = ensureBuilderDefaultDirs({ vars: { env: "{env.name}" }, dirs: {}, requires_pipelines: [], steps: [] });
+        builderModel = ensureBuilderDefaultDirs({ vars: {}, dirs: {}, requires_pipelines: [], steps: [] });
       } else {
         const payload = await res.json();
         builderModel = ensureBuilderDefaultDirs(payload.model || { vars: {}, dirs: {}, requires_pipelines: [], steps: [] });
@@ -1486,7 +1663,6 @@ INDEX_HTML = """<!doctype html>
 
       msg.textContent = "Submitting run...";
       const runBody = {};
-      if(payload.global_config) runBody.global_config = payload.global_config;
       if(payload.plugins_dir) runBody.plugins_dir = payload.plugins_dir;
       if(payload.workdir) runBody.workdir = payload.workdir;
       if(payload.max_retries !== undefined) runBody.max_retries = payload.max_retries;
@@ -1548,32 +1724,61 @@ INDEX_HTML = """<!doctype html>
       msg.textContent = data.valid ? `Generated valid draft (${data.step_count} steps)` : "Generated draft has validation issues";
       out.textContent = JSON.stringify(data, null, 2);
     }
-    async function validateBuilderDraft(){
-      const msg = document.getElementById("builder_msg");
-      const out = document.getElementById("builder_output");
-      msg.textContent = "Validating draft...";
-      const res = await fetch(`/api/builder/validate`, {
-        method:"POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(builderPayload()),
-      });
-      if(!res.ok){
-        builderValidationState = "unknown";
-        builderPipelineRunState = "failed";
-        msg.textContent = await readMessage(res);
-        renderBuilderModel();
-        renderBuilderPipelineStatus();
+    async function validateBuilderDraft(opts){
+      const auto = !!(opts && opts.auto);
+      if(builderValidateInFlight){
         return;
       }
-      const payload = await res.json();
-      builderValidationState = "valid";
-      if(builderPipelineRunState !== "run_ok"){
-        builderPipelineRunState = "not-run";
+      builderValidateInFlight = true;
+      const msg = document.getElementById("builder_msg");
+      const out = document.getElementById("builder_output");
+      if(!auto){
+        msg.textContent = "Validating draft...";
       }
-      msg.textContent = `Valid draft: ${payload.step_count} steps`;
-      out.textContent = JSON.stringify(payload, null, 2);
-      renderBuilderModel();
-      renderBuilderPipelineStatus();
+      try {
+        const res = await fetch(`/api/builder/validate`, {
+          method:"POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify(builderPayload()),
+        });
+        if(!res.ok){
+          let raw = {};
+          try { raw = await res.json(); } catch {}
+          const detail = raw && Object.prototype.hasOwnProperty.call(raw, "detail") ? raw.detail : null;
+          const unresolved = (detail && typeof detail === "object" && Array.isArray(detail.unresolved_inputs))
+            ? detail.unresolved_inputs : [];
+          setBuilderParamIssues(unresolved);
+          builderValidationState = "unknown";
+          builderPipelineRunState = "failed";
+          let message = "";
+          if(detail && typeof detail === "object"){
+            message = String(detail.message || "Validation failed.");
+          } else if(raw && Object.prototype.hasOwnProperty.call(raw, "detail")){
+            message = String(raw.detail || "");
+          }
+          msg.textContent = message || "Validation failed.";
+          if(unresolved.length){
+            msg.textContent = `${msg.textContent} (${unresolved.length} unresolved parameter issue${unresolved.length === 1 ? "" : "s"})`;
+          }
+          renderBuilderModel();
+          renderBuilderPipelineStatus();
+          return;
+        }
+        const payload = await res.json();
+        setBuilderParamIssues(payload.unresolved_inputs || []);
+        builderValidationState = "valid";
+        if(builderPipelineRunState !== "run_ok"){
+          builderPipelineRunState = "not-run";
+        }
+        if(!auto){
+          msg.textContent = `Valid draft: ${payload.step_count} steps`;
+        }
+        out.textContent = JSON.stringify(payload, null, 2);
+        renderBuilderModel();
+        renderBuilderPipelineStatus();
+      } finally {
+        builderValidateInFlight = false;
+      }
     }
     async function testBuilderStepAt(idx){
       const msg = document.getElementById("builder_msg");
@@ -1589,12 +1794,26 @@ INDEX_HTML = """<!doctype html>
         body: JSON.stringify(prePayload),
       });
       if(!validateRes.ok){
+        let raw = {};
+        try { raw = await validateRes.json(); } catch {}
+        const detail = raw && Object.prototype.hasOwnProperty.call(raw, "detail") ? raw.detail : null;
+        const unresolved = (detail && typeof detail === "object" && Array.isArray(detail.unresolved_inputs))
+          ? detail.unresolved_inputs : [];
+        setBuilderParamIssues(unresolved);
         builderValidationState = "unknown";
         delete builderStepTesting[idx];
         renderBuilderModel();
-        msg.textContent = await readMessage(validateRes);
+        if(detail && typeof detail === "object"){
+          msg.textContent = String(detail.message || "Validation failed.");
+        } else if(raw && Object.prototype.hasOwnProperty.call(raw, "detail")){
+          msg.textContent = String(raw.detail || "Validation failed.");
+        } else {
+          msg.textContent = "Validation failed.";
+        }
         return;
       }
+      const validatePayload = await validateRes.json();
+      setBuilderParamIssues(validatePayload.unresolved_inputs || []);
       builderValidationState = "valid";
       msg.textContent = `Testing step ${idx + 1}...`;
       const payload = builderPayload();
@@ -1613,10 +1832,311 @@ INDEX_HTML = """<!doctype html>
       }
       const data = await res.json();
       builderStepStatus[idx] = data.success ? "run_ok" : "failed";
+      builderStepOutput[idx] = JSON.stringify(data, null, 2);
+      builderStepOutputCollapsed[idx] = false;
       delete builderStepTesting[idx];
       renderBuilderModel();
       msg.textContent = `Step ${data.step_name}: ${data.success ? "successful" : "failed"}`;
       out.textContent = JSON.stringify(data, null, 2);
+    }
+    async function setBuilderResolvedTooltip(el){
+      if(!isBuilderView || !el) return;
+      const raw = String(el.value || "");
+      if(!raw.trim().length || raw.indexOf("{") < 0){
+        el.title = raw;
+        return;
+      }
+      const payload = builderPayload();
+      payload.value = raw;
+      const res = await fetch(`/api/builder/resolve-text`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(payload),
+      });
+      if(!res.ok){
+        const msg = await readMessage(res);
+        el.title = `Unresolved: ${msg}`;
+        return;
+      }
+      const out = await res.json();
+      el.title = String(out.resolved || raw);
+    }
+    async function refreshBuilderNamespace(){
+      if(!isBuilderView) return;
+      const el = document.getElementById("builder_namespace");
+      const treeEl = document.getElementById("builder_namespace_tree");
+      if(!el) return;
+      const payload = builderPayload();
+      const res = await fetch(`/api/builder/namespace`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(payload),
+      });
+      if(!res.ok){
+        el.textContent = `Unavailable: ${await readMessage(res)}`;
+        builderNamespaceDigest = "";
+        if(treeEl){
+          const $ = window.jQuery;
+          if($ && $.fn && $.fn.jstree){
+            try {
+              const $tree = $(treeEl);
+              $tree.off(".jstree");
+              $tree.jstree("destroy");
+            } catch {}
+          }
+          treeEl.innerHTML = "";
+        }
+        return;
+      }
+      const data = await res.json();
+      const ns = data.namespace || {};
+      const pretty = JSON.stringify(ns, null, 2);
+      el.textContent = pretty;
+      if(pretty !== builderNamespaceDigest){
+        builderNamespaceDigest = pretty;
+        renderBuilderNamespaceTree(ns);
+      }
+    }
+    function _nsValueText(value){
+      if(value === null || value === undefined) return "null";
+      if(typeof value === "object"){
+        if(Array.isArray(value)) return `[${value.length}]`;
+        return "{...}";
+      }
+      const s = String(value);
+      return s.length > 220 ? s.slice(0, 217) + "..." : s;
+    }
+    function _nsNodeText(label, value){
+      const k = esc(String(label ?? ""));
+      const v = esc(_nsValueText(value));
+      return `<span class="ns-row"><span class="ns-key">${k}</span><span class="ns-value">${v}</span></span>`;
+    }
+    function isInsertableBuilderTextControl(el){
+      if(!el) return false;
+      if(el instanceof HTMLTextAreaElement){
+        return !el.disabled && !el.readOnly;
+      }
+      if(el instanceof HTMLInputElement){
+        if(el.disabled || el.readOnly) return false;
+        const t = String(el.type || "text").toLowerCase();
+        return ["text", "search", "url", "email", "tel", "password"].includes(t);
+      }
+      return false;
+    }
+    function insertAtCursor(el, text){
+      if(!isInsertableBuilderTextControl(el)) return false;
+      const insertText = String(text || "");
+      if(!insertText) return false;
+      const hasSel = typeof el.selectionStart === "number" && typeof el.selectionEnd === "number";
+      if(hasSel){
+        const start = Number(el.selectionStart || 0);
+        const end = Number(el.selectionEnd || 0);
+        const src = String(el.value || "");
+        el.value = src.slice(0, start) + insertText + src.slice(end);
+        const pos = start + insertText.length;
+        try { el.setSelectionRange(pos, pos); } catch {}
+      } else {
+        el.value = String(el.value || "") + insertText;
+      }
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      try { el.focus(); } catch {}
+      return true;
+    }
+    function isBuilderAutoValidateControl(el){
+      if(!el) return false;
+      if(el instanceof HTMLTextAreaElement){
+        return !el.readOnly && !el.disabled;
+      }
+      if(el instanceof HTMLSelectElement){
+        return !el.disabled;
+      }
+      if(el instanceof HTMLInputElement){
+        if(el.readOnly || el.disabled) return false;
+        const t = String(el.type || "text").toLowerCase();
+        if(["button", "submit", "reset", "checkbox", "radio", "file"].includes(t)) return false;
+        return true;
+      }
+      return false;
+    }
+    function scheduleBuilderAutoValidate(){
+      if(!isBuilderView) return;
+      if(builderAutoValidateTimer){
+        clearTimeout(builderAutoValidateTimer);
+      }
+      builderAutoValidateTimer = setTimeout(() => {
+        validateBuilderDraft({ auto: true });
+      }, 220);
+    }
+    function buildNamespaceTreeData(namespace){
+      const nodes = [];
+      let seq = 0;
+      const mk = (pfx) => `${pfx}_${seq++}`;
+      function addObject(parentId, key, obj, pathParts){
+        const id = mk("grp");
+        nodes.push({ id, parent: parentId, text: String(key), icon: "ns-folder-closed", type: "group" });
+        const entries = Object.entries(obj || {}).sort((a,b) => String(a[0]).localeCompare(String(b[0])));
+        for(const [k, v] of entries){
+          const nextPath = (pathParts || []).concat([String(k)]);
+          if(v && typeof v === "object" && !Array.isArray(v)){
+            addObject(id, k, v, nextPath);
+          } else {
+            const leafId = mk("leaf");
+            nodes.push({
+              id: leafId,
+              parent: id,
+              text: _nsNodeText(k, v),
+              icon: "ns-var-leaf",
+              type: "leaf",
+              varPath: nextPath.join("."),
+            });
+          }
+        }
+      }
+      const rootGroups = ["sys", "global", "env", "vars", "dirs"];
+      const ignore = new Set(rootGroups);
+      const flatEntries = Object.entries(namespace || {})
+        .filter(([k]) => !ignore.has(String(k)))
+        .sort((a,b) => String(a[0]).localeCompare(String(b[0])));
+      const dotTree = {};
+      for(const [k, v] of flatEntries){
+        const key = String(k || "");
+        if(!key.includes(".")){
+          const leafId = mk("leaf");
+          nodes.push({
+            id: leafId,
+            parent: "#",
+            text: _nsNodeText(key, v),
+            icon: "ns-var-leaf",
+            type: "leaf",
+            varPath: key,
+          });
+          continue;
+        }
+        const parts = key.split(".");
+        let cur = dotTree;
+        for(let i=0; i<parts.length - 1; i++){
+          const seg = parts[i];
+          cur[seg] = cur[seg] || {};
+          cur = cur[seg];
+        }
+        cur[parts[parts.length - 1]] = v;
+      }
+      function addDotObject(parentId, key, obj, pathParts){
+        const id = mk("grp");
+        nodes.push({ id, parent: parentId, text: String(key), icon: "ns-folder-closed", type: "group" });
+        const entries = Object.entries(obj || {}).sort((a,b) => String(a[0]).localeCompare(String(b[0])));
+        for(const [k, v] of entries){
+          const nextPath = (pathParts || []).concat([String(k)]);
+          if(v && typeof v === "object" && !Array.isArray(v)){
+            addDotObject(id, k, v, nextPath);
+          } else {
+            const leafId = mk("leaf");
+            nodes.push({
+              id: leafId,
+              parent: id,
+              text: _nsNodeText(k, v),
+              icon: "ns-var-leaf",
+              type: "leaf",
+              varPath: nextPath.join("."),
+            });
+          }
+        }
+      }
+      const dotEntries = Object.entries(dotTree).sort((a,b) => String(a[0]).localeCompare(String(b[0])));
+      for(const [k, v] of dotEntries){
+        addDotObject("#", k, v, [String(k)]);
+      }
+      for(const group of rootGroups){
+        const val = namespace ? namespace[group] : null;
+        if(val && typeof val === "object" && !Array.isArray(val)){
+          addObject("#", group, val, [String(group)]);
+        }
+      }
+      return nodes;
+    }
+    function renderBuilderNamespaceTree(namespace){
+      const holder = document.getElementById("builder_namespace_tree");
+      if(!holder) return;
+      const $ = window.jQuery;
+      if(!$ || !$.fn || !$.fn.jstree){
+        holder.innerHTML = `<span class="muted">jsTree not available in this browser context.</span>`;
+        return;
+      }
+      const data = buildNamespaceTreeData(namespace || {});
+      const $holder = $(holder);
+      try { $holder.jstree("destroy"); } catch {}
+      $holder.off(".jstree");
+      holder.innerHTML = "";
+      try {
+        $holder.jstree({
+          core: { data, multiple: false },
+          plugins: ["wholerow"],
+        });
+      } catch {
+        return;
+      }
+      $holder.on("open_node.jstree", function(_ev, payload){
+        const node = payload?.node;
+        if(!node || node.original?.type !== "group") return;
+        try { $holder.jstree(true).set_icon(node, "ns-folder-open"); } catch {}
+      });
+      $holder.on("close_node.jstree", function(_ev, payload){
+        const node = payload?.node;
+        if(!node || node.original?.type !== "group") return;
+        try { $holder.jstree(true).set_icon(node, "ns-folder-closed"); } catch {}
+      });
+      $holder.on("select_node.jstree", function(_ev, payload){
+        const node = payload?.node;
+        if(!node) return;
+        if(node.original?.type === "group"){
+          const inst = $holder.jstree(true);
+          if(!inst) return;
+          try {
+            if(inst.is_open(node)) inst.close_node(node);
+            else inst.open_node(node);
+          } catch {}
+          return;
+        }
+        if(node.original?.type !== "leaf") return;
+        const p = String(node.original?.varPath || "").trim();
+        if(!p || !isInsertableBuilderTextControl(builderLastTextTarget)) return;
+        insertAtCursor(builderLastTextTarget, `{${p}}`);
+      });
+    }
+    function initBuilderTooltipResolution(){
+      const root = document.getElementById("builder_panel");
+      if(!root) return;
+      root.addEventListener("mouseover", (ev) => {
+        const t = ev.target;
+        if(!(t instanceof HTMLInputElement)) return;
+        if(t.type === "checkbox" || t.type === "button") return;
+        setBuilderResolvedTooltip(t);
+      }, true);
+      root.addEventListener("focusin", (ev) => {
+        const t = ev.target;
+        if(!(t instanceof HTMLInputElement)) return;
+        if(t.type === "checkbox" || t.type === "button") return;
+        setBuilderResolvedTooltip(t);
+      }, true);
+      root.addEventListener("focusin", (ev) => {
+        const t = ev.target;
+        if(isInsertableBuilderTextControl(t)){
+          builderLastTextTarget = t;
+        }
+      }, true);
+      root.addEventListener("mousedown", (ev) => {
+        const t = ev.target;
+        if(isInsertableBuilderTextControl(t)){
+          builderLastTextTarget = t;
+        }
+      }, true);
+      root.addEventListener("focusout", (ev) => {
+        const t = ev.target;
+        if(isBuilderAutoValidateControl(t)){
+          scheduleBuilderAutoValidate();
+        }
+      }, true);
     }
     async function loadRuns(){
       const res = isPipelineDetailView
@@ -1868,9 +2388,20 @@ INDEX_HTML = """<!doctype html>
       const asUser = encodeURIComponent(currentAsUser());
       window.location.href = `/runs/${encodeURIComponent(runId)}/live?as_user=${asUser}`;
     };
-    document.getElementById("btn_builder_load").onclick = async () => { builderLoaded = false; await loadBuilderSource(); };
     document.getElementById("btn_builder_import_local").onclick = () => { openBuilderFilePicker(); };
     document.getElementById("btn_builder_toggle_preview").onclick = () => { builderPreviewCollapsed = !builderPreviewCollapsed; renderBuilderPreviewPanel(); };
+    document.getElementById("btn_builder_toggle_yaml").onclick = () => {
+      builderPreviewSectionCollapsed.yaml = !builderPreviewSectionCollapsed.yaml;
+      renderBuilderPreviewSections();
+    };
+    document.getElementById("btn_builder_toggle_output").onclick = () => {
+      builderPreviewSectionCollapsed.output = !builderPreviewSectionCollapsed.output;
+      renderBuilderPreviewSections();
+    };
+    document.getElementById("btn_builder_toggle_vars").onclick = () => {
+      builderPreviewSectionCollapsed.vars = !builderPreviewSectionCollapsed.vars;
+      renderBuilderPreviewSections();
+    };
     document.getElementById("btn_builder_add_req").onclick = addBuilderRequire;
     document.getElementById("btn_builder_add_var").onclick = addBuilderVar;
     document.getElementById("btn_builder_add_dir").onclick = addBuilderDir;
@@ -1882,6 +2413,7 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("b_requires").addEventListener("input", handleBuilderInput);
     document.getElementById("b_vars").addEventListener("input", handleBuilderInput);
     document.getElementById("b_dirs").addEventListener("input", handleBuilderInput);
+    document.getElementById("b_requires").addEventListener("change", handleBuilderInput);
     document.getElementById("b_vars").addEventListener("change", handleBuilderInput);
     document.getElementById("b_dirs").addEventListener("change", handleBuilderInput);
     document.getElementById("b_steps").addEventListener("input", handleBuilderInput);
@@ -1890,11 +2422,14 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("b_vars").addEventListener("click", handleBuilderClicks);
     document.getElementById("b_dirs").addEventListener("click", handleBuilderClicks);
     document.getElementById("b_steps").addEventListener("click", handleBuilderClicks);
-    document.getElementById("b_global_config").addEventListener("change", async () => { await loadBuilderPlugins(); });
     document.getElementById("b_file_picker").addEventListener("change", async () => { await loadBuilderSourceFromFilePicker(); });
     renderBuilderPreviewPanel();
+    renderBuilderPreviewSections();
     initBuilderTreeComboBehavior();
+    initBuilderTooltipResolution();
+    loadBuilderEnvironments();
     refreshBuilderTreeFiles();
+    refreshBuilderNamespace();
     tick(); setInterval(tick, 12000);
   </script>
 </body>
@@ -2323,10 +2858,14 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _resolve_global_vars(global_config_path: Optional[Path]) -> dict[str, Any]:
-    if not global_config_path:
+    try:
+        resolved = resolve_global_config_path(global_config_path)
+    except ConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Global config error: {exc}") from exc
+    if not resolved:
         return {}
     try:
-        return load_global_config(global_config_path)
+        return load_global_config(resolved)
     except ConfigError as exc:
         raise HTTPException(status_code=400, detail=f"Global config error: {exc}") from exc
 
@@ -2365,19 +2904,46 @@ def _resolve_execution_env(
         raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
 
 
+def _resolve_builder_env_vars(
+    *,
+    environments_config_path: Optional[Path],
+    env_name: Optional[str],
+) -> dict[str, Any]:
+    name = str(env_name or "").strip()
+    if not name:
+        return {}
+    try:
+        resolved = resolve_execution_config_path(environments_config_path)
+    except ExecutionConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
+    if not resolved:
+        raise HTTPException(status_code=400, detail="Environment selected but environments config was not found.")
+    try:
+        envs = load_execution_config(resolved)
+    except ExecutionConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
+    env = envs.get(name)
+    if not isinstance(env, dict):
+        raise HTTPException(status_code=400, detail=f"Execution env '{name}' not found in config.")
+    return apply_execution_env_overrides(dict(env))
+
+
 def _parse_pipeline_from_yaml_text(
     yaml_text: str,
     *,
     global_config_path: Optional[Path],
+    environments_config_path: Optional[Path] = None,
+    env_name: Optional[str] = None,
 ) -> Pipeline:
     if not (yaml_text or "").strip():
         raise HTTPException(status_code=400, detail="`yaml_text` is required.")
     global_vars = _resolve_global_vars(global_config_path)
+    env_vars = _resolve_builder_env_vars(environments_config_path=environments_config_path, env_name=env_name)
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as tmp:
         tmp.write(yaml_text)
         tmp_path = Path(tmp.name)
     try:
-        return parse_pipeline(tmp_path, global_vars=global_vars)
+        return parse_pipeline(tmp_path, global_vars=global_vars, env_vars=env_vars)
     except (PipelineError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid draft pipeline: {exc}") from exc
     finally:
@@ -2385,6 +2951,22 @@ def _parse_pipeline_from_yaml_text(
             tmp_path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def _raw_vars_dirs_from_yaml_text(yaml_text: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    import yaml
+
+    try:
+        data = yaml.safe_load(yaml_text) or {}
+    except yaml.YAMLError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    vars_section = data.get("vars", {}) or {}
+    dirs_section = data.get("dirs", {}) or {}
+    out_vars = dict(vars_section) if isinstance(vars_section, dict) else {}
+    out_dirs = dict(dirs_section) if isinstance(dirs_section, dict) else {}
+    return out_vars, out_dirs
 
 
 def _resolve_builder_plugins_dir(*, global_config_path: Optional[Path], plugins_dir: Optional[str]) -> Path:
@@ -2476,6 +3058,145 @@ def _validate_draft_yaml(yaml_text: str) -> tuple[Optional[Pipeline], Optional[s
         return None, str(exc.detail)
 
 
+def _lookup_ctx_path(ctx: dict[str, Any], dotted: str) -> tuple[Any, bool]:
+    cur: Any = ctx
+    for part in str(dotted or "").split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+            continue
+        return None, False
+    return cur, True
+
+
+def _resolve_text_with_ctx(value: str, ctx: dict[str, Any]) -> str:
+    text = str(value or "")
+
+    def _repl(match: re.Match[str]) -> str:
+        key = str(match.group(1) or "")
+        found, ok = _lookup_ctx_path(ctx, key)
+        if not ok or isinstance(found, (dict, list)):
+            return match.group(0)
+        return str(found)
+
+    return _TPL_RE.sub(_repl, text)
+
+
+def _build_builder_namespace(
+    *,
+    pipeline: Pipeline,
+    global_vars: dict[str, Any],
+    env_vars: dict[str, Any],
+    raw_vars: Optional[dict[str, Any]] = None,
+    raw_dirs: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    def _resolve_preview_text(value: str, ctx: dict[str, Any], *, self_key: str, self_fallback: Any) -> str:
+        text = str(value or "")
+        temp_ctx = dict(ctx)
+        if self_key in temp_ctx:
+            temp_ctx.pop(self_key, None)
+        if self_fallback is not None and not isinstance(self_fallback, (dict, list)):
+            temp_ctx[self_key] = self_fallback
+        return _resolve_text_with_ctx(text, temp_ctx)
+
+    def _resolve_preview_flat(
+        flat_map: dict[str, Any],
+        base_ctx: dict[str, Any],
+        *,
+        seed_flat: dict[str, Any],
+    ) -> dict[str, Any]:
+        reserved = {"sys", "global", "globals", "env", "vars", "dirs", "resolution"}
+        current = dict(flat_map or {})
+        for _ in range(DEFAULT_RESOLVE_MAX_PASSES):
+            ctx = dict(base_ctx)
+            for k, v in current.items():
+                if str(k) not in reserved:
+                    ctx[str(k)] = v
+            nxt: dict[str, Any] = {}
+            for k, v in current.items():
+                if isinstance(v, str):
+                    ktxt = str(k)
+                    nxt[ktxt] = _resolve_preview_text(
+                        v,
+                        ctx,
+                        self_key=ktxt,
+                        self_fallback=seed_flat.get(ktxt),
+                    )
+                else:
+                    nxt[str(k)] = v
+            if nxt == current:
+                return current
+            current = nxt
+        return current
+
+    now = datetime.now(timezone.utc)
+    sys_ns: dict[str, Any] = {
+        "run": {
+            # Runtime-populated on real execution paths; placeholder values are used in builder preview.
+            "id": "run_abcd0123",
+            "short_id": "abcd0123",
+        },
+        "job": {
+            "id": "job_abcd0123",
+            "name": str((pipeline.vars or {}).get("jobname") or ""),
+        },
+        "step": {
+            # Step-specific values are only known during step execution; placeholders provide preview resolution.
+            "id": "step_abcd0123",
+            "name": "preview_step",
+            "index": "0",
+        },
+        "now": {
+            "iso_utc": now.isoformat().replace("+00:00", "Z"),
+            "yymmdd": now.strftime("%y%m%d"),
+            "hhmmss": now.strftime("%H%M%S"),
+            "yymmdd_hhmmss": now.strftime("%y%m%d-%H%M%S"),
+        },
+    }
+    global_ns = dict(global_vars or {})
+    env_ns = dict(env_vars or {})
+    vars_ns = dict(pipeline.vars or {})
+    dirs_ns = dict(pipeline.dirs or {})
+    vars_preview = dict(raw_vars or vars_ns)
+    dirs_preview = dict(raw_dirs or dirs_ns)
+    seed_flat: dict[str, Any] = {}
+    for source in (global_ns, env_ns, vars_preview):
+        for k, v in source.items():
+            seed_flat[str(k)] = v
+    flat_ns: dict[str, Any] = {}
+    for source in (seed_flat, dirs_preview):
+        for k, v in source.items():
+            flat_ns[str(k)] = v
+    flat_ns = _resolve_preview_flat(
+        flat_ns,
+        {
+            "sys": sys_ns,
+            "global": global_ns,
+            "globals": global_ns,
+            "env": env_ns,
+            "pipe": vars_ns,
+            "vars": vars_ns,
+            "dirs": dirs_ns,
+        },
+        seed_flat=seed_flat,
+    )
+    ns: dict[str, Any] = {
+        "sys": sys_ns,
+        "global": global_ns,
+        "env": env_ns,
+        "vars": vars_ns,
+        "dirs": dirs_ns,
+        "resolution": {
+            # vars/dirs are produced by parse_pipeline, which already uses the
+            # runtime iterative resolver with this cap.
+            "stable": True,
+            "max_passes": DEFAULT_RESOLVE_MAX_PASSES,
+            "source": "pipeline.parse+preview",
+        },
+    }
+    ns.update({str(k): v for k, v in flat_ns.items()})
+    return ns
+
+
 def _dir_category(key: str) -> Optional[str]:
     k = str(key or "").strip().lower()
     if not k:
@@ -2509,6 +3230,115 @@ def _validate_pipeline_dir_contract(pipeline: Pipeline) -> None:
             errors.append(f"At most one {optional_name} directory is allowed (found {counts[optional_name]}).")
     if errors:
         raise HTTPException(status_code=400, detail=" ".join(errors))
+
+
+def _extract_unresolved_tokens(value: Any) -> list[str]:
+    if not isinstance(value, str):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for token in _TPL_RE.findall(value):
+        tok = str(token or "").strip()
+        if not tok or tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+    return out
+
+
+def _collect_unresolved_step_inputs(pipeline: Pipeline) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for idx, step in enumerate(pipeline.steps or []):
+        try:
+            tokens = shlex.split(str(step.script or ""))
+        except Exception:
+            tokens = str(step.script or "").split()
+        if tokens:
+            plugin_ref = str(tokens[0] or "")
+            plugin_tokens = _extract_unresolved_tokens(plugin_ref)
+            if plugin_tokens:
+                issues.append(
+                    {
+                        "step_index": idx,
+                        "step_name": step.name,
+                        "field": "plugin",
+                        "value": plugin_ref,
+                        "tokens": plugin_tokens,
+                    }
+                )
+            positional_idx = 0
+            for tok in tokens[1:]:
+                text = str(tok or "")
+                if "=" in text:
+                    key, val = text.split("=", 1)
+                    field_name = f"args.{str(key or '').strip()}"
+                    field_value = val
+                else:
+                    field_name = f"arg_list[{positional_idx}]"
+                    field_value = text
+                    positional_idx += 1
+                unresolved = _extract_unresolved_tokens(field_value)
+                if unresolved:
+                    issues.append(
+                        {
+                            "step_index": idx,
+                            "step_name": step.name,
+                            "field": field_name,
+                            "value": field_value,
+                            "tokens": unresolved,
+                        }
+                    )
+        for env_key, env_val in (step.env or {}).items():
+            unresolved = _extract_unresolved_tokens(str(env_val or ""))
+            if unresolved:
+                issues.append(
+                    {
+                        "step_index": idx,
+                        "step_name": step.name,
+                        "field": f"env.{env_key}",
+                        "value": str(env_val or ""),
+                        "tokens": unresolved,
+                    }
+                )
+        for field_name, field_val in (
+            ("when", step.when),
+            ("parallel_with", step.parallel_with),
+            ("foreach", step.foreach),
+        ):
+            unresolved = _extract_unresolved_tokens(str(field_val or ""))
+            if unresolved:
+                issues.append(
+                    {
+                        "step_index": idx,
+                        "step_name": step.name,
+                        "field": field_name,
+                        "value": str(field_val or ""),
+                        "tokens": unresolved,
+                    }
+                )
+    return issues
+
+
+def _filter_builder_unresolved_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _keep_token(tok: Any) -> bool:
+        text = str(tok or "").strip()
+        if not text:
+            return False
+        # Runtime sys placeholders are valid in builder drafts; they are
+        # populated during execution.
+        if text.startswith("sys."):
+            return False
+        return True
+
+    out: list[dict[str, Any]] = []
+    for issue in issues or []:
+        tokens = [t for t in (issue.get("tokens") or []) if _keep_token(t)]
+        if not tokens:
+            continue
+        next_issue = dict(issue)
+        next_issue["tokens"] = tokens
+        out.append(next_issue)
+    return out
 
 
 def _record_pipeline_validation(
@@ -2715,17 +3545,133 @@ def api_builder_plugins(
     return {"plugins_dir": str(root), "plugins": entries}
 
 
+@app.get("/api/builder/environments")
+def api_builder_environments(
+    environments_config: Optional[str] = Query(default=None),
+) -> dict:
+    raw = str(environments_config or "").strip()
+    cfg_path = Path(raw).expanduser() if raw else None
+    try:
+        resolved = resolve_execution_config_path(cfg_path)
+    except ExecutionConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
+    if not resolved:
+        return {"environments_config": None, "environments": []}
+    try:
+        envs = load_execution_config(resolved)
+    except ExecutionConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
+    return {
+        "environments_config": str(resolved),
+        "environments": sorted(str(k) for k in envs.keys()),
+    }
+
+
+@app.post("/api/builder/resolve-text")
+def api_builder_resolve_text(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    payload = payload or {}
+    value = str(payload.get("value") or "")
+    global_config_raw = str(payload.get("global_config") or "").strip()
+    global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
+    environments_config_raw = str(payload.get("environments_config") or "").strip()
+    environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
+    env_name = str(payload.get("env") or "").strip() or None
+    global_vars = _resolve_global_vars(global_config_path)
+    env_vars = _resolve_builder_env_vars(environments_config_path=environments_config_path, env_name=env_name)
+    raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(str(payload.get("yaml_text") or ""))
+    pipeline = _parse_pipeline_from_yaml_text(
+        str(payload.get("yaml_text") or ""),
+        global_config_path=global_config_path,
+        environments_config_path=environments_config_path,
+        env_name=env_name,
+    )
+    ctx = _build_builder_namespace(
+        pipeline=pipeline,
+        global_vars=global_vars,
+        env_vars=env_vars,
+        raw_vars=raw_vars,
+        raw_dirs=raw_dirs,
+    )
+    resolved = _resolve_text_with_ctx(value, ctx)
+    return {"value": value, "resolved": resolved, "changed": resolved != value}
+
+
+@app.post("/api/builder/namespace")
+def api_builder_namespace(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    payload = payload or {}
+    global_config_raw = str(payload.get("global_config") or "").strip()
+    global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
+    environments_config_raw = str(payload.get("environments_config") or "").strip()
+    environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
+    env_name = str(payload.get("env") or "").strip() or None
+    global_vars = _resolve_global_vars(global_config_path)
+    env_vars = _resolve_builder_env_vars(environments_config_path=environments_config_path, env_name=env_name)
+    raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(str(payload.get("yaml_text") or ""))
+    pipeline = _parse_pipeline_from_yaml_text(
+        str(payload.get("yaml_text") or ""),
+        global_config_path=global_config_path,
+        environments_config_path=environments_config_path,
+        env_name=env_name,
+    )
+    namespace = _build_builder_namespace(
+        pipeline=pipeline,
+        global_vars=global_vars,
+        env_vars=env_vars,
+        raw_vars=raw_vars,
+        raw_dirs=raw_dirs,
+    )
+    return {
+        "namespace": namespace,
+        "counts": {
+            "sys": len(dict(namespace.get("sys") or {})),
+            "global": len(global_vars),
+            "env": len(env_vars),
+            "vars": len(dict(pipeline.vars or {})),
+            "dirs": len(dict(pipeline.dirs or {})),
+            "flat": len(namespace),
+        },
+    }
+
+
 @app.post("/api/builder/validate")
 def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     payload = payload or {}
     pipeline_label = str(payload.get("pipeline") or "<builder:draft>")
     global_config_raw = str(payload.get("global_config") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
+    environments_config_raw = str(payload.get("environments_config") or "").strip()
+    environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
+    env_name = str(payload.get("env") or "").strip() or None
     require_dir_contract = _parse_bool(payload.get("require_dir_contract"), default=True)
+    require_resolved_inputs = _parse_bool(payload.get("require_resolved_inputs"), default=True)
+    unresolved_inputs: list[dict[str, Any]] = []
     try:
-        pipeline = _parse_pipeline_from_yaml_text(str(payload.get("yaml_text") or ""), global_config_path=global_config_path)
+        pipeline = _parse_pipeline_from_yaml_text(
+            str(payload.get("yaml_text") or ""),
+            global_config_path=global_config_path,
+            environments_config_path=environments_config_path,
+            env_name=env_name,
+        )
         if require_dir_contract:
             _validate_pipeline_dir_contract(pipeline)
+        unresolved_inputs = _filter_builder_unresolved_issues(_collect_unresolved_step_inputs(pipeline))
+        if require_resolved_inputs and unresolved_inputs:
+            preview = []
+            for issue in unresolved_inputs[:8]:
+                tokens = ", ".join(issue.get("tokens") or [])
+                preview.append(
+                    f"step[{issue.get('step_index')}] {issue.get('step_name')} -> {issue.get('field')} unresolved {{{tokens}}}"
+                )
+            if len(unresolved_inputs) > 8:
+                preview.append(f"... and {len(unresolved_inputs) - 8} more unresolved input(s)")
+            message = "Unresolved step inputs detected. " + "; ".join(preview)
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": message,
+                    "unresolved_inputs": unresolved_inputs,
+                },
+            )
     except HTTPException as exc:
         _record_pipeline_validation(
             pipeline=pipeline_label,
@@ -2750,6 +3696,7 @@ def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None))
         "step_names": [s.name for s in pipeline.steps],
         "vars": pipeline.vars,
         "dirs": pipeline.dirs,
+        "unresolved_inputs": unresolved_inputs,
     }
 
 
@@ -2823,7 +3770,15 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
     payload = payload or {}
     global_config_raw = str(payload.get("global_config") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
-    pipeline = _parse_pipeline_from_yaml_text(str(payload.get("yaml_text") or ""), global_config_path=global_config_path)
+    environments_config_raw = str(payload.get("environments_config") or "").strip()
+    environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
+    env_name = str(payload.get("env") or "").strip() or None
+    pipeline = _parse_pipeline_from_yaml_text(
+        str(payload.get("yaml_text") or ""),
+        global_config_path=global_config_path,
+        environments_config_path=environments_config_path,
+        env_name=env_name,
+    )
     step_name = str(payload.get("step_name") or "").strip()
     step_index_raw = payload.get("step_index")
     step_index: Optional[int] = None

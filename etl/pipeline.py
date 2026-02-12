@@ -64,6 +64,7 @@ class Pipeline:
 
 
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+DEFAULT_RESOLVE_MAX_PASSES = 20
 
 
 def _lookup_path(ctx: Dict[str, Any], path: str) -> tuple[Any, bool]:
@@ -106,7 +107,7 @@ def _interpolate(value: Any, ctx: Dict[str, Any]) -> Any:
     return value
 
 
-def _resolve_iterative(value: Any, ctx: Dict[str, Any], max_passes: int = 20) -> Any:
+def _resolve_iterative(value: Any, ctx: Dict[str, Any], max_passes: int = DEFAULT_RESOLVE_MAX_PASSES) -> Any:
     current = copy.deepcopy(value)
     for _ in range(max_passes):
         nxt = _interpolate(current, ctx)
@@ -116,7 +117,7 @@ def _resolve_iterative(value: Any, ctx: Dict[str, Any], max_passes: int = 20) ->
     return current
 
 
-def _resolve_context_iterative(ctx: Dict[str, Any], max_passes: int = 20) -> Dict[str, Any]:
+def _resolve_context_iterative(ctx: Dict[str, Any], max_passes: int = DEFAULT_RESOLVE_MAX_PASSES) -> Dict[str, Any]:
     current = copy.deepcopy(ctx)
     for _ in range(max_passes):
         nxt = _interpolate(current, current)
@@ -382,6 +383,7 @@ __all__ = [
     "Pipeline",
     "Step",
     "PipelineError",
+    "DEFAULT_RESOLVE_MAX_PASSES",
     "parse_pipeline",
     "validate_pipeline",
 ]
