@@ -52,6 +52,7 @@ class Pipeline:
     vars: Dict[str, Any] = field(default_factory=dict)
     dirs: Dict[str, Any] = field(default_factory=dict)
     requires_pipelines: List[str] = field(default_factory=list)
+    workdir: Optional[str] = None
     project_id: Optional[str] = None
     shared_with_projects: List[str] = field(default_factory=list)
     steps: List[Step] = field(default_factory=list)
@@ -202,10 +203,13 @@ def parse_pipeline(
     requires_section = data.get("requires_pipelines", []) or []
     metadata_section = data.get("metadata", {}) or {}
     project_id_raw = data.get("project_id")
+    workdir_raw = data.get("workdir")
     shared_with_raw = data.get("shared_with_projects")
     if isinstance(metadata_section, dict):
         if project_id_raw is None:
             project_id_raw = metadata_section.get("project_id")
+        if workdir_raw is None:
+            workdir_raw = metadata_section.get("workdir")
         if shared_with_raw is None:
             shared_with_raw = metadata_section.get("shared_with_projects")
     steps_section = data.get("steps", []) or []
@@ -219,6 +223,8 @@ def parse_pipeline(
     for idx, req in enumerate(requires_section):
         if not isinstance(req, str) or not req.strip():
             raise PipelineError(f"`requires_pipelines[{idx}]` must be a non-empty string")
+    if workdir_raw is not None and not isinstance(workdir_raw, str):
+        raise PipelineError("`workdir` must be a string when provided")
     if project_id_raw is not None and not isinstance(project_id_raw, str):
         raise PipelineError("`project_id` must be a string when provided")
     if shared_with_raw is None:
@@ -232,7 +238,9 @@ def parse_pipeline(
         raise PipelineError("`steps` must be a list")
 
     ctx_raw: Dict[str, Any] = {}
-    ctx_raw = _merge_with_namespace(ctx_raw, "global", global_vars or {})
+    global_ns = global_vars or {}
+    ctx_raw = _merge_with_namespace(ctx_raw, "global", global_ns)
+    ctx_raw = _merge_with_namespace(ctx_raw, "globals", global_ns)
     ctx_raw = _merge_with_namespace(ctx_raw, "env", env_vars or {})
     ctx_raw = _merge_with_namespace(ctx_raw, "pipe", vars_section)
     if context_vars:
@@ -315,6 +323,7 @@ def parse_pipeline(
         vars=vars_interp,
         dirs=dirs_interp,
         requires_pipelines=[str(x).strip() for x in requires_section if str(x).strip()],
+        workdir=str(workdir_raw).strip() if isinstance(workdir_raw, str) and str(workdir_raw).strip() else None,
         project_id=str(project_id_raw).strip() if isinstance(project_id_raw, str) and project_id_raw.strip() else None,
         shared_with_projects=[str(x).strip() for x in shared_with_raw if str(x).strip()],
         steps=steps,

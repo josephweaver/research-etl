@@ -157,6 +157,71 @@ def test_web_api_builder_source_and_validate(tmp_path: Path):
     assert v.json()["step_count"] == 1
 
 
+def test_web_api_builder_source_parses_plugin_args_model(tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    p = tmp_path / "draft.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - plugin: gdrive_download.py",
+                "    args:",
+                "      src: Data/Field_Boundaries",
+                "      recursive: true",
+                "      max_files: 20",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    s = client.get("/api/builder/source", params={"pipeline": str(p)})
+    assert s.status_code == 200
+    model = s.json()["model"]
+    assert model["steps"][0]["plugin"] == "gdrive_download.py"
+    assert model["steps"][0]["params"]["src"] == "Data/Field_Boundaries"
+    assert model["steps"][0]["params"]["recursive"] is True
+    assert model["steps"][0]["params"]["max_files"] == 20
+
+
+def test_web_api_builder_source_resolves_bare_filename_under_pipelines(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    p = tmp_path / "pipelines" / "yanroy" / "download.yml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("steps:\n  - name: s1\n    script: echo.py\n", encoding="utf-8")
+    client = TestClient(web_api.app)
+
+    s = client.get("/api/builder/source", params={"pipeline": "download.yml"})
+    assert s.status_code == 200
+    assert Path(s.json()["pipeline"]).resolve() == p.resolve()
+
+
+def test_web_api_builder_source_bare_filename_ambiguous(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    p1 = tmp_path / "pipelines" / "yanroy" / "download.yml"
+    p2 = tmp_path / "pipelines" / "other" / "download.yml"
+    p1.parent.mkdir(parents=True, exist_ok=True)
+    p2.parent.mkdir(parents=True, exist_ok=True)
+    p1.write_text("steps:\n  - script: echo.py\n", encoding="utf-8")
+    p2.write_text("steps:\n  - script: echo.py\n", encoding="utf-8")
+    client = TestClient(web_api.app)
+
+    s = client.get("/api/builder/source", params={"pipeline": "download.yml"})
+    assert s.status_code == 409
+    assert "Ambiguous pipeline filename" in s.json()["detail"]
+
+
 def test_web_api_builder_files_lists_pipeline_folder(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

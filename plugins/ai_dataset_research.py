@@ -25,6 +25,7 @@ meta = {
         "supplemental_urls": {"type": "str", "default": ""},
         "supplemental_urls_file": {"type": "str", "default": ""},
         "notes": {"type": "str", "default": ""},
+        "notes_file": {"type": "str", "default": ""},
         "model": {"type": "str", "default": ""},
         "output_dir": {"type": "str", "default": ""},
         "output_file": {"type": "str", "default": ""},
@@ -68,8 +69,8 @@ def _load_specs(path_text: str) -> Dict[str, Dict[str, Any]]:
 def _resolve_file_path(output_dir: str, output_file: str, dataset_id: str, ctx) -> Path:
     if (output_file or "").strip():
         p = Path(output_file).expanduser()
-        return p if p.is_absolute() else (ctx.workdir / p)
-    base = Path(output_dir).expanduser() if (output_dir or "").strip() else (ctx.workdir / "ai_research")
+        return p
+    base = Path(output_dir).expanduser() if (output_dir or "").strip() else Path(".runs/ai_research")
     safe_id = dataset_id.replace("/", "_").replace("\\", "_")
     return base / f"{safe_id}.research.json"
 
@@ -118,11 +119,13 @@ def run(args, ctx):
     data_class = str(args.get("data_class") or spec.get("data_class") or "").strip() or None
     title = str(args.get("title") or spec.get("title") or "").strip() or None
     artifact_uri = str(args.get("artifact_uri") or spec.get("artifact_uri") or "").strip() or None
-    notes = str(args.get("notes") or spec.get("notes") or "").strip() or None
+    notes = str(args.get("notes") or spec.get("notes") or "").strip()
+    notes_file = str(args.get("notes_file") or spec.get("notes_file") or "").strip()
     model = str(args.get("model") or spec.get("model") or "").strip() or None
 
     sample_file = str(args.get("sample_file") or spec.get("sample_file") or "").strip()
     schema_file = str(args.get("schema_file") or spec.get("schema_file") or "").strip()
+    notes_text = _read_text_optional(notes_file)
     supplemental_urls_inline = args.get("supplemental_urls")
     if supplemental_urls_inline is None:
         supplemental_urls_inline = spec.get("supplemental_urls")
@@ -135,6 +138,9 @@ def run(args, ctx):
     else:
         supplemental_urls.extend(_read_urls_inline(str(supplemental_urls_inline or "")))
     supplemental_urls.extend(_read_urls_file(supplemental_urls_file))
+    combined_notes = notes
+    if notes_text:
+        combined_notes = f"{combined_notes}\n\n{notes_text}".strip() if combined_notes else notes_text
 
     out_path = _resolve_file_path(
         str(args.get("output_dir") or spec.get("output_dir") or ""),
@@ -154,7 +160,7 @@ def run(args, ctx):
         artifact_uri=artifact_uri,
         sample_text=sample_text,
         schema_text=schema_text,
-        notes=notes,
+        notes=combined_notes or None,
         supplemental_urls=supplemental_urls or None,
         model=model,
     )

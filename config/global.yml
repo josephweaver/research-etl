@@ -1,4 +1,5 @@
 basedir: .out
+workdir: "{basedir}/work"
 bindir: .
 logdir: "{basedir}/logs"
 datadir: "{basedir}/data"

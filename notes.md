@@ -2,6 +2,10 @@
 
 Last updated: 2026-02-11
 
+ask;
+
+I noticed that twe provide both a executor and an enviroment,  I belive the environment imples an executor.  do you agree?  am I missing something?  
+
 ## Current status snapshot
 - [x] `P0` Core engine + retry/resume/provenance + SLURM event tracking.
 - [x] `P0` Minimal web UI/API scaffold is live.

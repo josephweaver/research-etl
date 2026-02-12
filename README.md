@@ -79,6 +79,32 @@ The plugin writes one JSON file per dataset and returns an explicit `_artifacts`
 `specs_file` can optionally provide per-dataset defaults (`title`, `data_class`, `artifact_uri`, `notes`, supplemental URLs, file hints) keyed by `dataset_id`.
 See `config/catalog_ai_specs.example.yml` for a starter format.
 
+### AI evidence bundle plugin
+
+`plugins/ai_dataset_evidence_bundle.py` builds high-signal context files for `ai_dataset_research.py` from mixed dataset inputs (folders, `.zip`, and `.7z` when `py7zr` is available).
+`.zip` inputs are treated like virtual folders (member files are inspected directly without a separate extraction step).
+
+It writes a dataset bundle directory containing:
+- `manifest.json` (inventory, extension counts, tile segments like `h00v00`, archive members, README excerpts)
+- `schema_summary.json` (tabular field inference when CSV/TSV/JSON/JSONL are present)
+- `sample_summary.json` (sample rows + representative files)
+- raster metadata (`raster_details`) with sidecar (`.prj`, `.tfw`) fallback and richer fields when `rasterio` is installed
+- `notes_for_ai.txt` (compact context notes)
+- `supplemental_urls.txt`
+- `catalog_ai_specs.fragment.yml` (ready-to-merge `specs_file` block for `ai_dataset_research`)
+
+Example chain for a tiled archive dataset:
+
+```yaml
+steps:
+  - name: build_ai_context
+    script: 'ai_dataset_evidence_bundle.py dataset_id="serve.yanroy_v1" input_path="data/yanroy.7z" output_dir=".runs/ai_context" supplemental_urls_file="config/yanroy_urls.txt" notes="30m raster field identifier tiles over the Midwest"'
+    output_var: evidence
+
+  - name: ai_catalog_research
+    script: 'ai_dataset_research.py dataset_id="serve.yanroy_v1" sample_file="{evidence.sample_file}" schema_file="{evidence.schema_file}" notes_file="{evidence.notes_file}" supplemental_urls_file="{evidence.supplemental_urls_file}" output_dir=".runs/catalog_ai"'
+```
+
 ### Catalog merge/sync plugins
 
 Use these two plugins after AI research generation:
@@ -276,6 +302,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 - `etl plugins list [-d plugins/]` â€“ list discovered plugins.  
 - `etl validate <pipeline.yml> [--global-config config/global.yml]` â€“ parse and validate pipeline syntax/templating.  
 - `etl run <pipeline.yml> [--executor local|slurm --global-config ... --environments-config ... --env name --project-id <project_id> --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.  
+  - Workdir precedence: `--workdir` (CLI) -> pipeline `workdir` -> execution env `workdir` -> global config `workdir` -> `.runs`.
   - If `requires_pipelines` is set in the target pipeline, missing successful dependencies are run first automatically.
   - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in environments config or env vars.  
 - `etl runs list [--store .runs/runs.jsonl]` â€“ show recent recorded runs.  

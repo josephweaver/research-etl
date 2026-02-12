@@ -57,10 +57,11 @@ INDEX_HTML = """<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Research ETL UI</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jstree@3.3.16/dist/themes/default/style.min.css" />
   <style>
     :root { --bg:#f5f7fb; --panel:#ffffff; --ink:#13223a; --muted:#5f6e86; --ok:#0a8f57; --bad:#b42318; --line:#dbe2ef; }
     body { margin:0; font-family:"Segoe UI",Tahoma,sans-serif; color:var(--ink); background:linear-gradient(160deg,#eef3ff,#f9fbff); }
-    .wrap { max-width:1200px; margin:24px auto; padding:0 16px; }
+    .wrap { max-width:min(1840px, calc(100vw - 24px)); margin:16px auto; padding:0 10px; }
     .topnav { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; padding:6px 8px; background:#f7f9ff; border:1px solid var(--line); border-radius:8px; }
     .topnav .links { display:flex; gap:6px; flex-wrap:wrap; }
     .topnav a { text-decoration:none; color:#274066; border:1px solid var(--line); border-radius:999px; padding:3px 8px; font-size:12px; line-height:1.2; background:#fff; }
@@ -78,7 +79,7 @@ INDEX_HTML = """<!doctype html>
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
     body.builder-mode .grid { grid-template-columns: 1fr; }
     body.builder-mode .grid > section:first-child { display:none; }
-    body.builder-mode .grid > section:last-child { max-width:980px; width:100%; margin:0 auto; }
+    body.builder-mode .grid > section:last-child { max-width:none; width:100%; margin:0; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; box-shadow:0 2px 10px rgba(10,25,60,.06); }
     .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
     input, select, button { border:1px solid var(--line); border-radius:8px; padding:6px 8px; font-size:13px; }
@@ -97,7 +98,12 @@ INDEX_HTML = """<!doctype html>
     .node.file { cursor:pointer; }
     .node.file:hover { background:#edf3ff; }
     .node.dir { font-weight:600; color:#334e73; }
-    .builder-surface { display:grid; grid-template-columns: 3fr 2fr; gap:10px; }
+    .builder-surface { display:grid; grid-template-columns: minmax(0, 2.3fr) minmax(460px, 1fr); gap:12px; }
+    .builder-surface.builder-right-collapsed { grid-template-columns: minmax(0, 1fr) 56px; }
+    .builder-surface.builder-right-collapsed #builder_preview_card { padding:8px 6px; }
+    .builder-surface.builder-right-collapsed #builder_preview_card h4 { display:none; }
+    .builder-surface.builder-right-collapsed #builder_preview_card .builder-head { justify-content:center; margin:0; }
+    .builder-surface.builder-right-collapsed #btn_builder_toggle_preview { writing-mode:vertical-rl; transform:rotate(180deg); min-height:120px; padding:8px 4px; }
     .builder-card { border:1px solid var(--line); border-radius:8px; background:#fafcff; padding:10px; }
     .builder-card h4 { margin:0 0 8px 0; font-size:14px; }
     .builder-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 8px 0; }
@@ -112,13 +118,37 @@ INDEX_HTML = """<!doctype html>
     .status-pill.valid { background:#ecfdf3; color:#0a8f57; border-color:#b7ebcf; }
     .status-pill.failed { background:#fff1f1; color:#b42318; border-color:#f3c6c6; }
     .status-pill.successful { background:#e7f6ff; color:#0b6fb3; border-color:#bfe3fa; }
+    .param-panel { border:1px solid var(--line); border-radius:8px; padding:8px; background:#f7faff; margin-top:6px; }
+    .param-panel-title { font-size:12px; color:#4a648a; font-weight:600; margin-bottom:6px; text-transform:uppercase; letter-spacing:.03em; }
+    .param-grid { display:grid; grid-template-columns:1fr; gap:6px; }
+    .param-row { display:grid; grid-template-columns: 180px minmax(0,1fr); gap:8px; align-items:center; }
+    .param-label { font-size:12px; color:#334e73; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .param-value { display:flex; align-items:center; gap:8px; }
+    .param-value input[type="text"], .param-value input[type="number"], .param-value select { width:100%; }
+    .combo-picker { position:relative; flex:1 1 460px; min-width:280px; max-width:700px; }
+    .combo-picker input { width:100%; }
+    .combo-dropdown { position:absolute; left:0; right:0; top:calc(100% + 4px); display:none; z-index:35; border:1px solid var(--line); border-radius:8px; background:#fff; box-shadow:0 10px 22px rgba(10,25,60,.15); padding:6px; }
+    .combo-picker.open .combo-dropdown { display:block; }
+    #b_pipeline_tree { max-height:260px; overflow:auto; }
+    .builder-preview-collapsed #builder_preview_body { display:none; }
+    .builder-preview-collapsed #btn_builder_toggle_preview { background:#eef3ff; color:#274066; border-color:#b9c8e6; }
     .spin-btn { position:relative; min-width:96px; }
     .spin-btn.loading { color:transparent; }
     .spin-btn .spin { display:none; position:absolute; right:10px; top:50%; width:13px; height:13px; margin-top:-6.5px; border:2px solid rgba(255,255,255,.55); border-top-color:#fff; border-radius:50%; animation:spin .8s linear infinite; }
     .spin-btn.loading .spin { display:block; }
     @keyframes spin { to { transform:rotate(360deg); } }
-    @media (max-width: 1100px) { .builder-surface { grid-template-columns: 1fr; } }
+    @media (max-width: 1280px) {
+      .builder-surface { grid-template-columns: 1fr; }
+      .builder-surface.builder-right-collapsed { grid-template-columns: 1fr; }
+      .builder-surface.builder-right-collapsed #btn_builder_toggle_preview { writing-mode:horizontal-tb; transform:none; min-height:unset; padding:6px 8px; }
+    }
     @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
+    @media (min-width: 1500px) {
+      .param-grid { grid-template-columns: 1fr 1fr; column-gap:12px; }
+    }
+    @media (min-width: 1820px) {
+      .param-grid { grid-template-columns: 1fr 1fr 1fr; column-gap:12px; }
+    }
   </style>
 </head>
 <body>
@@ -203,15 +233,21 @@ INDEX_HTML = """<!doctype html>
         <div id="pipeline_summary" class="muted" style="display:none;"></div>
         <div id="pipeline_validations" class="muted" style="display:none;"></div>
         <div id="builder_panel" style="display:none;">
-          <div class="builder-surface">
-            <div class="builder-card">
+          <div class="builder-surface" id="builder_surface">
+            <div class="builder-card" id="builder_preview_card">
               <div class="builder-head">
                 <h4>Pipeline Config</h4>
                 <span id="builder_pipeline_status" class="status-pill not-run">not run</span>
               </div>
               <div class="controls">
-                <input id="b_pipeline_path" placeholder="pipeline name (stored under pipelines/)" />
+                <div id="b_pipeline_combo" class="combo-picker">
+                  <input id="b_pipeline_path" placeholder="pipeline name (stored under pipelines/)" />
+                  <div class="combo-dropdown">
+                    <div id="b_pipeline_tree"></div>
+                  </div>
+                </div>
                 <button id="btn_builder_load">Load</button>
+                <button id="btn_builder_import_local">Import Local</button>
                 <button id="btn_builder_save">Save Draft</button>
                 <button id="btn_builder_generate">Generate</button>
                 <button id="btn_builder_validate">Validate Draft</button>
@@ -265,10 +301,16 @@ INDEX_HTML = """<!doctype html>
               <div id="b_steps" class="builder-list"></div>
             </div>
             <div class="builder-card">
-              <h4>YAML Preview (read-only)</h4>
-              <textarea id="b_yaml" readonly style="width:100%; min-height:420px; font-family:Consolas,monospace; font-size:12px;"></textarea>
-              <h4>Builder Output</h4>
-              <pre id="builder_output">No draft action yet.</pre>
+              <div class="builder-head">
+                <h4>YAML Preview / Builder Output</h4>
+                <button id="btn_builder_toggle_preview" type="button">Expand</button>
+              </div>
+              <div id="builder_preview_body">
+                <h4>YAML Preview (read-only)</h4>
+                <textarea id="b_yaml" readonly style="width:100%; min-height:420px; font-family:Consolas,monospace; font-size:12px;"></textarea>
+                <h4>Builder Output</h4>
+                <pre id="builder_output">No draft action yet.</pre>
+              </div>
             </div>
           </div>
         </div>
@@ -316,6 +358,8 @@ INDEX_HTML = """<!doctype html>
       </section>
     </div>
   </div>
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jstree@3.3.16/dist/jstree.min.js"></script>
   <script>
     let selected = null;
     let selectedPipeline = null;
@@ -342,6 +386,9 @@ INDEX_HTML = """<!doctype html>
     let builderStepTesting = {};
     let builderPipelineRunState = "not-run";
     let builderPipelineRunning = false;
+    let builderPreviewCollapsed = true;
+    let builderTreeFiles = [];
+    let builderTreeFileSelection = "";
     const USER_STORAGE_KEY = "etl_ui_user";
     const VALID_UI_USERS = new Set(["admin", "land-core", "gee-lee"]);
     const _nativeFetch = window.fetch.bind(window);
@@ -620,6 +667,11 @@ INDEX_HTML = """<!doctype html>
       if (/^[A-Za-z0-9_./:-]+$/.test(s) && s.toLowerCase() !== "true" && s.toLowerCase() !== "false") return s;
       return `"${s.replaceAll("\\\\","\\\\\\\\").replaceAll('"','\\\\\\"')}"`;
     }
+    function _yamlArgVal(v){
+      if (typeof v === "boolean") return v ? "true" : "false";
+      if (typeof v === "number" && Number.isFinite(v)) return String(v);
+      return _yamlEsc(v);
+    }
     function _scriptFromStep(st){
       const base = (st.plugin || "").trim();
       const parts = [];
@@ -652,10 +704,21 @@ INDEX_HTML = """<!doctype html>
       lines.push("steps:");
       const steps = m.steps || [];
       if(!steps.length){
-        lines.push("  - script: echo.py");
+        lines.push("  - plugin: echo.py");
       } else {
         for(const st of steps){
-          lines.push(`  - script: ${_yamlEsc(_scriptFromStep(st))}`);
+          lines.push(`  - plugin: ${_yamlEsc(st.plugin || "echo.py")}`);
+          const pentries = Object.entries(st.params || {}).filter(([_, v]) => {
+            if (v === null || v === undefined) return false;
+            if (typeof v === "string") return String(v).trim().length > 0;
+            return true;
+          });
+          if (pentries.length){
+            lines.push("    args:");
+            for(const [k, v] of pentries){
+              lines.push(`      ${k}: ${_yamlArgVal(v)}`);
+            }
+          }
           if ((st.type || "sequential") === "parallel" && (st.parallel_with || "").trim()) {
             lines.push(`    parallel_with: ${_yamlEsc(st.parallel_with)}`);
           }
@@ -707,6 +770,15 @@ INDEX_HTML = """<!doctype html>
         runBtn.classList.toggle("loading", !!builderPipelineRunning);
         runBtn.disabled = !!builderPipelineRunning;
       }
+    }
+    function renderBuilderPreviewPanel(){
+      const card = document.getElementById("builder_preview_card");
+      const surface = document.getElementById("builder_surface");
+      const btn = document.getElementById("btn_builder_toggle_preview");
+      if(!card || !btn || !surface) return;
+      card.classList.toggle("builder-preview-collapsed", !!builderPreviewCollapsed);
+      surface.classList.toggle("builder-right-collapsed", !!builderPreviewCollapsed);
+      btn.textContent = builderPreviewCollapsed ? "Expand Preview" : "Collapse Preview";
     }
     function builderPayload(){
       const body = { yaml_text: document.getElementById("b_yaml").value || "" };
@@ -889,18 +961,69 @@ INDEX_HTML = """<!doctype html>
 
       const steps = builderModel.steps || [];
       const stepLabels = stepDisplayLabels(steps);
+      function defaultForSpec(pspec){
+        if(pspec && Object.prototype.hasOwnProperty.call(pspec, "default")) return pspec.default;
+        return "";
+      }
+      function toNumberLike(v, kind){
+        if(v === null || v === undefined || String(v).trim() === "") return "";
+        const n = Number(v);
+        if(Number.isNaN(n)) return String(v);
+        return kind === "int" ? Math.trunc(n) : n;
+      }
+      function isBoolLike(v){
+        if(typeof v === "boolean") return v;
+        const s = String(v ?? "").trim().toLowerCase();
+        return s === "true" || s === "1" || s === "yes" || s === "on";
+      }
       steps.forEach((st, idx) => {
         const meta = builderPluginMeta[st.plugin] || {params:{}};
         const pluginOptions = builderPlugins.map(p => `<option value="${esc(p.path)}" ${p.path===st.plugin?"selected":""}>${esc(p.path)}</option>`).join("");
         const type = st.type || "sequential";
         let paramsHtml = "";
         for(const [pk, pspec] of Object.entries(meta.params || {})){
-          const ptype = (pspec && (pspec.type || pspec["type"])) || "str";
-          const pval = (st.params || {})[pk] ?? "";
-          if(String(ptype).toLowerCase() === "bool"){
-            paramsHtml += `<label class="muted"><input type="checkbox" data-kind="step-param-bool" data-idx="${idx}" data-param="${esc(pk)}" ${String(pval).toLowerCase()==="true"||pval===true?"checked":""} /> ${esc(pk)}</label>`;
+          const ptype = String((pspec && (pspec.type || pspec["type"])) || "str").toLowerCase();
+          const pchoices = Array.isArray(pspec?.choices) ? pspec.choices : (Array.isArray(pspec?.enum) ? pspec.enum : []);
+          const pdefault = defaultForSpec(pspec);
+          const pvalRaw = (st.params || {})[pk];
+          const pval = pvalRaw !== undefined ? pvalRaw : pdefault;
+          const hint = pspec?.description ? ` title="${esc(String(pspec.description))}"` : "";
+          if(pchoices.length){
+            const options = [`<option value="">(empty)</option>`]
+              .concat(pchoices.map(opt => {
+                const oval = String(opt ?? "");
+                const selected = String(pval ?? "") === oval ? "selected" : "";
+                return `<option value="${esc(oval)}" ${selected}>${esc(oval)}</option>`;
+              }))
+              .join("");
+            paramsHtml += `
+              <div class="param-row">
+                <div class="param-label" title="${esc(pk)}">${esc(pk)}</div>
+                <div class="param-value"><select data-kind="step-param-select" data-idx="${idx}" data-param="${esc(pk)}" data-ptype="${esc(ptype)}"${hint}>${options}</select></div>
+              </div>
+            `;
+          } else if(ptype === "bool"){
+            paramsHtml += `
+              <div class="param-row">
+                <div class="param-label" title="${esc(pk)}">${esc(pk)}</div>
+                <div class="param-value"><label class="muted"><input type="checkbox" data-kind="step-param-bool" data-idx="${idx}" data-param="${esc(pk)}" ${isBoolLike(pval)?"checked":""}${hint} /> enabled</label></div>
+              </div>
+            `;
+          } else if(ptype === "int" || ptype === "float"){
+            const nval = toNumberLike(pval, ptype);
+            paramsHtml += `
+              <div class="param-row">
+                <div class="param-label" title="${esc(pk)}">${esc(pk)}</div>
+                <div class="param-value"><input type="number" data-kind="step-param-number" data-idx="${idx}" data-param="${esc(pk)}" data-ptype="${esc(ptype)}" value="${esc(nval)}" placeholder="${esc(ptype)}"${ptype==="int" ? ' step="1"' : ' step="any"'}${hint} /></div>
+              </div>
+            `;
           } else {
-            paramsHtml += `<input data-kind="step-param" data-idx="${idx}" data-param="${esc(pk)}" value="${esc(pval)}" placeholder="${esc(pk)} (${esc(ptype)})" />`;
+            paramsHtml += `
+              <div class="param-row">
+                <div class="param-label" title="${esc(pk)}">${esc(pk)}</div>
+                <div class="param-value"><input data-kind="step-param" data-idx="${idx}" data-param="${esc(pk)}" data-ptype="${esc(ptype)}" value="${esc(pval ?? "")}" placeholder="${esc(ptype)}"${hint} /></div>
+              </div>
+            `;
           }
         }
         const card = document.createElement("div");
@@ -930,7 +1053,10 @@ INDEX_HTML = """<!doctype html>
             </button>
             <button data-del-step="${idx}">Remove Step</button>
           </div>
-          <div class="controls">${paramsHtml || '<span class="muted">No plugin params</span>'}</div>
+          <div class="param-panel">
+            <div class="param-panel-title">Input Parameters</div>
+            <div class="param-grid">${paramsHtml || '<span class="muted">No plugin params</span>'}</div>
+          </div>
           <div class="controls">
             <input data-kind="step-output" data-idx="${idx}" value="${esc(st.output_var || "")}" placeholder="output_var (optional)" />
             <input data-kind="step-when" data-idx="${idx}" value="${esc(st.when || "")}" placeholder="when (optional)" />
@@ -1009,9 +1135,33 @@ INDEX_HTML = """<!doctype html>
           st.params[t.getAttribute("data-param")] = t.value;
           changed = true;
         }
+        if(kind === "step-param-select"){
+          st.params = st.params || {};
+          const key = t.getAttribute("data-param");
+          const raw = String(t.value ?? "");
+          if(!raw.trim().length){
+            delete st.params[key];
+          } else {
+            st.params[key] = raw;
+          }
+          changed = true;
+        }
+        if(kind === "step-param-number"){
+          st.params = st.params || {};
+          const key = t.getAttribute("data-param");
+          const ptype = String(t.getAttribute("data-ptype") || "float").toLowerCase();
+          const raw = String(t.value ?? "").trim();
+          if(!raw.length){
+            delete st.params[key];
+          } else {
+            const n = Number(raw);
+            st.params[key] = Number.isNaN(n) ? raw : (ptype === "int" ? Math.trunc(n) : n);
+          }
+          changed = true;
+        }
         if(kind === "step-param-bool"){
           st.params = st.params || {};
-          st.params[t.getAttribute("data-param")] = t.checked ? "true" : "false";
+          st.params[t.getAttribute("data-param")] = !!t.checked;
           changed = true;
         }
       }
@@ -1046,6 +1196,139 @@ INDEX_HTML = """<!doctype html>
       while(files.has(`new_pipeline_${i}.yml`)) i++;
       return `new_pipeline_${i}.yml`;
     }
+    function buildBuilderJsTreeData(files){
+      const nodes = [];
+      const seenDirs = new Set();
+      const all = Array.isArray(files) ? files.map(x => String(x || "").replaceAll("\\\\", "/").trim()).filter(Boolean) : [];
+      for(const rel of all){
+        const parts = rel.split("/").filter(Boolean);
+        if(!parts.length) continue;
+        let parentId = "#";
+        for(let i=0; i<parts.length - 1; i++){
+          const seg = parts[i];
+          const dpath = parts.slice(0, i + 1).join("/");
+          const did = `d:${dpath}`;
+          if(!seenDirs.has(did)){
+            seenDirs.add(did);
+            nodes.push({ id: did, parent: parentId, text: seg, type: "dir", icon: "jstree-folder" });
+          }
+          parentId = did;
+        }
+        const fname = parts[parts.length - 1];
+        nodes.push({ id: `f:${rel}`, parent: parentId, text: fname, type: "file", icon: "jstree-file", relpath: rel });
+      }
+      return nodes;
+    }
+    function applyBuilderTreeSelectionFromPipeline(pipeline){
+      const p = normalizeBuilderPipelineName(String(pipeline || "").trim());
+      if(!p){
+        builderTreeFileSelection = "";
+        return;
+      }
+      builderTreeFileSelection = p;
+    }
+    function renderBuilderJsTree(files){
+      const holder = document.getElementById("b_pipeline_tree");
+      if(!holder) return;
+      const $ = window.jQuery;
+      if(!$ || !$.fn || !$.fn.jstree){
+        holder.innerHTML = `<span class="muted">jsTree not available in this browser context.</span>`;
+        return;
+      }
+      const data = buildBuilderJsTreeData(files);
+      holder.innerHTML = "";
+      const $holder = $(holder);
+      try { $holder.jstree("destroy"); } catch {}
+      $holder.off(".jstree");
+      $holder.jstree({
+        core: { data, multiple: false },
+        plugins: ["wholerow", "sort", "search"],
+        search: { show_only_matches: true, case_insensitive: true },
+        sort: function(a, b){
+          const na = this.get_node(a);
+          const nb = this.get_node(b);
+          const ta = na?.original?.type || "";
+          const tb = nb?.original?.type || "";
+          if(ta !== tb) return ta === "dir" ? -1 : 1;
+          return String(na?.text || "").localeCompare(String(nb?.text || ""));
+        },
+      });
+      $holder.on("changed.jstree", function(_ev, payload){
+        const node = payload?.node;
+        if(!node || node.original?.type !== "file") return;
+        const rel = String(node.original.relpath || "").trim();
+        if(!rel) return;
+        builderTreeFileSelection = rel;
+        document.getElementById("b_pipeline_path").value = normalizeBuilderPipelineName(rel);
+        hideBuilderTreeDropdown();
+      });
+      $holder.on("ready.jstree", function(){
+        if(!builderTreeFileSelection) return;
+        const id = `f:${builderTreeFileSelection}`;
+        if($holder.jstree(true).get_node(id)){
+          $holder.jstree(true).deselect_all();
+          $holder.jstree(true).select_node(id);
+        }
+      });
+    }
+    async function refreshBuilderTreeFiles(){
+      const msg = document.getElementById("builder_msg");
+      const res = await fetch(`/api/builder/files`);
+      if(!res.ok){
+        msg.textContent = await readMessage(res);
+        return;
+      }
+      const payload = await res.json();
+      const files = Array.isArray(payload.files) ? payload.files : [];
+      builderTreeFiles = files;
+      applyBuilderTreeSelectionFromPipeline(document.getElementById("b_pipeline_path").value.trim());
+      renderBuilderJsTree(files);
+    }
+    function showBuilderTreeDropdown(){
+      const combo = document.getElementById("b_pipeline_combo");
+      if(!combo) return;
+      combo.classList.add("open");
+    }
+    function hideBuilderTreeDropdown(){
+      const combo = document.getElementById("b_pipeline_combo");
+      if(!combo) return;
+      combo.classList.remove("open");
+    }
+    function filterBuilderTreeByInput(){
+      const input = document.getElementById("b_pipeline_path");
+      const holder = document.getElementById("b_pipeline_tree");
+      const $ = window.jQuery;
+      if(!input || !holder || !$ || !$.fn || !$.fn.jstree) return;
+      const inst = $(holder).jstree(true);
+      if(!inst) return;
+      const term = String(input.value || "").trim();
+      inst.search(term);
+    }
+    async function initBuilderTreeComboBehavior(){
+      const input = document.getElementById("b_pipeline_path");
+      const combo = document.getElementById("b_pipeline_combo");
+      if(!input || !combo) return;
+      input.addEventListener("focus", async () => {
+        if(!builderTreeFiles.length){
+          await refreshBuilderTreeFiles();
+        }
+        showBuilderTreeDropdown();
+        filterBuilderTreeByInput();
+      });
+      input.addEventListener("input", async () => {
+        if(!builderTreeFiles.length){
+          await refreshBuilderTreeFiles();
+        }
+        showBuilderTreeDropdown();
+        filterBuilderTreeByInput();
+      });
+      document.addEventListener("mousedown", (ev) => {
+        const t = ev.target;
+        if(!(t instanceof Node)) return;
+        if(combo.contains(t)) return;
+        hideBuilderTreeDropdown();
+      });
+    }
     function openBuilderFilePicker(){
       const picker = document.getElementById("b_file_picker");
       picker.value = "";
@@ -1067,6 +1350,8 @@ INDEX_HTML = """<!doctype html>
         return;
       }
       document.getElementById("b_pipeline_path").value = v;
+      applyBuilderTreeSelectionFromPipeline(v);
+      renderBuilderJsTree(builderTreeFiles);
       builderLoaded = false;
       await loadBuilderSource();
     }
@@ -1084,6 +1369,8 @@ INDEX_HTML = """<!doctype html>
         return;
       }
       document.getElementById("b_pipeline_path").value = pipeline;
+      applyBuilderTreeSelectionFromPipeline(pipeline);
+      renderBuilderJsTree(builderTreeFiles);
       const res = await fetch(`/api/builder/source?pipeline=${encodeURIComponent(pipeline)}`);
       if(!res.ok){
         document.getElementById("builder_msg").textContent = await readMessage(res);
@@ -1579,7 +1866,9 @@ INDEX_HTML = """<!doctype html>
       const asUser = encodeURIComponent(currentAsUser());
       window.location.href = `/runs/${encodeURIComponent(runId)}/live?as_user=${asUser}`;
     };
-    document.getElementById("btn_builder_load").onclick = () => { openBuilderFilePicker(); };
+    document.getElementById("btn_builder_load").onclick = async () => { builderLoaded = false; await loadBuilderSource(); };
+    document.getElementById("btn_builder_import_local").onclick = () => { openBuilderFilePicker(); };
+    document.getElementById("btn_builder_toggle_preview").onclick = () => { builderPreviewCollapsed = !builderPreviewCollapsed; renderBuilderPreviewPanel(); };
     document.getElementById("btn_builder_add_req").onclick = addBuilderRequire;
     document.getElementById("btn_builder_add_var").onclick = addBuilderVar;
     document.getElementById("btn_builder_add_dir").onclick = addBuilderDir;
@@ -1601,6 +1890,9 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("b_steps").addEventListener("click", handleBuilderClicks);
     document.getElementById("b_global_config").addEventListener("change", async () => { await loadBuilderPlugins(); });
     document.getElementById("b_file_picker").addEventListener("change", async () => { await loadBuilderSourceFromFilePicker(); });
+    renderBuilderPreviewPanel();
+    initBuilderTreeComboBehavior();
+    refreshBuilderTreeFiles();
     tick(); setInterval(tick, 12000);
   </script>
 </body>
@@ -2141,7 +2433,15 @@ def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
             step_map = raw.get("step") if isinstance(raw.get("step"), dict) else raw
             if not isinstance(step_map, dict):
                 continue
-            plugin_ref, params = _parse_step_script_for_builder(str(step_map.get("script") or ""))
+            plugin_ref = str(step_map.get("plugin") or "").strip()
+            params: dict[str, Any] = {}
+            args_raw = step_map.get("args")
+            if isinstance(args_raw, dict):
+                for k, v in args_raw.items():
+                    params[str(k)] = v
+            if not plugin_ref:
+                plugin_ref, script_params = _parse_step_script_for_builder(str(step_map.get("script") or ""))
+                params = script_params
             stype = "sequential"
             if step_map.get("foreach"):
                 stype = "foreach"
@@ -2328,12 +2628,44 @@ def api_builder_source(pipeline: str = Query(default="")) -> dict:
     pipelines_root = (repo_root / "pipelines").resolve()
     path = Path(raw).expanduser()
     if not path.is_absolute():
+        # First pass: direct resolution under pipelines root.
         parts = list(path.parts)
         if parts and parts[0].lower() == "pipelines":
             path = Path(*parts[1:]) if len(parts) > 1 else Path("")
         if path.suffix.lower() not in {".yml", ".yaml"}:
             path = path.with_suffix(".yml")
         path = (pipelines_root / path).resolve()
+        # Fallback: if caller passed a bare filename (e.g. download.yml),
+        # search recursively under pipelines/**.
+        if not path.exists():
+            raw_name = Path(raw).name
+            candidate_names = [raw_name]
+            if Path(raw_name).suffix.lower() not in {".yml", ".yaml"}:
+                candidate_names.extend([f"{raw_name}.yml", f"{raw_name}.yaml"])
+            has_path_hint = ("/" in raw) or ("\\" in raw)
+            if not has_path_hint:
+                matches: list[Path] = []
+                for name in candidate_names:
+                    matches.extend(sorted(pipelines_root.rglob(name)))
+                uniq: list[Path] = []
+                seen: set[str] = set()
+                for m in matches:
+                    key = m.resolve().as_posix().lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    uniq.append(m.resolve())
+                if len(uniq) == 1:
+                    path = uniq[0]
+                elif len(uniq) > 1:
+                    rels = [p.relative_to(pipelines_root).as_posix() for p in uniq[:10]]
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Ambiguous pipeline filename '{raw}'. "
+                            f"Matches: {rels}. Pass a relative path like 'yanroy/{raw_name}'."
+                        ),
+                    )
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"Pipeline file not found: {path}")
     try:

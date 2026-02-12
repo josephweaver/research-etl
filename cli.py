@@ -27,7 +27,7 @@ from etl.artifacts import (
     load_artifact_policy,
     resolve_artifact_policy_path,
 )
-from etl.config import load_global_config, ConfigError
+from etl.config import load_global_config, resolve_global_config_path, ConfigError
 from etl.db import ensure_database_schema, DatabaseError
 from etl.diagnostics import write_error_report, find_latest_error_report
 from etl.executors import LocalExecutor, SlurmExecutor
@@ -51,6 +51,30 @@ DEFAULT_PLUGIN_DIR = Path("plugins")
 
 def _run_store_path(workdir: str) -> Path:
     return Path(workdir) / "runs.jsonl"
+
+
+def _first_non_empty_text(*values: Any) -> str | None:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _resolve_workdir(
+    *,
+    cli_workdir: str | None,
+    pipeline,
+    env_vars: Dict[str, Any],
+    global_vars: Dict[str, Any],
+) -> str:
+    resolved = _first_non_empty_text(
+        cli_workdir,
+        getattr(pipeline, "workdir", None),
+        env_vars.get("workdir"),
+        global_vars.get("workdir"),
+    )
+    return resolved or ".runs"
 
 
 def _has_successful_run_for_pipeline(pipeline_path: Path, *, workdir: str) -> bool:
@@ -124,6 +148,12 @@ def _submit_pipeline_run(
     except (PipelineError, FileNotFoundError) as exc:
         print(f"Invalid pipeline: {exc}", file=sys.stderr)
         return 1
+    resolved_workdir = _resolve_workdir(
+        cli_workdir=args.workdir,
+        pipeline=pipeline,
+        env_vars=exec_env,
+        global_vars=global_vars,
+    )
     cli_argv = list(getattr(args, "_raw_argv", []))
     if cli_argv:
         try:
@@ -156,7 +186,7 @@ def _submit_pipeline_run(
             env_config=exec_env,
             repo_root=repo_root,
             plugins_dir=plugins_dir_path,
-            workdir=Path(args.workdir),
+            workdir=Path(resolved_workdir),
             global_config=Path(args.global_config) if args.global_config else None,
             environments_config=Path(args.environments_config) if args.environments_config else None,
             env_name=args.env,
@@ -172,7 +202,7 @@ def _submit_pipeline_run(
     else:
         executor = LocalExecutor(
             plugin_dir=plugins_dir_path,
-            workdir=Path(args.workdir),
+            workdir=Path(resolved_workdir),
             dry_run=args.dry_run,
             max_retries=int(exec_env.get("step_max_retries", 0)),
             retry_delay_seconds=float(exec_env.get("step_retry_delay_seconds", 0.0)),
@@ -301,14 +331,23 @@ def cmd_run(args: argparse.Namespace) -> int:
     pipeline_path = Path(args.pipeline)
     global_vars = {}
     exec_env = {}
+    selected_global_config: Path | None = None
     selected_environments_config: Path | None = None
     selected_env_name: str | None = None
-    if args.global_config:
+    try:
+        selected_global_config = resolve_global_config_path(
+            Path(args.global_config) if args.global_config else None
+        )
+    except ConfigError as exc:
+        print(f"Global config error: {exc}", file=sys.stderr)
+        return 1
+    if selected_global_config:
         try:
-            global_vars = load_global_config(Path(args.global_config))
+            global_vars = load_global_config(selected_global_config)
         except ConfigError as exc:
             print(f"Global config error: {exc}", file=sys.stderr)
             return 1
+        args.global_config = str(selected_global_config)
     try:
         selected_environments_config = resolve_execution_config_path(
             Path(args.environments_config) if args.environments_config else None
@@ -372,7 +411,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     for dep in ordered_reqs:
         if dep.resolve() == target:
             continue
-        if _has_successful_run_for_pipeline(dep, workdir=args.workdir):
+        try:
+            dep_pipeline = parse_pipeline(dep, global_vars=global_vars, env_vars=exec_env)
+        except (PipelineError, FileNotFoundError) as exc:
+            print(f"Invalid pipeline: {exc}", file=sys.stderr)
+            return 1
+        dep_workdir = _resolve_workdir(
+            cli_workdir=args.workdir,
+            pipeline=dep_pipeline,
+            env_vars=exec_env,
+            global_vars=global_vars,
+        )
+        if _has_successful_run_for_pipeline(dep, workdir=dep_workdir):
             print(f"Dependency already satisfied: {dep}")
             continue
         print(f"Running missing dependency pipeline: {dep}")
@@ -399,12 +449,21 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_validate(args: argparse.Namespace) -> int:
     pipeline_path = Path(args.pipeline)
     global_vars = {}
-    if args.global_config:
+    selected_global_config: Path | None = None
+    try:
+        selected_global_config = resolve_global_config_path(
+            Path(args.global_config) if args.global_config else None
+        )
+    except ConfigError as exc:
+        print(f"Global config error: {exc}", file=sys.stderr)
+        return 1
+    if selected_global_config:
         try:
-            global_vars = load_global_config(Path(args.global_config))
+            global_vars = load_global_config(selected_global_config)
         except ConfigError as exc:
             print(f"Global config error: {exc}", file=sys.stderr)
             return 1
+        args.global_config = str(selected_global_config)
     try:
         pipeline = parse_pipeline(pipeline_path, global_vars=global_vars, env_vars={})
     except (PipelineError, FileNotFoundError) as exc:
@@ -614,7 +673,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--env", help="Execution environment name (from environments config)", default=None)
     p_run.add_argument("--project-id", default=None, help="Project partition id override (default inferred from pipeline metadata/path).")
     p_run.add_argument("--plugins-dir", default="plugins", help="Directory containing plugins")
-    p_run.add_argument("--workdir", default=".runs", help="Directory to store run artifacts")
+    p_run.add_argument("--workdir", default=None, help="Directory to store run artifacts (overrides pipeline/env/global workdir).")
     p_run.add_argument("--dry-run", action="store_true", help="Parse and plan without executing plugins")
     p_run.add_argument("--max-retries", type=int, default=None, help="Max retries per step after first failure")
     p_run.add_argument("--retry-delay-seconds", type=float, default=None, help="Delay between retries in seconds")

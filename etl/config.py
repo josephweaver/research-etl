@@ -13,13 +13,32 @@ The loaded dict is passed into pipeline parsing as `global` for templating.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import yaml
 
 
 class ConfigError(ValueError):
     """Raised when global config cannot be loaded."""
+
+
+DEFAULT_GLOBAL_CONFIG_PATHS = (
+    Path("config/global.yml"),
+    Path("config/globals.yml"),
+)
+
+
+def resolve_global_config_path(path: Optional[Path]) -> Optional[Path]:
+    """Resolve global config path with sensible defaults."""
+    if path:
+        candidate = Path(path)
+        if candidate.exists():
+            return candidate
+        raise ConfigError(f"Global config not found: {candidate}")
+    for candidate in DEFAULT_GLOBAL_CONFIG_PATHS:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def load_global_config(path: Path) -> Dict[str, Any]:
@@ -35,4 +54,4 @@ def load_global_config(path: Path) -> Dict[str, Any]:
     return data
 
 
-__all__ = ["load_global_config", "ConfigError"]
+__all__ = ["load_global_config", "resolve_global_config_path", "ConfigError"]

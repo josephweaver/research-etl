@@ -16,7 +16,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from etl.config import load_global_config, ConfigError
+from etl.config import load_global_config, resolve_global_config_path, ConfigError
 from etl.execution_config import (
     load_execution_config,
     apply_execution_env_overrides,
@@ -90,12 +90,21 @@ def main(argv: list[str] | None = None) -> int:
 
     global_vars = {}
     exec_env = {}
-    if args.global_config:
+    resolved_global_cfg: Path | None = None
+    try:
+        resolved_global_cfg = resolve_global_config_path(
+            Path(args.global_config) if args.global_config else None
+        )
+    except ConfigError as exc:
+        print(f"Global config error: {exc}")
+        return 1
+    if resolved_global_cfg:
         try:
-            global_vars = load_global_config(Path(args.global_config))
+            global_vars = load_global_config(resolved_global_cfg)
         except ConfigError as exc:
             print(f"Global config error: {exc}")
             return 1
+        args.global_config = str(resolved_global_cfg)
     try:
         resolved_exec_cfg = resolve_execution_config_path(
             Path(args.environments_config) if args.environments_config else None

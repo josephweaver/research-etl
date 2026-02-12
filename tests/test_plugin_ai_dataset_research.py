@@ -89,3 +89,36 @@ def test_ai_dataset_research_plugin_uses_specs_file(tmp_path: Path) -> None:
     assert captured["title"] == "Demo"
     assert captured["notes"] == "notes from spec"
     assert captured["supplemental_urls"] == ["https://example.com/spec-a", "https://example.com/spec-b"]
+
+
+def test_ai_dataset_research_plugin_reads_notes_file(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/ai_dataset_research.py"))
+    assert plugin.module is not None
+    notes_file = tmp_path / "notes.txt"
+    notes_file.write_text("line a\nline b\n", encoding="utf-8")
+    captured = {}
+
+    def _fake_generate(**kwargs):
+        captured.update(kwargs)
+        return {
+            "title": "Demo",
+            "description": "desc",
+            "how_to_use_notes": "how",
+            "tags": [],
+            "quality_validation": [],
+            "quality_known_issues": [],
+            "assumptions": [],
+            "lineage_upstream": [],
+        }
+
+    setattr(plugin.module, "generate_dataset_research", _fake_generate)
+
+    _ = plugin.run(
+        {
+            "dataset_id": "serve.demo_v1",
+            "notes": "base notes",
+            "notes_file": str(notes_file),
+        },
+        _ctx(tmp_path),
+    )
+    assert captured["notes"] == "base notes\n\nline a\nline b"

@@ -60,6 +60,22 @@ def test_parse_pipeline_precedence_global_env_pipe_and_flat_overrides(tmp_path: 
     assert pipeline.steps[0].script == "echo.py msg=/env/pipe|/global|/env|/env/pipe"
 
 
+def test_parse_pipeline_supports_globals_namespace_alias(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: \"echo.py out={globals.basedir}/work\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p, global_vars={"basedir": "/tmp/out"})
+    assert pipeline.steps[0].script == "echo.py out=/tmp/out/work"
+
+
 def test_parse_pipeline_resolves_iterative_chain(tmp_path: Path) -> None:
     p = tmp_path / "p.yml"
     p.write_text(
@@ -204,3 +220,38 @@ def test_parse_pipeline_rejects_script_and_plugin_together(tmp_path: Path) -> No
     )
     with pytest.raises(PipelineError, match="both `script` and `plugin`"):
         parse_pipeline(p)
+
+
+def test_parse_pipeline_accepts_top_level_workdir(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "workdir: .out/work",
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    assert pipeline.workdir == ".out/work"
+
+
+def test_parse_pipeline_accepts_metadata_workdir(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "metadata:",
+                "  workdir: .out/work2",
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    assert pipeline.workdir == ".out/work2"
