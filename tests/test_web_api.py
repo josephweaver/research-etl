@@ -489,6 +489,40 @@ def test_web_api_builder_namespace_precedence_global_env_vars(tmp_path: Path) ->
     assert ns["dirs"]["stage"] == "/e/work/pipe/stage"
 
 
+def test_web_api_builder_namespace_uses_configured_resolve_max_passes(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    global_cfg = cfg / "global.yml"
+    global_cfg.write_text("resolve_max_passes: 9\n", encoding="utf-8")
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "vars:",
+            "  a: \"{b}\"",
+            "  b: \"{c}\"",
+            "  c: done",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/namespace",
+        json={
+            "yaml_text": yaml_text,
+            "global_config": str(global_cfg),
+        },
+    )
+    assert r.status_code == 200
+    ns = r.json()["namespace"]
+    assert ns["resolution"]["max_passes"] == 9
+    assert ns["resolution"]["passes_used"] >= 1
+
+
 def test_web_api_builder_namespace_resolves_sys_tokens_in_flat_preview() -> None:
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
@@ -697,6 +731,24 @@ def test_web_api_pipeline_save_create_and_update(monkeypatch, tmp_path: Path):
     assert "s2" in created_path.read_text(encoding="utf-8")
 
 
+def test_web_api_pipeline_save_project_path_admin_allowed(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+    from urllib.parse import quote
+
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(web_api.app)
+    pipeline = tmp_path / "pipelines" / "yanroy" / "download.yml"
+    pipeline.parent.mkdir(parents=True, exist_ok=True)
+    pipeline.write_text("steps:\n  - name: s1\n    script: echo.py\n", encoding="utf-8")
+    update_text = "steps:\n  - name: s1\n    script: echo.py\n  - name: s2\n    script: echo.py\n"
+    pipeline_id = quote("pipelines/yanroy/download.yml", safe="")
+    r = client.put(f"/api/pipelines/{pipeline_id}", params={"as_user": "admin"}, json={"yaml_text": update_text})
+    assert r.status_code == 200
+    assert "s2" in pipeline.read_text(encoding="utf-8")
+
+
 def test_web_api_builder_test_step(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
@@ -801,6 +853,81 @@ def test_web_api_builder_test_step_uses_work_dir_from_dirs(monkeypatch):
     assert str(called["workdir"]).replace("\\", "/").endswith(".runs/from_dirs")
 
 
+def test_web_api_builder_test_step_resolves_template_workdir(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.pipeline import Pipeline, Step
+    from etl.runner import RunResult, StepResult
+    from fastapi.testclient import TestClient
+
+    called = {}
+    monkeypatch.setattr(
+        web_api,
+        "_parse_pipeline_from_yaml_text",
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
+            vars={"name": "yanroy"},
+            dirs={"workdir": "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"},
+            steps=[Step(name="s1", script="echo.py")],
+        ),
+    )
+    monkeypatch.setattr(web_api, "_resolve_global_vars", lambda *_a, **_k: {})
+    monkeypatch.setattr(web_api, "_resolve_builder_env_vars", lambda **_k: {"workdir": ".out/work"})
+    monkeypatch.setattr(web_api, "_raw_vars_dirs_from_yaml_text", lambda _text: ({"name": "yanroy"}, {}))
+
+    def _fake_run_pipeline(*args, **kwargs):
+        called["workdir"] = str(kwargs.get("workdir") or "")
+        return RunResult(
+            run_id="builder_run_4",
+            steps=[StepResult(step=Step(name="s1", script="echo.py"), success=True)],
+            artifact_dir=".runs/builder/w",
+        )
+
+    monkeypatch.setattr(web_api, "run_pipeline", _fake_run_pipeline)
+    client = TestClient(web_api.app)
+    r = client.post("/api/builder/test-step", json={"yaml_text": "steps: []", "env": "local"})
+    assert r.status_code == 200
+    assert "{sys." not in called["workdir"]
+    assert "{env." not in called["workdir"]
+    assert "{name}" not in called["workdir"]
+    assert called["workdir"].replace("\\", "/").startswith(".out/work/yanroy/")
+
+
+def test_web_api_builder_test_step_falls_back_when_workdir_unresolved(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.pipeline import Pipeline, Step
+    from etl.runner import RunResult, StepResult
+    from fastapi.testclient import TestClient
+
+    called = {}
+    monkeypatch.setattr(
+        web_api,
+        "_parse_pipeline_from_yaml_text",
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
+            vars={"name": "yanroy"},
+            dirs={"workdir": "{env.workdir}/{name}"},
+            steps=[Step(name="s1", script="echo.py")],
+        ),
+    )
+    monkeypatch.setattr(web_api, "_resolve_global_vars", lambda *_a, **_k: {})
+    monkeypatch.setattr(web_api, "_resolve_builder_env_vars", lambda **_k: {})
+    monkeypatch.setattr(web_api, "_raw_vars_dirs_from_yaml_text", lambda _text: ({"name": "yanroy"}, {}))
+
+    def _fake_run_pipeline(*args, **kwargs):
+        called["workdir"] = str(kwargs.get("workdir") or "")
+        return RunResult(
+            run_id="builder_run_5",
+            steps=[StepResult(step=Step(name="s1", script="echo.py"), success=True)],
+            artifact_dir=".runs/builder/q",
+        )
+
+    monkeypatch.setattr(web_api, "run_pipeline", _fake_run_pipeline)
+    client = TestClient(web_api.app)
+    r = client.post("/api/builder/test-step", json={"yaml_text": "steps: []"})
+    assert r.status_code == 200
+    assert called["workdir"].replace("\\", "/").endswith(".runs/builder")
+
+
 def test_web_api_404(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
@@ -880,6 +1007,52 @@ def test_web_api_run_action_local(monkeypatch, tmp_path: Path):
     assert payload["run_id"] == "new_run_local"
     assert payload["executor"] == "local"
     assert payload["state"] == "succeeded"
+
+
+def test_web_api_run_action_ignores_unresolved_workdir_payload(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.executors.base import SubmissionResult, RunState, RunStatus
+    from etl.pipeline import Pipeline, Step
+    from fastapi.testclient import TestClient
+
+    pipeline_path = tmp_path / "p.yml"
+    pipeline_path.write_text("steps: []", encoding="utf-8")
+    monkeypatch.setattr(web_api, "parse_pipeline", lambda *a, **k: Pipeline(steps=[Step(name="s1", script="echo.py")]))
+    monkeypatch.setattr(web_api, "collect_run_provenance", lambda **k: {"git_commit_sha": "abc"})
+    monkeypatch.setattr(
+        web_api,
+        "_resolve_execution_env",
+        lambda *a, **k: ({"workdir": ".out/work"}, None, "local"),
+    )
+
+    seen = {}
+
+    class _FakeLocalExecutor:
+        def __init__(self, *a, **k):
+            seen["workdir"] = str(k.get("workdir") or "")
+
+        def submit(self, *a, **k):
+            return SubmissionResult(run_id="new_run_local_2")
+
+        def status(self, run_id):
+            return RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="ok")
+
+    monkeypatch.setattr(web_api, "LocalExecutor", _FakeLocalExecutor)
+
+    client = TestClient(web_api.app)
+    r = client.post(
+        "/api/actions/run",
+        json={
+            "pipeline": str(pipeline_path),
+            "executor": "local",
+            "plugins_dir": "plugins",
+            "workdir": "{env.workdir}/{name}",
+            "dry_run": True,
+        },
+    )
+    assert r.status_code == 200
+    assert seen["workdir"].replace("\\", "/").endswith(".out/work")
 
 
 def test_web_api_pipeline_scoped_actions(monkeypatch, tmp_path: Path):

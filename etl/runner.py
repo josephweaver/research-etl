@@ -270,6 +270,7 @@ def run_pipeline(
     *,
     plugin_dir: Path,
     workdir: Path,
+    logdir: Optional[Path] = None,
     run_id: Optional[str] = None,
     dry_run: bool = False,
     max_retries: int = 0,
@@ -304,6 +305,21 @@ def run_pipeline(
         job_name=str((pipeline.vars or {}).get("jobname") or ""),
     )
     prior_step_outputs = prior_step_outputs or {}
+    resolve_max_passes = max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20))
+    base_logdir: Path = base_workdir
+    if logdir is not None:
+        base_logdir = logdir
+    else:
+        for key in ("logdir", "log", "log_dir"):
+            raw = str((pipeline.dirs or {}).get(key) or "").strip()
+            if not raw:
+                continue
+            resolved = _resolve_with_ctx(raw, ctx_vars, max_passes=resolve_max_passes)
+            resolved_text = str(resolved or "").strip()
+            if resolved_text:
+                base_logdir = Path(resolved_text)
+                break
+    base_logdir.mkdir(parents=True, exist_ok=True)
 
     expanded_steps: List[Step] = []
     for step in pipeline.steps:
@@ -323,9 +339,9 @@ def run_pipeline(
                 local_ctx["item"] = item
                 new_step = Step(
                     name=f"{step.name}_{idx}",
-                    script=str(_resolve_with_ctx(step.script, local_ctx)),
+                    script=str(_resolve_with_ctx(step.script, local_ctx, max_passes=resolve_max_passes)),
                     output_var=f"{step.output_var}_{idx}" if step.output_var else None,
-                    env=_resolve_with_ctx(step.env, local_ctx),
+                    env=_resolve_with_ctx(step.env, local_ctx, max_passes=resolve_max_passes),
                     when=step.when,
                     parallel_with=step.parallel_with,
                     foreach=None,
@@ -368,11 +384,13 @@ def run_pipeline(
                 ts,
                 plugin_dir,
                 base_workdir,
+                base_logdir,
                 dry_run,
                 max_retries,
                 retry_delay_seconds,
                 log,
                 ctx_vars,
+                resolve_max_passes=resolve_max_passes,
                 step_index=len(step_results),
             )
             step_results.append(res)
@@ -393,11 +411,13 @@ def run_pipeline(
                             ts,
                             plugin_dir,
                             base_workdir,
+                            base_logdir,
                             dry_run,
                             max_retries,
                             retry_delay_seconds,
                             log,
                             dict(ctx_vars),  # snapshot
+                            resolve_max_passes,
                             None,
                         )
                     )
@@ -419,11 +439,13 @@ def _execute_step(
     run_started: datetime,
     plugin_dir: Path,
     base_workdir: Path,
+    base_logdir: Path,
     dry_run: bool,
     max_retries: int,
     retry_delay_seconds: float,
     log,
     ctx_vars: Dict[str, Any],
+    resolve_max_passes: int = 20,
     step_index: Optional[int] = None,
 ) -> StepResult:
     log(f"step {step.name}")
@@ -439,8 +461,8 @@ def _execute_step(
     if not _eval_when(step.when, runtime_ctx):
         log(f"step {step.name} skipped (when={step.when})")
         return StepResult(step=step, success=True, skipped=True, attempt_no=0, attempts=[])
-    script_runtime = str(_resolve_with_ctx(step.script, runtime_ctx))
-    env_runtime = _resolve_with_ctx(step.env, runtime_ctx)
+    script_runtime = str(_resolve_with_ctx(step.script, runtime_ctx, max_passes=resolve_max_passes))
+    env_runtime = _resolve_with_ctx(step.env, runtime_ctx, max_passes=resolve_max_passes)
     plugin_ref, arg_tokens = _parse_script(script_runtime)
     try:
         plugin_path = _resolve_plugin_path(plugin_dir, plugin_ref)
@@ -454,12 +476,14 @@ def _execute_step(
 
     step_workdir = base_workdir / step.name
     step_workdir.mkdir(parents=True, exist_ok=True)
+    step_logdir = base_logdir / step.name
+    step_logdir.mkdir(parents=True, exist_ok=True)
 
     step_logger = StepLogger(
         CompositeLogSink(
             [
                 ConsoleLogSink(run_id, step.name),
-                FileLogSink(step_workdir / "step.log"),
+                FileLogSink(step_logdir / "step.log"),
             ]
         )
     )

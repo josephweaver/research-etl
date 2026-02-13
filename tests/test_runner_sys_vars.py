@@ -83,3 +83,24 @@ def test_runner_resolves_sys_placeholders_in_step_env(tmp_path: Path) -> None:
     assert env["RUN_TAG"].endswith("-abcdef01")
     assert "{" not in env["RUN_TAG"]
 
+
+def test_runner_respects_pipeline_resolve_max_passes(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_capture_plugin(plugin_dir / "capture.py")
+
+    pipeline = Pipeline(
+        vars={"a": "{b}", "b": "ok"},
+        resolve_max_passes=1,
+        steps=[
+            Step(
+                name="s1",
+                script="capture.py x={a}",
+                output_var="out",
+            )
+        ],
+    )
+    result = run_pipeline(pipeline, plugin_dir=plugin_dir, workdir=tmp_path / ".runs")
+    assert result.success is True
+    out = result.steps[0].outputs["args"]
+    assert out["x"] == "{b}"

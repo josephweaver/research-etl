@@ -4,6 +4,22 @@
 
 A lightweight ETL tool to construct new pipelines from modular Python "plugin" scripts and to track runs and validation. In the future this may also call ChatGPT to write data dictionary entries.
 
+## Latest updates (2026-02-13)
+
+- Variable resolution now has a configurable recursion/pass guard via `resolve_max_passes` (default `20`, clamped `1..100`).
+  - Configure in `config/global.yml` (or environment config override).
+  - Applied consistently in parser, builder preview, builder step-test, and runtime step resolution.
+- Builder namespace now reports resolver depth metadata:
+  - `resolution.max_passes`
+  - `resolution.passes_used`
+  - `resolution.stable`
+- Fixed recursive/self-referential path expansion issues (for example `workdir: "{workdir}/..."` growth).
+- Fixed directory precedence resolution so sibling `dirs.*` values resolve correctly (for example `cachedir` now binds to resolved `dirs.workdir`).
+- Fixed builder/run workdir fallbacks:
+  - unresolved template workdirs no longer create literal `{env.workdir}` directories;
+  - unresolved workdir payloads are ignored in favor of resolved precedence.
+- Step logs now honor `dirs.logdir` (when defined) rather than always writing under step workdir.
+
 ## Current direction
 
 This project has moved from a local prototype toward an operational research runner:
@@ -181,6 +197,14 @@ Templating is iterative (resolved repeatedly until values stop changing). Resolu
 1. `global.*` from `config/global.yml`, also loaded as flat keys.
 2. `env.*` from selected execution environment (`config/environments.yml --env ...`), also loaded as flat keys and overriding global flat collisions.
 3. `pipe.*` from pipeline `vars`, also loaded as flat keys and overriding prior flat collisions.
+
+`resolve_max_passes` controls iterative depth globally/environment-wide:
+
+```yaml
+resolve_max_passes: 20
+```
+
+Builder preview exposes pass usage/stability in namespace metadata.
 
 This supports patterns like:
 - `pipe.datadir: "{env.datadir}/{pipe.name}"`

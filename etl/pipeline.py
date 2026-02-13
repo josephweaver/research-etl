@@ -55,6 +55,7 @@ class Pipeline:
     workdir: Optional[str] = None
     project_id: Optional[str] = None
     shared_with_projects: List[str] = field(default_factory=list)
+    resolve_max_passes: int = 20
     steps: List[Step] = field(default_factory=list)
 
 
@@ -65,6 +66,8 @@ class Pipeline:
 
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 DEFAULT_RESOLVE_MAX_PASSES = 20
+MIN_RESOLVE_MAX_PASSES = 1
+MAX_RESOLVE_MAX_PASSES = 100
 
 
 def _lookup_path(ctx: Dict[str, Any], path: str) -> tuple[Any, bool]:
@@ -121,6 +124,85 @@ def _resolve_context_iterative(ctx: Dict[str, Any], max_passes: int = DEFAULT_RE
     current = copy.deepcopy(ctx)
     for _ in range(max_passes):
         nxt = _interpolate(current, current)
+        if nxt == current:
+            return current
+        current = nxt
+    return current
+
+
+def resolve_max_passes_setting(
+    *,
+    global_vars: Optional[Dict[str, Any]] = None,
+    env_vars: Optional[Dict[str, Any]] = None,
+    default: int = DEFAULT_RESOLVE_MAX_PASSES,
+) -> int:
+    def _from_map(source: Optional[Dict[str, Any]]) -> Optional[int]:
+        if not isinstance(source, dict):
+            return None
+        candidates = (
+            source.get("resolve_max_passes"),
+            source.get("resolver_max_passes"),
+            source.get("var_resolve_max_passes"),
+            (source.get("resolver") or {}).get("max_passes")
+            if isinstance(source.get("resolver"), dict)
+            else None,
+        )
+        for raw in candidates:
+            if raw in (None, ""):
+                continue
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            return max(MIN_RESOLVE_MAX_PASSES, min(MAX_RESOLVE_MAX_PASSES, value))
+        return None
+
+    env_value = _from_map(env_vars)
+    if env_value is not None:
+        return env_value
+    global_value = _from_map(global_vars)
+    if global_value is not None:
+        return global_value
+    return max(MIN_RESOLVE_MAX_PASSES, min(MAX_RESOLVE_MAX_PASSES, int(default)))
+
+
+def _resolve_dirs_iterative(
+    dirs_section: Dict[str, Any],
+    base_ctx: Dict[str, Any],
+    max_passes: int = DEFAULT_RESOLVE_MAX_PASSES,
+) -> Dict[str, Any]:
+    """
+    Resolve dirs with sibling feedback so dir keys can reference each other.
+
+    Example: cachedir: "{workdir}/raw" should bind to dirs.workdir (if present),
+    not an older flat workdir injected by env/global context.
+    """
+    current = copy.deepcopy(dirs_section or {})
+    for _ in range(max_passes):
+        pass_ctx_base = copy.deepcopy(base_ctx)
+        pass_ctx_base["dirs"] = copy.deepcopy(current)
+        # Dirs are also available as flat keys; these must reflect current pass.
+        pass_ctx_base.update(copy.deepcopy(current))
+
+        nxt: Dict[str, Any] = {}
+        pass_ctx_live = copy.deepcopy(pass_ctx_base)
+        for key, value in current.items():
+            key_text = str(key)
+            entry_ctx = copy.deepcopy(pass_ctx_live)
+            # Prevent direct self-recursion (`workdir: "{workdir}/..."`).
+            entry_ctx.pop(key_text, None)
+            dirs_ns = dict(entry_ctx.get("dirs") or {})
+            dirs_ns.pop(key_text, None)
+            entry_ctx["dirs"] = dirs_ns
+            # Preserve fallback to pre-dir context when available.
+            if key_text in base_ctx and not isinstance(base_ctx.get(key_text), (dict, list)):
+                entry_ctx[key_text] = copy.deepcopy(base_ctx.get(key_text))
+            resolved_value = _interpolate(value, entry_ctx)
+            nxt[key_text] = resolved_value
+            live_dirs = dict(pass_ctx_live.get("dirs") or {})
+            live_dirs[key_text] = copy.deepcopy(resolved_value)
+            pass_ctx_live["dirs"] = live_dirs
+            pass_ctx_live[key_text] = copy.deepcopy(resolved_value)
         if nxt == current:
             return current
         current = nxt
@@ -239,6 +321,7 @@ def parse_pipeline(
         raise PipelineError("`steps` must be a list")
 
     ctx_raw: Dict[str, Any] = {}
+    resolve_max_passes = resolve_max_passes_setting(global_vars=global_vars, env_vars=env_vars)
     global_ns = global_vars or {}
     ctx_raw = _merge_with_namespace(ctx_raw, "global", global_ns)
     ctx_raw = _merge_with_namespace(ctx_raw, "globals", global_ns)
@@ -247,16 +330,16 @@ def parse_pipeline(
     if context_vars:
         # Context vars are extra overlays (already-resolved call-site values).
         ctx_raw.update(copy.deepcopy(context_vars))
-    ctx = _resolve_context_iterative(ctx_raw)
+    ctx = _resolve_context_iterative(ctx_raw, max_passes=resolve_max_passes)
 
-    vars_interp = _resolve_iterative(vars_section, ctx)
+    vars_interp = _resolve_iterative(vars_section, ctx, max_passes=resolve_max_passes)
 
     ctx_dirs = copy.deepcopy(ctx)
     ctx_dirs.update(copy.deepcopy(vars_interp))
     ctx_dirs["vars"] = copy.deepcopy(vars_interp)
     ctx_dirs["dirs"] = copy.deepcopy(dirs_section)
-    ctx_dirs = _resolve_context_iterative(ctx_dirs)
-    dirs_interp = _resolve_iterative(dirs_section, ctx_dirs)
+    ctx_dirs = _resolve_context_iterative(ctx_dirs, max_passes=resolve_max_passes)
+    dirs_interp = _resolve_dirs_iterative(dirs_section, ctx_dirs, max_passes=resolve_max_passes)
 
     step_ctx = copy.deepcopy(ctx_dirs)
     step_ctx["dirs"] = copy.deepcopy(dirs_interp)
@@ -306,8 +389,8 @@ def parse_pipeline(
         foreach = step_map.get("foreach")
         if foreach is not None and not isinstance(foreach, str):
             raise PipelineError(f"Step {idx} `foreach` must be a string if provided")
-        script_interp = _resolve_iterative(script, step_ctx)
-        env_interp = _resolve_iterative(env, step_ctx)
+        script_interp = _resolve_iterative(script, step_ctx, max_passes=resolve_max_passes)
+        env_interp = _resolve_iterative(env, step_ctx, max_passes=resolve_max_passes)
         steps.append(
             Step(
                 name=name,
@@ -327,6 +410,7 @@ def parse_pipeline(
         workdir=str(workdir_raw).strip() if isinstance(workdir_raw, str) and str(workdir_raw).strip() else None,
         project_id=str(project_id_raw).strip() if isinstance(project_id_raw, str) and project_id_raw.strip() else None,
         shared_with_projects=[str(x).strip() for x in shared_with_raw if str(x).strip()],
+        resolve_max_passes=resolve_max_passes,
         steps=steps,
     )
     validate_pipeline(pipeline)  # raise if invalid
@@ -384,6 +468,9 @@ __all__ = [
     "Step",
     "PipelineError",
     "DEFAULT_RESOLVE_MAX_PASSES",
+    "MIN_RESOLVE_MAX_PASSES",
+    "MAX_RESOLVE_MAX_PASSES",
+    "resolve_max_passes_setting",
     "parse_pipeline",
     "validate_pipeline",
 ]

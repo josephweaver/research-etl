@@ -5,6 +5,7 @@ logdir: "{basedir}/logs"
 datadir: "{basedir}/data"
 tmpdir: "{basedir}/tmp"
 artifactsdir: "{basedir}/artifacts"
+resolve_max_passes: 10
 
 
     

@@ -255,3 +255,76 @@ def test_parse_pipeline_accepts_metadata_workdir(tmp_path: Path) -> None:
     )
     pipeline = parse_pipeline(p)
     assert pipeline.workdir == ".out/work2"
+
+
+def test_parse_pipeline_dirs_reference_uses_dirs_workdir_not_env_flat(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "vars:",
+                "  name: yanroy",
+                "dirs:",
+                "  workdir: \"{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}\"",
+                "  cachedir: \"{workdir}/raw\"",
+                "steps:",
+                "  - name: s1",
+                "    script: \"echo.py out={cachedir}\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p, env_vars={"workdir": ".out/work"})
+    assert pipeline.dirs["workdir"].startswith(".out/work/yanroy/")
+    assert pipeline.dirs["cachedir"].startswith(".out/work/yanroy/")
+    assert pipeline.dirs["cachedir"].endswith("/raw")
+    assert "out=.out/work/yanroy/" in pipeline.steps[0].script
+
+
+def test_parse_pipeline_dirs_workdir_self_reference_uses_base_fallback(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "vars:",
+                "  name: yanroy",
+                "dirs:",
+                "  workdir: \"{workdir}/{name}\"",
+                "  cachedir: \"{workdir}/raw\"",
+                "steps:",
+                "  - name: s1",
+                "    script: \"echo.py out={cachedir}\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p, env_vars={"workdir": ".out/work"})
+    assert pipeline.dirs["workdir"] == ".out/work/yanroy"
+    assert pipeline.dirs["cachedir"] == ".out/work/yanroy/raw"
+    assert pipeline.steps[0].script == "echo.py out=.out/work/yanroy/raw"
+
+
+def test_parse_pipeline_respects_configured_resolve_max_passes(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "vars:",
+                "  a: \"{b}\"",
+                "  b: \"{c}\"",
+                "  c: done",
+                "steps:",
+                "  - name: s1",
+                "    script: \"echo.py msg={a}\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    limited = parse_pipeline(p, global_vars={"resolve_max_passes": 1})
+    full = parse_pipeline(p, global_vars={"resolve_max_passes": 10})
+    capped_low = parse_pipeline(p, global_vars={"resolve_max_passes": 0})
+    capped_high = parse_pipeline(p, global_vars={"resolve_max_passes": 9999})
+    assert limited.resolve_max_passes == 1
+    assert full.resolve_max_passes == 10
+    assert capped_low.resolve_max_passes == 1
+    assert capped_high.resolve_max_passes == 100

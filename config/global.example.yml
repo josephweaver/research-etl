@@ -1,3 +1,4 @@
 data: /data
 bin: /opt/etl/bin
 log: /data/logs
+resolve_max_passes: 20

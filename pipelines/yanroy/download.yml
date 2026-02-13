@@ -7,6 +7,7 @@ vars:
   dataset_id: "raw.yanroy_download_v1"
   name: yanroy
   gdrive_src: "Data/Field_Boundaries"
+  # gdrive_glob: "cdl_codes_names.xlsx"
   gdrive_glob: "ReleaseData.7z"
   gdrive_shared_drive_name: "Land Core Risk Model Development"
   # Shared drive ID is optional; if set it overrides shared_drive_name in the plugin.
@@ -14,7 +15,8 @@ vars:
 dirs:
   workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
   logdir: "{workdir}/logs"
-  cachedir: "{env.workdir}/cache/{name}/raw"
+  rawdir: "{env.workdir}/data/{name}/raw"
+  unzipdir: "{env.workdir}/data/{name}/unzip"
 
 steps:
   - name: stage_raw_from_gdrive
@@ -22,18 +24,24 @@ steps:
     args:
       rclone_bin: "{env.rclone_bin}"
       src: "{gdrive_src}"
-      out: "{cachedir}"
+      out: "{rawdir}"
       glob: "{gdrive_glob}"
       recursive: true
       shared_drive: "{gdrive_shared_drive_name}"
       shared_drive_id: "{gdrive_shared_drive_id}"
     output_var: staged_raw
+  
+  - name: archive_extract
+    plugin: archive_extract.py
+    args:
+      archive: "{rawdir}/ReleaseData.7z"
+      out: "{unzipdir}"
 
   - name: build_catalog_evidence
     plugin: ai_dataset_evidence_bundle.py
     args:
       dataset_id: "{dataset_id}"
-      input_path: "{cachedir}"
+      input_path: "{unzipdir}"
       output_dir: "{workdir}/ai_context"
       notes: "YanRoy field identifier release data from Google Drive."
       supplemental_urls:

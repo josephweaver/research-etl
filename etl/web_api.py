@@ -25,7 +25,14 @@ from .execution_config import (
 )
 from .executors.local import LocalExecutor
 from .executors.slurm import SlurmExecutor
-from .pipeline import DEFAULT_RESOLVE_MAX_PASSES, Pipeline, Step, parse_pipeline, PipelineError
+from .pipeline import (
+    DEFAULT_RESOLVE_MAX_PASSES,
+    Pipeline,
+    Step,
+    parse_pipeline,
+    PipelineError,
+    resolve_max_passes_setting,
+)
 from .provenance import collect_run_provenance
 from .projects import infer_project_id_from_pipeline_path, normalize_project_id, resolve_project_id
 from .plugins.base import PluginLoadError, load_plugin
@@ -500,8 +507,8 @@ INDEX_HTML = """<!doctype html>
     }
     function defaultBuilderDirs(){
       return {
-        workdir: "{workdir}/{pipe.name}/{run_id}",
-        logdir: "{logdir}/{pipe.name}/{run_id}",
+        workdir: "{env.workdir}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}",
+        logdir: "{workdir}/logs",
       };
     }
     function ensureBuilderDefaultDirs(model){
@@ -2474,7 +2481,14 @@ def health() -> dict:
 
 def _normalize_user_id(value: Optional[str]) -> str:
     raw = str(value or "").strip().lower().replace("_", "-")
+    # Keep IDs stable and resilient to hidden punctuation/whitespace noise.
+    raw = re.sub(r"[^a-z0-9-]+", "", raw)
     return raw or "admin"
+
+
+def _is_admin_user(user_id: str) -> bool:
+    normalized = _normalize_user_id(user_id)
+    return normalized in {"admin", "administrator", "root"}
 
 
 def _static_user_projects(user_id: str) -> set[str]:
@@ -2524,6 +2538,8 @@ def _require_project_access(scope: UserScope, project_id: Optional[str]) -> Opti
     normalized = normalize_project_id(project_id)
     if not normalized:
         return None
+    if _is_admin_user(scope.user_id):
+        return normalized
     if normalized not in scope.allowed_projects:
         raise HTTPException(
             status_code=403,
@@ -2836,6 +2852,15 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
             detail="`execution_source` must be one of: auto, git_remote, git_bundle, snapshot, workspace.",
         )
 
+    workdir_raw = str(payload.get("workdir") or "").strip()
+
+    def _select_workdir_candidate(*candidates: Any) -> str:
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return ".runs"
+
     return {
         "payload": payload,
         "pipeline_path": pipeline_path,
@@ -2844,7 +2869,8 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
         "env_name": env_name,
         "executor": executor,
         "plugins_dir": Path(payload.get("plugins_dir") or "plugins"),
-        "workdir": Path(payload.get("workdir") or ".runs"),
+        "workdir_raw": workdir_raw,
+        "workdir": Path(_select_workdir_candidate(workdir_raw, ".runs")),
         "dry_run": _parse_bool(payload.get("dry_run"), default=False),
         "verbose": _parse_bool(payload.get("verbose"), default=False),
         "max_retries": max_retries,
@@ -2917,6 +2943,8 @@ def _resolve_builder_env_vars(
     except ExecutionConfigError as exc:
         raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
     if not resolved:
+        if name == "local":
+            return {}
         raise HTTPException(status_code=400, detail="Environment selected but environments config was not found.")
     try:
         envs = load_execution_config(resolved)
@@ -2924,6 +2952,8 @@ def _resolve_builder_env_vars(
         raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
     env = envs.get(name)
     if not isinstance(env, dict):
+        if name == "local":
+            return {}
         raise HTTPException(status_code=400, detail=f"Execution env '{name}' not found in config.")
     return apply_execution_env_overrides(dict(env))
 
@@ -3081,6 +3111,16 @@ def _resolve_text_with_ctx(value: str, ctx: dict[str, Any]) -> str:
     return _TPL_RE.sub(_repl, text)
 
 
+def _resolve_text_with_ctx_iterative(value: str, ctx: dict[str, Any], *, max_passes: int = DEFAULT_RESOLVE_MAX_PASSES) -> str:
+    cur = str(value or "")
+    for _ in range(max_passes):
+        nxt = _resolve_text_with_ctx(cur, ctx)
+        if nxt == cur:
+            return cur
+        cur = nxt
+    return cur
+
+
 def _build_builder_namespace(
     *,
     pipeline: Pipeline,
@@ -3089,6 +3129,8 @@ def _build_builder_namespace(
     raw_vars: Optional[dict[str, Any]] = None,
     raw_dirs: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    max_passes = resolve_max_passes_setting(global_vars=global_vars, env_vars=env_vars)
+
     def _resolve_preview_text(value: str, ctx: dict[str, Any], *, self_key: str, self_fallback: Any) -> str:
         text = str(value or "")
         temp_ctx = dict(ctx)
@@ -3103,10 +3145,11 @@ def _build_builder_namespace(
         base_ctx: dict[str, Any],
         *,
         seed_flat: dict[str, Any],
-    ) -> dict[str, Any]:
+        max_passes: int,
+    ) -> tuple[dict[str, Any], int, bool]:
         reserved = {"sys", "global", "globals", "env", "vars", "dirs", "resolution"}
         current = dict(flat_map or {})
-        for _ in range(DEFAULT_RESOLVE_MAX_PASSES):
+        for i in range(max_passes):
             ctx = dict(base_ctx)
             for k, v in current.items():
                 if str(k) not in reserved:
@@ -3124,9 +3167,9 @@ def _build_builder_namespace(
                 else:
                     nxt[str(k)] = v
             if nxt == current:
-                return current
+                return current, i + 1, True
             current = nxt
-        return current
+        return current, max_passes, False
 
     now = datetime.now(timezone.utc)
     sys_ns: dict[str, Any] = {
@@ -3166,7 +3209,7 @@ def _build_builder_namespace(
     for source in (seed_flat, dirs_preview):
         for k, v in source.items():
             flat_ns[str(k)] = v
-    flat_ns = _resolve_preview_flat(
+    flat_ns, preview_passes_used, preview_stable = _resolve_preview_flat(
         flat_ns,
         {
             "sys": sys_ns,
@@ -3178,6 +3221,7 @@ def _build_builder_namespace(
             "dirs": dirs_ns,
         },
         seed_flat=seed_flat,
+        max_passes=max_passes,
     )
     ns: dict[str, Any] = {
         "sys": sys_ns,
@@ -3188,8 +3232,9 @@ def _build_builder_namespace(
         "resolution": {
             # vars/dirs are produced by parse_pipeline, which already uses the
             # runtime iterative resolver with this cap.
-            "stable": True,
-            "max_passes": DEFAULT_RESOLVE_MAX_PASSES,
+            "stable": bool(preview_stable),
+            "max_passes": int(max_passes),
+            "passes_used": int(preview_passes_used),
             "source": "pipeline.parse+preview",
         },
     }
@@ -3772,13 +3817,29 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
     environments_config_raw = str(payload.get("environments_config") or "").strip()
     environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
-    env_name = str(payload.get("env") or "").strip() or None
+    env_name_raw = str(payload.get("env") or "").strip()
+    env_name = env_name_raw or "local"
+    yaml_text = str(payload.get("yaml_text") or "")
+    global_vars = _resolve_global_vars(global_config_path)
+    env_vars = _resolve_builder_env_vars(
+        environments_config_path=environments_config_path,
+        env_name=env_name,
+    )
     pipeline = _parse_pipeline_from_yaml_text(
-        str(payload.get("yaml_text") or ""),
+        yaml_text,
         global_config_path=global_config_path,
         environments_config_path=environments_config_path,
         env_name=env_name,
     )
+    raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(yaml_text)
+    namespace = _build_builder_namespace(
+        pipeline=pipeline,
+        global_vars=global_vars,
+        env_vars=env_vars,
+        raw_vars=raw_vars,
+        raw_dirs=raw_dirs,
+    )
+    resolve_max_passes = resolve_max_passes_setting(global_vars=global_vars, env_vars=env_vars)
     step_name = str(payload.get("step_name") or "").strip()
     step_index_raw = payload.get("step_index")
     step_index: Optional[int] = None
@@ -3821,19 +3882,44 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
             if candidate:
                 workdir_raw = candidate
                 break
-    workdir = Path(workdir_raw or ".runs/builder")
+    workdir_resolved = (
+        _resolve_text_with_ctx_iterative(workdir_raw, namespace, max_passes=resolve_max_passes)
+        if workdir_raw
+        else ""
+    )
+    if _extract_unresolved_tokens(workdir_resolved):
+        workdir_resolved = ""
+    workdir = Path(workdir_resolved or ".runs/builder")
+    logdir_raw = ""
+    for key in ("log", "logdir", "log_dir"):
+        candidate = str(pipeline.dirs.get(key) or "").strip()
+        if candidate:
+            logdir_raw = candidate
+            break
+    logdir_resolved = (
+        _resolve_text_with_ctx_iterative(logdir_raw, namespace, max_passes=resolve_max_passes)
+        if logdir_raw
+        else ""
+    )
+    logdir = Path(logdir_resolved) if logdir_resolved else None
     dry_run = _parse_bool(payload.get("dry_run"), default=False)
     max_retries = int(payload.get("max_retries", 0) or 0)
     retry_delay_seconds = float(payload.get("retry_delay_seconds", 0.0) or 0.0)
     if max_retries < 0 or retry_delay_seconds < 0:
         raise HTTPException(status_code=400, detail="Retry settings must be >= 0.")
 
-    mini = Pipeline(vars=dict(pipeline.vars), dirs=dict(pipeline.dirs), steps=[target_step])
+    mini = Pipeline(
+        vars=dict(pipeline.vars),
+        dirs=dict(pipeline.dirs),
+        resolve_max_passes=int(getattr(pipeline, "resolve_max_passes", resolve_max_passes) or resolve_max_passes),
+        steps=[target_step],
+    )
     try:
         result = run_pipeline(
             mini,
             plugin_dir=plugins_dir,
             workdir=workdir,
+            logdir=logdir,
             dry_run=dry_run,
             max_retries=max_retries,
             retry_delay_seconds=retry_delay_seconds,
@@ -3955,6 +4041,20 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
         pipeline_project_id=getattr(pipeline, "project_id", None),
         pipeline_path=args["pipeline_path"],
     )
+    workdir_candidates = [
+        str(args.get("workdir_raw") or "").strip(),
+        str(getattr(pipeline, "workdir", None) or "").strip(),
+        str(execution_env.get("workdir") or "").strip(),
+        str(global_vars.get("workdir") or "").strip(),
+    ]
+    resolved_workdir_text = ".runs"
+    for candidate in workdir_candidates:
+        if not candidate:
+            continue
+        if _extract_unresolved_tokens(candidate):
+            continue
+        resolved_workdir_text = candidate
+        break
 
     repo_root = Path(".").resolve()
     provenance = collect_run_provenance(
@@ -3971,7 +4071,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
             env_config=execution_env,
             repo_root=repo_root,
             plugins_dir=args["plugins_dir"],
-            workdir=args["workdir"],
+            workdir=Path(resolved_workdir_text),
             global_config=args["global_config_path"],
             environments_config=environments_config_path,
             env_name=env_name,
@@ -3987,7 +4087,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
     else:
         ex = LocalExecutor(
             plugin_dir=args["plugins_dir"],
-            workdir=args["workdir"],
+            workdir=Path(resolved_workdir_text),
             dry_run=args["dry_run"],
             max_retries=max_retries,
             retry_delay_seconds=retry_delay_seconds,

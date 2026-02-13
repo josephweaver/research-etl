@@ -1,10 +1,23 @@
 # 3-Week Product Plan (ResearchETL v0)
 
-Last updated: 2026-02-11
+Last updated: 2026-02-13
 
 ask;
 
 I noticed that twe provide both a executor and an enviroment,  I belive the environment imples an executor.  do you agree?  am I missing something?  
+
+## New updates (2026-02-13)
+- [x] `P0` Added configurable variable resolution depth guard (`resolve_max_passes`, default `20`, clamped `1..100`).
+- [x] `P0` Unified resolver cap across parser, builder preview/test-step, and runtime runner.
+- [x] `P0` Builder namespace now reports:
+  - [x] `resolution.max_passes`
+  - [x] `resolution.passes_used`
+  - [x] `resolution.stable`
+- [x] `P0` Fixed recursive workdir growth bug (`workdir: "{workdir}/..."` expansion loop).
+- [x] `P0` Fixed `dirs` sibling precedence so `{cachedir}` resolves from `dirs.workdir` as expected.
+- [x] `P0` Fixed builder/run unresolved template workdir leakage (`{env.workdir}/...` directories no longer created on fallback paths).
+- [x] `P0` Step logs now honor configured `dirs.logdir` when present.
+- [x] `P0` Updated builder default dirs to non-recursive templates.
 
 ## Current status snapshot
 - [x] `P0` Core engine + retry/resume/provenance + SLURM event tracking.

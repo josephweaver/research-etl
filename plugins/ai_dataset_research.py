@@ -70,7 +70,11 @@ def _resolve_file_path(output_dir: str, output_file: str, dataset_id: str, ctx) 
     if (output_file or "").strip():
         p = Path(output_file).expanduser()
         return p
-    base = Path(output_dir).expanduser() if (output_dir or "").strip() else Path(".runs/ai_research")
+    if (output_dir or "").strip():
+        base = Path(output_dir).expanduser()
+    else:
+        run_base = Path(getattr(ctx, "workdir", "") or "").expanduser()
+        base = (run_base / "ai_research") if str(run_base).strip() else Path("./ai_research")
     safe_id = dataset_id.replace("/", "_").replace("\\", "_")
     return base / f"{safe_id}.research.json"
 

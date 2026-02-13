@@ -1,4 +1,4 @@
-﻿# Project Status (2026-02-11)
+# Project Status (2026-02-13)
 
 ## Current state
 - CLI/package baseline is in place (`pyproject.toml`, `etl` entrypoint, editable install flow, GitHub Actions tests).
@@ -12,6 +12,17 @@
   - `global.*` + flat globals
   - `env.*` + flat env overrides (from execution config env)
   - `pipe.*` + flat pipeline overrides
+- Resolver depth guard is configurable and unified:
+  - `resolve_max_passes` supported from global/env config (default `20`, clamped `1..100`)
+  - used by parser, builder preview/test-step, and runtime runner resolution
+  - builder namespace now exposes `resolution.max_passes`, `resolution.passes_used`, `resolution.stable`
+- Directory resolution hardening:
+  - fixed self-recursive `dirs.workdir` growth (`{workdir}/...`)
+  - fixed sibling `dirs.*` precedence so derived dirs (for example `cachedir`) bind to resolved `dirs.workdir`
+- Workdir/logging path correctness:
+  - builder step-test no longer creates unresolved template directories like `{env.workdir}/...`
+  - unresolved run payload workdir values are ignored in favor of resolved precedence
+  - step logs now write under configured `dirs.logdir` (when present)
 - SLURM batch execution uses `etl/run_batch.py` and emits event-driven status transitions (`batch_started`, `batch_completed`, `batch_failed`, `run_completed`).
 - DB migration bootstrap is active (`etl/db.py`, `db/ddl/*.sql`) with checksum/version enforcement.
 - Artifact policy/registry baseline is active:
@@ -77,7 +88,10 @@
   - selection persists in browser local storage and auto-applies to API calls.
 
 ## Test status
-- Current local run: `98 passed` (`python -m pytest -q`).
+- Current focused regression runs (2026-02-13):
+  - `tests/test_web_api.py -k "builder_namespace or builder_test_step"` -> `10 passed`
+  - `tests/test_pipeline_resolution.py tests/test_runner_sys_vars.py` -> `18 passed`
+  - additional targeted resolver/workdir/logging suites passed during this update cycle.
 - Coverage includes:
   - DB migration bootstrap
   - tracking write paths
@@ -118,3 +132,4 @@
 - Start web UI: `etl web --host 127.0.0.1 --port 8000 --reload`
 - Open builder: `http://127.0.0.1:8000/pipelines/new`
 - Test suite: `python -m pytest -q`
+

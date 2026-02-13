@@ -2,10 +2,10 @@
   "datasets": {
     "serve.a_v1": {
       "ai_meta": {
-        "source_research_file": "C:/Users/Josep/AppData/Local/Temp/pytest-of-Ninjo/pytest-180/test_catalog_json_upsert_glob_0/ai/serve.a_v1.research.json",
+        "source_research_file": "C:/Users/Josep/AppData/Local/Temp/pytest-of-Ninjo/pytest-185/test_catalog_json_upsert_glob_0/ai/serve.a_v1.research.json",
         "source_run_id": null,
         "source_step": null,
-        "updated_at": "2026-02-12T22:43:50+00:00"
+        "updated_at": "2026-02-12T23:01:58+00:00"
       },
       "auto": {
         "assumptions": [],
@@ -21,10 +21,10 @@
     },
     "serve.b_v1": {
       "ai_meta": {
-        "source_research_file": "C:/Users/Josep/AppData/Local/Temp/pytest-of-Ninjo/pytest-180/test_catalog_json_upsert_glob_0/ai/serve.b_v1.research.json",
+        "source_research_file": "C:/Users/Josep/AppData/Local/Temp/pytest-of-Ninjo/pytest-185/test_catalog_json_upsert_glob_0/ai/serve.b_v1.research.json",
         "source_run_id": null,
         "source_step": null,
-        "updated_at": "2026-02-12T22:43:50+00:00"
+        "updated_at": "2026-02-12T23:01:58+00:00"
       },
       "auto": {
         "assumptions": [],
