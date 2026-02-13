@@ -2,6 +2,22 @@
 
 Last updated: 2026-02-13
 
+## End-of-day handoff (2026-02-13)
+
+Done today:
+- Unified variable resolution pass limits across parser, builder, and runtime (`resolve_max_passes`).
+- Fixed recursive `workdir` expansion and improved `dirs` precedence behavior.
+- Fixed step log placement to honor configured `logdir`.
+- Builder now handles prior step `output_var` references during resolve/validate.
+- Hardened `archive_extract` (better archive matching + clearer `7z` diagnostics + `include_glob` support).
+- Added `file_move_regex.py` and `file_delete_regex.py` plugins.
+
+Carry-over for tomorrow:
+- Recheck YanRoy extract filters (`.hdr` and extensionless companion files) in pipeline YAML patterns.
+- Continue path/glob normalization refactor so plugins do less custom path resolution.
+- Validate full YanRoy pipeline end-to-end after filter tuning.
+- Keep using `.venv` Python for runs to avoid system/anaconda dependency conflicts.
+
 ask;
 
 I noticed that twe provide both a executor and an enviroment,  I belive the environment imples an executor.  do you agree?  am I missing something?  
@@ -18,6 +34,10 @@ I noticed that twe provide both a executor and an enviroment,  I belive the envi
 - [x] `P0` Fixed builder/run unresolved template workdir leakage (`{env.workdir}/...` directories no longer created on fallback paths).
 - [x] `P0` Step logs now honor configured `dirs.logdir` when present.
 - [x] `P0` Updated builder default dirs to non-recursive templates.
+
+## Future cleanup (path resolution)
+- [ ] `P1` Centralize path/glob normalization in shared runtime utilities (after variable resolution), so plugins do not each implement custom path resolution logic.
+- [ ] `P1` Keep plugin-side directory/file traversal logic, but move common `path`/`*_glob` handling to one consistent resolver used by runner + builder test paths.
 
 ## Current status snapshot
 - [x] `P0` Core engine + retry/resume/provenance + SLURM event tracking.

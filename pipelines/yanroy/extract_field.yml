@@ -1,0 +1,15 @@
+requires_pipelines:
+  - pipelines/download.yml
+vars:
+  name: extract_fields
+dirs:
+  workdir: "{env.workdir}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  archivedir: "{env.basedir}\\data\\yanroy\\raw"
+  logdir: "{workdir}\\logs"
+  fieldsdir: "{env.basedir}\\data\\yanroy\\fields"
+steps:
+  - plugin: archive_extract.py
+    args:
+      archive_glob: "{archivedir}\\ReleaseData.7z"
+      out: "{fieldsdir}"
+      include_glob: "**/*field_segments*.hdr,**/*field_segments"

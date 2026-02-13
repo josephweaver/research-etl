@@ -23,6 +23,16 @@
   - builder step-test no longer creates unresolved template directories like `{env.workdir}/...`
   - unresolved run payload workdir values are ignored in favor of resolved precedence
   - step logs now write under configured `dirs.logdir` (when present)
+- Builder variable/validation improvements:
+  - builder validation now supports unresolved references to prior step outputs via `output_var` placeholders
+  - builder namespace includes output-var placeholders for resolve/preview behavior
+- Archive extraction hardening:
+  - `archive_extract` now supports `include_glob` for selective extraction
+  - improved archive discovery for exact-path and glob inputs
+  - improved failure diagnostics in step logs (missing `7z`, command stderr/stdout)
+- New filesystem transform plugins:
+  - `plugins/file_move_regex.py`
+  - `plugins/file_delete_regex.py`
 - SLURM batch execution uses `etl/run_batch.py` and emits event-driven status transitions (`batch_started`, `batch_completed`, `batch_failed`, `run_completed`).
 - DB migration bootstrap is active (`etl/db.py`, `db/ddl/*.sql`) with checksum/version enforcement.
 - Artifact policy/registry baseline is active:
@@ -91,6 +101,9 @@
 - Current focused regression runs (2026-02-13):
   - `tests/test_web_api.py -k "builder_namespace or builder_test_step"` -> `10 passed`
   - `tests/test_pipeline_resolution.py tests/test_runner_sys_vars.py` -> `18 passed`
+  - `tests/test_plugin_archive_extract.py` -> passed
+  - `tests/test_plugin_file_move_regex.py` -> passed
+  - `tests/test_plugin_file_delete_regex.py` -> passed
   - additional targeted resolver/workdir/logging suites passed during this update cycle.
 - Coverage includes:
   - DB migration bootstrap

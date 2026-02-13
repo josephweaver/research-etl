@@ -3129,6 +3129,42 @@ def _build_builder_namespace(
     raw_vars: Optional[dict[str, Any]] = None,
     raw_dirs: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    def _step_arg_map(script: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        try:
+            tokens = shlex.split(str(script or ""))
+        except Exception:
+            tokens = str(script or "").split()
+        for tok in tokens[1:]:
+            text = str(tok or "")
+            if "=" not in text:
+                continue
+            k, v = text.split("=", 1)
+            key = str(k or "").strip()
+            if key:
+                out[key] = v
+        return out
+
+    def _output_var_placeholders(p: Pipeline) -> dict[str, dict[str, Any]]:
+        placeholders: dict[str, dict[str, Any]] = {}
+        for idx, step in enumerate(p.steps or []):
+            output_var = str(step.output_var or "").strip()
+            if not output_var:
+                continue
+            args_map = _step_arg_map(str(step.script or ""))
+            ph: dict[str, Any] = {
+                "_runtime": True,
+                "_producer_step": str(step.name or f"step_{idx}"),
+                "_producer_index": idx,
+            }
+            out_val = str(args_map.get("out") or "").strip()
+            if out_val:
+                # Common plugin convention for file-producing steps.
+                ph["output_dir"] = out_val
+                ph["out"] = out_val
+            placeholders[output_var] = ph
+        return placeholders
+
     max_passes = resolve_max_passes_setting(global_vars=global_vars, env_vars=env_vars)
 
     def _resolve_preview_text(value: str, ctx: dict[str, Any], *, self_key: str, self_fallback: Any) -> str:
@@ -3239,6 +3275,10 @@ def _build_builder_namespace(
         },
     }
     ns.update({str(k): v for k, v in flat_ns.items()})
+    output_ns = _output_var_placeholders(pipeline)
+    ns["outputs"] = output_ns
+    for name, value in output_ns.items():
+        ns[str(name)] = value
     return ns
 
 
@@ -3364,20 +3404,34 @@ def _collect_unresolved_step_inputs(pipeline: Pipeline) -> list[dict[str, Any]]:
     return issues
 
 
-def _filter_builder_unresolved_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def _keep_token(tok: Any) -> bool:
+def _filter_builder_unresolved_issues(issues: list[dict[str, Any]], pipeline: Pipeline) -> list[dict[str, Any]]:
+    prior_output_vars_by_step: dict[int, set[str]] = {}
+    seen: set[str] = set()
+    for idx, step in enumerate(pipeline.steps or []):
+        prior_output_vars_by_step[idx] = set(seen)
+        output_var = str(step.output_var or "").strip()
+        if output_var:
+            seen.add(output_var)
+
+    def _keep_token(tok: Any, *, step_index: int) -> bool:
         text = str(tok or "").strip()
         if not text:
             return False
         # Runtime sys placeholders are valid in builder drafts; they are
         # populated during execution.
-        if text.startswith("sys."):
+        root = text.split(".", 1)[0]
+        if root == "sys":
+            return False
+        if root == "item":
+            return False
+        if root in prior_output_vars_by_step.get(int(step_index), set()):
             return False
         return True
 
     out: list[dict[str, Any]] = []
     for issue in issues or []:
-        tokens = [t for t in (issue.get("tokens") or []) if _keep_token(t)]
+        step_index = int(issue.get("step_index") or 0)
+        tokens = [t for t in (issue.get("tokens") or []) if _keep_token(t, step_index=step_index)]
         if not tokens:
             continue
         next_issue = dict(issue)
@@ -3699,7 +3753,7 @@ def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None))
         )
         if require_dir_contract:
             _validate_pipeline_dir_contract(pipeline)
-        unresolved_inputs = _filter_builder_unresolved_issues(_collect_unresolved_step_inputs(pipeline))
+        unresolved_inputs = _filter_builder_unresolved_issues(_collect_unresolved_step_inputs(pipeline), pipeline)
         if require_resolved_inputs and unresolved_inputs:
             preview = []
             for issue in unresolved_inputs[:8]:

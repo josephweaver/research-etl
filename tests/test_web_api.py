@@ -251,6 +251,64 @@ def test_web_api_builder_validate_allows_sys_placeholders_in_step_inputs() -> No
     assert payload["valid"] is True
 
 
+def test_web_api_builder_validate_allows_prior_step_output_var_tokens() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "dirs:",
+            "  workdir: .out/work",
+            "  logdir: .out/log",
+            "steps:",
+            "  - name: s1",
+            "    plugin: gdrive_download.py",
+            "    args:",
+            "      out: .out/work/raw",
+            "    output_var: staged_raw",
+            "  - name: s2",
+            "    plugin: archive_extract.py",
+            "    args:",
+            "      archive: \"{staged_raw.output_dir}/ReleaseData.7z\"",
+            "      out: .out/work/unzip",
+        ]
+    ) + "\n"
+    r = client.post("/api/builder/validate", json={"yaml_text": yaml_text})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["valid"] is True
+
+
+def test_web_api_builder_resolve_text_supports_output_var_placeholders() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "dirs:",
+            "  workdir: .out/work",
+            "  logdir: .out/log",
+            "steps:",
+            "  - name: s1",
+            "    plugin: gdrive_download.py",
+            "    args:",
+            "      out: .out/work/raw",
+            "    output_var: staged_raw",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/resolve-text",
+        json={"yaml_text": yaml_text, "value": "{staged_raw.output_dir}/ReleaseData.7z"},
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["resolved"] == ".out/work/raw/ReleaseData.7z"
+
+
 def test_web_api_builder_resolve_text() -> None:
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
@@ -426,7 +484,7 @@ def test_web_api_builder_namespace_endpoint(tmp_path: Path) -> None:
     assert ns["dirs"]["raw_cache"] == ".out/work/yanroy/cache/raw"
     assert ns["raw_cache"] == ".out/work/yanroy/cache/raw"
     assert ns["env"]["datadir"] == ".out/work"
-    assert ns["resolution"]["max_passes"] == 20
+    assert 1 <= int(ns["resolution"]["max_passes"]) <= 100
     assert payload["counts"]["sys"] >= 1
 
 

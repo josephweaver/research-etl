@@ -19,6 +19,19 @@ A lightweight ETL tool to construct new pipelines from modular Python "plugin" s
   - unresolved template workdirs no longer create literal `{env.workdir}` directories;
   - unresolved workdir payloads are ignored in favor of resolved precedence.
 - Step logs now honor `dirs.logdir` (when defined) rather than always writing under step workdir.
+- Builder validation/preview now understands prior-step output variables (for example `{staged_raw.output_dir}`) so step inputs resolve more accurately in UI checks.
+- `archive_extract.py` was hardened for archive lookup and diagnostics:
+  - clearer `7z` error reporting (stdout/stderr in step log),
+  - better archive path/glob handling,
+  - optional selective extraction via `include_glob`.
+- Added transformation plugins:
+  - `file_move_regex.py` (move regex-matched files while preserving relative subdirectories),
+  - `file_delete_regex.py` (delete regex-matched files with optional empty-directory cleanup).
+
+### Runtime note (Windows)
+
+- Use the project virtual environment (`.venv`) for plugin/runtime execution.
+- `py7zr` is installed and working in `.venv`; system/anaconda Python may have package conflicts.
 
 ## Current direction
 
@@ -240,6 +253,38 @@ steps:
 - unzip.py
 - project_raster.py - projects a file to a given EPSG
 - slice_raster.py - cuts the raster image into polygons
+- file_move_regex.py - move files by regex from a source tree to a destination while preserving relative subdirectories
+- file_delete_regex.py - delete files by regex under a source tree (optionally prune empty directories)
+
+Example:
+
+```yaml
+steps:
+  - name: move_tifs
+    plugin: file_move_regex.py
+    args:
+      src: ".out/data/yanroy/unzip"
+      dst: ".out/data/yanroy/unverified"
+      pattern: "\\.tif$"
+      match_on: "relative_path"   # relative_path | filename | absolute_path
+      flags: "i"                  # regex flags: i, m, s
+      overwrite: false
+```
+
+Delete example:
+
+```yaml
+steps:
+  - name: purge_unverified_tifs
+    plugin: file_delete_regex.py
+    args:
+      src: ".out/data/yanroy/unverified"
+      pattern: "\\.tif$"
+      match_on: "relative_path"   # relative_path | filename | absolute_path
+      flags: "i"
+      dry_run: true
+      remove_empty_dirs: true
+```
 
 ### Aggregation
 - describe_raster.py - calculates descriptive statistics of a raster image
