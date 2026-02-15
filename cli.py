@@ -412,6 +412,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Ensure SLURM path inherits explicit CLI overrides even when environments config is used.
     exec_env["step_max_retries"] = max_retries
     exec_env["step_retry_delay_seconds"] = retry_delay_seconds
+    if bool(getattr(args, "ignore_dependencies", False)):
+        print("Ignoring pipeline dependencies (--ignore-dependencies).")
+        return _submit_pipeline_run(
+            args,
+            pipeline_path=pipeline_path.resolve(),
+            global_vars=global_vars,
+            exec_env=exec_env,
+            resume_run_id=args.resume_run_id,
+        )
     try:
         ordered_reqs: List[Path] = []
         _resolve_required_pipelines(
@@ -786,6 +795,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--max-retries", type=int, default=None, help="Max retries per step after first failure")
     p_run.add_argument("--retry-delay-seconds", type=float, default=None, help="Delay between retries in seconds")
     p_run.add_argument("--resume-run-id", default=None, help="Resume by skipping steps that succeeded in a prior run_id")
+    p_run.add_argument(
+        "--ignore-dependencies",
+        action="store_true",
+        help="Skip requires_pipelines resolution/execution (useful for faster local iteration).",
+    )
     p_run.add_argument("--executor", choices=["local", "slurm"], default="local", help="Execution backend")
     p_run.add_argument("--allow-dirty-git", action="store_true", help="Allow strict git checkout runs from a dirty local worktree")
     p_run.add_argument(
