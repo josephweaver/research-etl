@@ -30,6 +30,7 @@ import shlex
 from typing import Any, Dict, List, Optional, Set
 
 import yaml
+from .variable_solver import VariableSolver
 
 
 class PipelineError(ValueError):
@@ -323,17 +324,17 @@ def parse_pipeline(
     if not isinstance(steps_section, list):
         raise PipelineError("`steps` must be a list")
 
-    ctx_raw: Dict[str, Any] = {}
     resolve_max_passes = resolve_max_passes_setting(global_vars=global_vars, env_vars=env_vars)
     global_ns = global_vars or {}
-    ctx_raw = _merge_with_namespace(ctx_raw, "global", global_ns)
-    ctx_raw = _merge_with_namespace(ctx_raw, "globals", global_ns)
-    ctx_raw = _merge_with_namespace(ctx_raw, "env", env_vars or {})
-    ctx_raw = _merge_with_namespace(ctx_raw, "pipe", vars_section)
+    solver = VariableSolver(max_passes=resolve_max_passes)
+    solver.overlay("global", global_ns, add_namespace=True, add_flat=True)
+    solver.overlay("globals", global_ns, add_namespace=True, add_flat=False)
+    solver.overlay("env", env_vars or {}, add_namespace=True, add_flat=True)
+    solver.overlay("pipe", vars_section, add_namespace=True, add_flat=True)
     if context_vars:
         # Context vars are extra overlays (already-resolved call-site values).
-        ctx_raw.update(copy.deepcopy(context_vars))
-    ctx = _resolve_context_iterative(ctx_raw, max_passes=resolve_max_passes)
+        solver.update(copy.deepcopy(context_vars))
+    ctx = solver.resolved_context()
 
     vars_interp = _resolve_iterative(vars_section, ctx, max_passes=resolve_max_passes)
 
