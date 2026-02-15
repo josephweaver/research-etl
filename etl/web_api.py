@@ -659,6 +659,7 @@ INDEX_HTML = """<!doctype html>
     let builderAutoValidateTimer = null;
     let builderValidateInFlight = false;
     let builderNamespaceDigest = "";
+    let builderRunSeed = null;
     const USER_STORAGE_KEY = "etl_ui_user";
     const VALID_UI_USERS = new Set(["admin", "land-core", "gee-lee"]);
     const _nativeFetch = window.fetch.bind(window);
@@ -746,6 +747,23 @@ INDEX_HTML = """<!doctype html>
       return p.toString();
     }
     function esc(v){return String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")}
+    function makeClientRunId(){
+      const hex = "0123456789abcdef";
+      let out = "";
+      for(let i=0;i<32;i++){
+        out += hex[Math.floor(Math.random() * 16)];
+      }
+      return out;
+    }
+    function makeRunSeed(){
+      return { run_id: makeClientRunId(), run_started_at: new Date().toISOString() };
+    }
+    function ensureBuilderRunSeed(){
+      if(!builderRunSeed){
+        builderRunSeed = makeRunSeed();
+      }
+      return builderRunSeed;
+    }
     function normalizeBuilderPipelineName(raw){
       let s = String(raw || "").trim().replaceAll("\\\\","/");
       if (!s) return "";
@@ -1021,6 +1039,7 @@ INDEX_HTML = """<!doctype html>
       const changed = area.value !== next;
       area.value = next;
       if(changed){
+        builderRunSeed = null;
         builderValidationState = "unknown";
         builderStepStatus = {};
         builderStepTesting = {};
@@ -1935,6 +1954,7 @@ INDEX_HTML = """<!doctype html>
       }
       const data = await res.json();
       builderModel = data.model || builderModel;
+      builderRunSeed = null;
       renderBuilderModel();
       syncYamlPreview();
       builderValidationState = data.valid ? "valid" : "unknown";
@@ -2036,6 +2056,9 @@ INDEX_HTML = """<!doctype html>
       builderValidationState = "valid";
       msg.textContent = `Testing step ${idx + 1}...`;
       const payload = builderPayload();
+      const seed = ensureBuilderRunSeed();
+      payload.run_id = seed.run_id;
+      payload.run_started_at = seed.run_started_at;
       payload.step_index = idx;
       const res = await fetch(`/api/builder/test-step`, {
         method:"POST",
@@ -2504,7 +2527,7 @@ INDEX_HTML = """<!doctype html>
       const payload = await res.json();
       pathEl.textContent = payload.log_file ? `log file: ${payload.log_file}` : `state: ${payload.state || "unknown"}`;
       const lines = Array.isArray(payload.lines) ? payload.lines : [];
-      logEl.textContent = lines.length ? lines.join("\n") : "No log lines yet.";
+      logEl.textContent = lines.length ? lines.join("\\n") : "No log lines yet.";
       logEl.scrollTop = logEl.scrollHeight;
     }
     function renderTreeNode(node, depth){
@@ -2610,10 +2633,14 @@ INDEX_HTML = """<!doctype html>
       const url = isPipelineDetailView
         ? `/api/pipelines/${encodeURIComponent(selectedPipeline || "")}/run`
         : `/api/actions/run`;
+      const payload = actionPayload();
+      const seed = makeRunSeed();
+      payload.run_id = seed.run_id;
+      payload.run_started_at = seed.run_started_at;
       const res = await fetch(url, {
         method:"POST",
         headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(actionPayload()),
+        body: JSON.stringify(payload),
       });
       if(!res.ok){ el.textContent = await readMessage(res); return; }
       const payload = await res.json();
@@ -3112,6 +3139,8 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
         )
 
     workdir_raw = str(payload.get("workdir") or "").strip()
+    run_id = str(payload.get("run_id") or "").strip() or None
+    run_started_at = str(payload.get("run_started_at") or "").strip() or None
 
     def _select_workdir_candidate(*candidates: Any) -> str:
         for candidate in candidates:
@@ -3139,6 +3168,8 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
         "source_snapshot": str(payload.get("source_snapshot") or "").strip() or None,
         "allow_workspace_source": _parse_bool(payload.get("allow_workspace_source"), default=False),
         "project_id": normalize_project_id(str(payload.get("project_id") or "").strip() or None),
+        "run_id": run_id,
+        "run_started_at": run_started_at,
     }
 
 
@@ -4216,6 +4247,14 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
     )
     logdir = Path(logdir_resolved) if logdir_resolved else None
     dry_run = _parse_bool(payload.get("dry_run"), default=False)
+    run_id_seed = str(payload.get("run_id") or "").strip() or None
+    run_started_seed = str(payload.get("run_started_at") or "").strip() or None
+    run_started_dt = None
+    if run_started_seed:
+        try:
+            run_started_dt = datetime.fromisoformat(run_started_seed.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            run_started_dt = None
     max_retries = int(payload.get("max_retries", 0) or 0)
     retry_delay_seconds = float(payload.get("retry_delay_seconds", 0.0) or 0.0)
     if max_retries < 0 or retry_delay_seconds < 0:
@@ -4233,6 +4272,8 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
             plugin_dir=plugins_dir,
             workdir=workdir,
             logdir=logdir,
+            run_id=run_id_seed,
+            run_started=run_started_dt,
             dry_run=dry_run,
             max_retries=max_retries,
             retry_delay_seconds=retry_delay_seconds,
@@ -4399,6 +4440,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
         )
     else:
         run_id = str(args.get("run_id") or "").strip() or uuid.uuid4().hex
+        run_started_at = str(args.get("run_started_at") or "").strip() or (datetime.utcnow().isoformat() + "Z")
         pipeline_path_resolved = Path(args["pipeline_path"]).resolve()
         dedupe_key = _local_submission_key(
             pipeline_path=pipeline_path_resolved,
@@ -4442,6 +4484,8 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
         )
         context = {
             "run_id": run_id,
+            "run_started_at": run_started_at,
+            "started_at": run_started_at,
             "pipeline": pipeline,
             "execution_env": execution_env,
             "provenance": provenance,

@@ -272,6 +272,7 @@ def run_pipeline(
     workdir: Path,
     logdir: Optional[Path] = None,
     run_id: Optional[str] = None,
+    run_started: Optional[datetime] = None,
     dry_run: bool = False,
     max_retries: int = 0,
     retry_delay_seconds: float = 0.0,
@@ -281,7 +282,7 @@ def run_pipeline(
     step_log_func=None,
 ) -> RunResult:
     run_id = run_id or uuid.uuid4().hex
-    ts = datetime.utcnow()
+    ts = run_started or datetime.utcnow()
     date_dir = ts.strftime("%y%m%d")
     run_dir = f"{ts.strftime('%H%M%S')}-{run_id[:8]}"
     base_workdir = workdir / date_dir / run_dir

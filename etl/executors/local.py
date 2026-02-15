@@ -147,11 +147,24 @@ class LocalExecutor(Executor):
             resume_succeeded_steps = {name for name, st in states.items() if st.success}
             prior_step_outputs = {name: st.outputs for name, st in states.items()}
 
+        run_started: Optional[datetime] = None
+        raw_started = context.get("run_started_at")
+        if isinstance(raw_started, datetime):
+            run_started = raw_started
+        elif raw_started:
+            text = str(raw_started).strip()
+            if text:
+                try:
+                    run_started = datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    run_started = None
+
         run_result = run_pipeline(
             pipeline,
             plugin_dir=plugin_dir,
             workdir=self.workdir,
             run_id=str(context.get("run_id") or "").strip() or None,
+            run_started=run_started,
             dry_run=self.dry_run,
             max_retries=self.max_retries,
             retry_delay_seconds=self.retry_delay_seconds,
