@@ -5,6 +5,7 @@ from pathlib import Path
 import etl.executors.slurm as slurm_mod
 from etl.executors.slurm import SlurmExecutor
 from etl.pipeline import Pipeline, Step
+from etl.git_checkout import GitExecutionSpec
 
 
 def test_slurm_submit_uses_array_batches_and_passes_resume_retry(monkeypatch, tmp_path: Path) -> None:
@@ -233,3 +234,53 @@ def test_slurm_submit_uses_db_metrics_with_low_sample_1_5x(monkeypatch, tmp_path
     assert "#SBATCH -t 00:30:00" in batch_script  # 20 * 1.5
     assert "#SBATCH -c 3" in batch_script  # ceil(2 * 1.5)
     assert "#SBATCH --mem=15G" in batch_script  # 10 * 1.5
+
+
+def test_slurm_submit_prefers_execution_env_git_remote_url(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(steps=[Step(name="s1", script="echo.py")])
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+    monkeypatch.setattr(
+        slurm_mod,
+        "resolve_execution_spec",
+        lambda **_: GitExecutionSpec(
+            commit_sha="abc123def456",
+            origin_url="https://github.com/org/repo.git",
+            repo_name="repo",
+            git_is_dirty=False,
+        ),
+    )
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/work", "logdir": "/tmp/logs", "git_remote_url": "git@github.com:wrong/wrong.git"},
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+        enforce_git_checkout=True,
+        require_clean_git=False,
+    )
+    ex.submit(
+        "pipelines/sample.yml",
+        {
+            "run_id": "runabc1234",
+            "execution_env": {"git_remote_url": "git@github.com:josephweaver/research-etl.git"},
+        },
+    )
+    setup_script = calls[0]["script_text"]
+    assert "REPO_URL=git@github.com:josephweaver/research-etl.git" in setup_script

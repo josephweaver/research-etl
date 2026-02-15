@@ -1,6 +1,7 @@
 environments:
   local:
     executor: local
+    git_remote_url: "https://github.com/josephweaver/research-etl.git"
     modules: [ "Python/3.11.3-GCCcore-12.3.0" ]
     rclone_bin: "bin/rclone"
     basedir: "{global.basedir}"
@@ -13,6 +14,7 @@ environments:
 
   hpcc_msu:
     executor: slurm
+    git_remote_url: "git@github.com:josephweaver/research-etl.git"
     host: hpcc.msu.edu
     rclone_bin: "rclone"
     # partition: scavenger # optional: specify valid

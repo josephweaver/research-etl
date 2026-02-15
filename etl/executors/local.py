@@ -5,6 +5,7 @@ Local executor: runs pipelines synchronously in-process.
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -72,6 +73,7 @@ class LocalExecutor(Executor):
             bundle = context.get("source_bundle") or self.source_bundle
             snapshot = context.get("source_snapshot") or self.source_snapshot
             allow_workspace = bool(context.get("allow_workspace_source", self.allow_workspace_source))
+            git_remote_override = str(context.get("execution_env", {}).get("git_remote_url") or "").strip() or None
 
             modes = self._resolve_mode_order(source_mode, allow_workspace)
             checkout_root = None
@@ -87,8 +89,10 @@ class LocalExecutor(Executor):
                             repo_root=repo_root,
                             provenance=provenance,
                             require_clean=self.require_clean_git,
-                            require_origin=True,
+                            require_origin=not bool(git_remote_override),
                         )
+                        if git_remote_override:
+                            spec = replace(spec, origin_url=git_remote_override)
                         checkout_root = ensure_repo_checkout(self.workdir / "_code", spec)
                     elif mode == "git_bundle":
                         if not bundle:

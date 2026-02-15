@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 import math
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional, List, Tuple
 from urllib.parse import urlparse
@@ -132,6 +132,7 @@ class SlurmEnv:
     source_bundle: Optional[str] = None
     source_snapshot: Optional[str] = None
     allow_workspace_source: Optional[bool] = False
+    git_remote_url: Optional[str] = None
 
 
 class SlurmExecutor(Executor):
@@ -164,6 +165,7 @@ class SlurmExecutor(Executor):
             "venv", "requirements", "python", "step_max_retries", "step_retry_delay_seconds",
             "max_time", "max_cpus_per_task", "max_mem",
             "execution_source", "source_bundle", "source_snapshot", "allow_workspace_source",
+            "git_remote_url",
         }}
         self.env = SlurmEnv(**env_kwargs)
         # Limits/concurrency hints; used by future array/dependency planner.
@@ -406,6 +408,7 @@ class SlurmExecutor(Executor):
         selected_source_mode = "workspace"
         git_origin_url = None
         git_commit_sha = None
+        git_remote_override = str(context.get("execution_env", {}).get("git_remote_url") or self.env.git_remote_url or "").strip() or None
 
         if self.enforce_git_checkout:
             if source_mode == "workspace" and not allow_workspace_source:
@@ -419,7 +422,7 @@ class SlurmExecutor(Executor):
                         repo_root=source_repo_root,
                         provenance=provenance,
                         require_clean=self.require_clean_git,
-                        require_origin=True,
+                        require_origin=not bool(git_remote_override),
                     )
                 except Exception as exc:  # noqa: BLE001
                     spec_error = exc
@@ -448,6 +451,8 @@ class SlurmExecutor(Executor):
                 raise SlurmSubmitError(str(spec_error or "Could not resolve execution source metadata"))
 
             if spec is not None:
+                if git_remote_override:
+                    spec = replace(spec, origin_url=git_remote_override)
                 git_origin_url = spec.origin_url
                 git_commit_sha = spec.commit_sha
                 provenance["git_repo_name"] = spec.repo_name

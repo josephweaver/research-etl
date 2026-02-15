@@ -62,3 +62,28 @@ def test_runner_retries_exhausted(tmp_path: Path) -> None:
     assert step.attempt_no == 3
     assert len(step.attempts) == 3
     assert all(a["success"] is False for a in step.attempts)
+
+
+def test_runner_records_engine_metrics_when_plugin_omits_them(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "metrics_free.py").write_text(
+        "\n".join(
+            [
+                "meta = {'name': 'metrics_free', 'version': '0.1.0', 'description': 'no explicit metrics'}",
+                "def run(args, ctx):",
+                "    vals = [i * i for i in range(200000)]",
+                "    return {'count': len(vals)}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    pipeline = Pipeline(steps=[Step(name="m", script="metrics_free.py")])
+    result = run_pipeline(pipeline, plugin_dir=plugin_dir, workdir=tmp_path / ".runs")
+
+    assert result.success is True
+    attempt = result.steps[0].attempts[0]
+    assert attempt["memory_gb"] is not None
+    assert attempt["cpu_cores"] is not None
+    assert attempt["cpu_count"] is None or attempt["cpu_count"] >= 1

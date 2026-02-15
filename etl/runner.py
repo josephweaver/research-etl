@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 import time
 import uuid
 from datetime import datetime
@@ -40,6 +41,105 @@ from .plugins.base import (
 
 class RunError(RuntimeError):
     """Raised when a pipeline run fails."""
+
+
+def _current_rss_bytes() -> Optional[int]:
+    # Linux: use /proc for current RSS.
+    proc_statm = Path("/proc/self/statm")
+    if proc_statm.exists():
+        try:
+            text = proc_statm.read_text(encoding="utf-8").strip()
+            parts = text.split()
+            if len(parts) >= 2:
+                rss_pages = int(parts[1])
+                return int(rss_pages * os.sysconf("SC_PAGE_SIZE"))
+        except Exception:
+            pass
+
+    if os.name == "nt":
+        # Windows: current working set (RSS) via Win32 API.
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            get_current_process = ctypes.windll.kernel32.GetCurrentProcess
+            get_process_memory_info = ctypes.windll.psapi.GetProcessMemoryInfo
+            counters = PROCESS_MEMORY_COUNTERS()
+            counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+            proc = get_current_process()
+            ok = get_process_memory_info(proc, ctypes.byref(counters), counters.cb)
+            if ok:
+                return int(counters.WorkingSetSize)
+        except Exception:
+            pass
+        # Fallback: parse tasklist current memory usage for this PID.
+        try:
+            import subprocess
+
+            pid = os.getpid()
+            proc = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            line = str(proc.stdout or "").strip()
+            if line and "," in line:
+                cols = [c.strip().strip('"') for c in line.split(",")]
+                if len(cols) >= 5:
+                    mem_text = cols[4].replace(",", "").replace("K", "").replace("k", "").strip()
+                    kb = int(mem_text)
+                    if kb > 0:
+                        return kb * 1024
+        except Exception:
+            pass
+
+    # macOS/Unix fallback: ru_maxrss (peak RSS for process lifetime).
+    try:
+        import resource
+
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        rss = int(getattr(usage, "ru_maxrss", 0) or 0)
+        if rss <= 0:
+            return None
+        if sys.platform == "darwin":
+            return rss
+        return rss * 1024
+    except Exception:
+        return None
+
+
+def _bytes_to_gb(value: Optional[int]) -> Optional[float]:
+    if value in (None, 0):
+        return None
+    try:
+        return float(value) / (1024.0 ** 3)
+    except Exception:
+        return None
+
+
+def _estimate_cpu_cores_used(cpu_seconds: float, wall_seconds: float) -> Optional[float]:
+    if wall_seconds <= 0:
+        return None
+    try:
+        v = float(cpu_seconds) / float(wall_seconds)
+        return max(0.0, v)
+    except Exception:
+        return None
 
 
 @dataclass
@@ -649,6 +749,7 @@ def _execute_step(
         original_env = os.environ.copy()
         started_dt = datetime.utcnow()
         started = started_dt.isoformat() + "Z"
+        cpu_started = time.process_time()
         try:
             os.environ.update({str(k): str(v) for k, v in dict(env_runtime or {}).items()})
             outputs = plugin.run(args, ctx)
@@ -657,6 +758,10 @@ def _execute_step(
             ended_dt = datetime.utcnow()
             ended = ended_dt.isoformat() + "Z"
             runtime_seconds = max(0.0, (ended_dt - started_dt).total_seconds())
+            cpu_seconds = max(0.0, time.process_time() - cpu_started)
+            engine_cpu_cores = _estimate_cpu_cores_used(cpu_seconds, runtime_seconds)
+            engine_memory_gb = _bytes_to_gb(_current_rss_bytes())
+            engine_cpu_count = os.cpu_count()
             memory_gb = _extract_numeric_metric(
                 dict(outputs or {}),
                 ["peak_memory_gb", "memory_gb", "max_rss_gb", "rss_gb", "peak_mem_gb"],
@@ -665,6 +770,10 @@ def _execute_step(
                 dict(outputs or {}),
                 ["cpu_cores", "peak_cpu_cores", "used_cpu_cores", "cpu_count"],
             )
+            if memory_gb is None:
+                memory_gb = engine_memory_gb
+            if cpu_cores is None:
+                cpu_cores = engine_cpu_cores
             attempt_history.append(
                 {
                     "attempt_no": attempt_no,
@@ -680,6 +789,10 @@ def _execute_step(
                     "runtime_seconds": runtime_seconds,
                     "memory_gb": memory_gb,
                     "cpu_cores": cpu_cores,
+                    "cpu_seconds": cpu_seconds,
+                    "cpu_count": engine_cpu_count,
+                    "engine_memory_gb": engine_memory_gb,
+                    "engine_cpu_cores": engine_cpu_cores,
                 }
             )
             if attempt_no > 1:
@@ -696,6 +809,10 @@ def _execute_step(
             ended = ended_dt.isoformat() + "Z"
             err = str(exc)
             runtime_seconds = max(0.0, (ended_dt - started_dt).total_seconds())
+            cpu_seconds = max(0.0, time.process_time() - cpu_started)
+            engine_cpu_cores = _estimate_cpu_cores_used(cpu_seconds, runtime_seconds)
+            engine_memory_gb = _bytes_to_gb(_current_rss_bytes())
+            engine_cpu_count = os.cpu_count()
             attempt_history.append(
                 {
                     "attempt_no": attempt_no,
@@ -709,8 +826,12 @@ def _execute_step(
                     "plugin_version": plugin_version,
                     "failure_category": _classify_attempt_failure(success=False, skipped=False, error=err),
                     "runtime_seconds": runtime_seconds,
-                    "memory_gb": None,
-                    "cpu_cores": None,
+                    "memory_gb": engine_memory_gb,
+                    "cpu_cores": engine_cpu_cores,
+                    "cpu_seconds": cpu_seconds,
+                    "cpu_count": engine_cpu_count,
+                    "engine_memory_gb": engine_memory_gb,
+                    "engine_cpu_cores": engine_cpu_cores,
                 }
             )
             if attempt_no < max_attempts:
