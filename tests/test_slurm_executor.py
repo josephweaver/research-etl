@@ -319,6 +319,45 @@ def test_slurm_submit_script_skips_secret_propagation_when_disabled(monkeypatch,
     assert called["secret"] == 0
 
 
+def test_slurm_submit_script_retries_transient_remote_failures(monkeypatch, tmp_path: Path) -> None:
+    ex = SlurmExecutor(
+        {
+            "ssh_host": "example.org",
+            "ssh_user": "alice",
+            "propagate_db_secret": False,
+            "workdir": "/tmp/work",
+            "logdir": "/tmp/logs",
+            "ssh_retries": 2,
+            "scp_retries": 2,
+            "remote_retry_delay_seconds": 0.0,
+        },
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+
+    calls = {"mkdir": 0}
+
+    class _P:
+        def __init__(self, rc=0, out="Submitted batch job 123\n", err=""):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = err
+
+    def _fake_run(cmd, **_kwargs):
+        text = " ".join(str(x) for x in cmd)
+        if "mkdir -p" in text and calls["mkdir"] == 0:
+            calls["mkdir"] += 1
+            return _P(rc=255, out="", err="ssh: connect to host example.org port 22: Connection timed out")
+        return _P()
+
+    monkeypatch.setattr(slurm_mod.subprocess, "run", _fake_run)
+
+    jobid = ex._submit_script("#!/bin/bash\necho ok\n", run_id="r123", label="x")
+    assert jobid == "123"
+    assert calls["mkdir"] == 1
+
+
 def test_slurm_verbose_scripts_include_safe_step_logs(monkeypatch, tmp_path: Path) -> None:
     pipeline = Pipeline(steps=[Step(name="s1", script="echo.py")])
     monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
