@@ -84,6 +84,7 @@ def test_slurm_submit_uses_array_batches_and_passes_resume_retry(monkeypatch, tm
     for idx in (1, 2, 3):
         script = calls[idx]["script_text"]
         assert "--resume-run-id olderrun" in script
+        assert "--run-started-at " in script
         assert "--max-retries 2" in script
         assert "--retry-delay-seconds 1.5" in script
 

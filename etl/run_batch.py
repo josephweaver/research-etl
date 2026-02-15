@@ -123,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workdir", default=".runs", help="Work directory base")
     parser.add_argument("--context-file", help="JSON file to load/save shared context", default=None)
     parser.add_argument("--run-id", help="Existing run_id (for chained batches)", default=None)
+    parser.add_argument("--run-started-at", help="Fixed run start timestamp (ISO8601) for stable sys.now", default=None)
     parser.add_argument("--project-id", help="Project partition id override", default=None)
     parser.add_argument("--resume-run-id", default=None, help="Prior run_id to resume from (skip successful steps)")
     parser.add_argument("--max-retries", type=int, default=0, help="Max step retries after first failure")
@@ -152,6 +153,15 @@ def main(argv: list[str] | None = None) -> int:
         print("run_batch.py requires --run-id for remote tracking consistency")
         return 1
     _vprint(args.verbose, f"starting run_id={run_id} pipeline={args.pipeline} steps={args.steps}")
+    run_started: datetime | None = None
+    if args.run_started_at:
+        text = str(args.run_started_at).strip()
+        if text:
+            try:
+                run_started = datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                print(f"Invalid --run-started-at value: {args.run_started_at}")
+                return 1
 
     global_vars = {}
     exec_env = {}
@@ -287,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         plugin_dir=Path(args.plugins_dir),
         workdir=Path(args.workdir),
         run_id=run_id,
+        run_started=run_started,
         dry_run=False,
         max_retries=args.max_retries,
         retry_delay_seconds=args.retry_delay_seconds,

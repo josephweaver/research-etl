@@ -520,9 +520,15 @@ def run_pipeline(
     ts = run_started or datetime.utcnow()
     date_dir = ts.strftime("%y%m%d")
     run_dir = f"{ts.strftime('%H%M%S')}-{run_id[:8]}"
-    # Idempotent run-directory stamping: if caller already provides a workdir
-    # ending in the current run stamp, reuse it directly instead of nesting.
-    if workdir.name == run_dir and workdir.parent.name == date_dir:
+    # Idempotent run-directory stamping:
+    # - if caller already provides current run stamp, reuse it
+    # - if caller provides any stamped run dir for this run_id short suffix,
+    #   reuse it as well (prevents nested date/time paths when timestamps drift).
+    is_same_stamp = workdir.name == run_dir and workdir.parent.name == date_dir
+    is_stamped_for_run = bool(re.fullmatch(r"\d{6}", workdir.parent.name)) and bool(
+        re.fullmatch(rf"\d{{6}}-{re.escape(run_id[:8])}", workdir.name)
+    )
+    if is_same_stamp or is_stamped_for_run:
         base_workdir = workdir
     else:
         base_workdir = workdir / date_dir / run_dir

@@ -457,6 +457,7 @@ class SlurmExecutor(Executor):
         ts = datetime.utcnow()
         run_date = ts.strftime("%y%m%d")
         run_stamp = ts.strftime("%H%M%S")
+        run_started_at = ts.isoformat() + "Z"
         run_fs_id = f"{run_stamp}-{run_id[:8]}"
         pipeline = parse_pipeline(
             Path(pipeline_path),
@@ -748,6 +749,7 @@ class SlurmExecutor(Executor):
                     python_bin,
                     project_id=context.get("project_id"),
                     resume_run_id=resume_run_id,
+                    run_started_at=run_started_at,
                     global_config_path=global_config_remote,
                     environments_config_path=environments_config_remote,
                     commandline_vars=commandline_ns,
@@ -790,6 +792,7 @@ class SlurmExecutor(Executor):
                         python_bin,
                         project_id=context.get("project_id"),
                         resume_run_id=resume_run_id,
+                        run_started_at=run_started_at,
                         global_config_path=global_config_remote,
                         environments_config_path=environments_config_remote,
                         commandline_vars=commandline_ns,
@@ -969,6 +972,7 @@ class SlurmExecutor(Executor):
         python_bin: str,
         project_id: Optional[str] = None,
         resume_run_id: Optional[str] = None,
+        run_started_at: Optional[str] = None,
         global_config_path: Optional[str] = None,
         environments_config_path: Optional[str] = None,
         commandline_vars: Optional[Dict[str, Any]] = None,
@@ -1063,6 +1067,8 @@ class SlurmExecutor(Executor):
             cmd += ["--project-id", str(project_id)]
         if resume_run_id:
             cmd += ["--resume-run-id", str(resume_run_id)]
+        if run_started_at:
+            cmd += ["--run-started-at", str(run_started_at)]
         cmd += ["--max-retries", str(self.step_max_retries)]
         cmd += ["--retry-delay-seconds", str(self.step_retry_delay_seconds)]
         if global_config_path:

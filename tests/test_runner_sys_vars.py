@@ -105,3 +105,22 @@ def test_runner_respects_pipeline_resolve_max_passes(tmp_path: Path) -> None:
     assert result.success is True
     out = result.steps[0].outputs["args"]
     assert out["x"] == "{b}"
+
+
+def test_runner_reuses_existing_stamped_workdir_for_same_run_id_suffix(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_capture_plugin(plugin_dir / "capture.py")
+
+    run_id = "1d024133aaaaaaaaaaaaaaaaaaaaaaaa"
+    pipeline = Pipeline(steps=[Step(name="s1", script="capture.py")])
+    stamped_workdir = tmp_path / ".runs" / "260215" / f"232242-{run_id[:8]}"
+
+    result = run_pipeline(
+        pipeline,
+        plugin_dir=plugin_dir,
+        workdir=stamped_workdir,
+        run_id=run_id,
+    )
+    assert result.success is True
+    assert str(result.artifact_dir).replace("\\", "/").endswith(f"/260215/232242-{run_id[:8]}")

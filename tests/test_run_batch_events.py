@@ -200,3 +200,48 @@ def test_run_batch_verbose_prints_progress(monkeypatch, tmp_path: Path, capsys) 
     assert "[run_batch] starting run_id=runv1" in out
     assert "[run_batch] parsed pipeline with 3 step(s)" in out
     assert "[run_batch] recorded batch_completed tracking event" in out
+
+
+def test_run_batch_passes_run_started_at_to_runner(monkeypatch, tmp_path: Path) -> None:
+    pipeline_path = tmp_path / "pipeline.yml"
+    _write_min_pipeline(pipeline_path)
+
+    monkeypatch.setattr(run_batch, "upsert_run_status", lambda **_: None)
+    monkeypatch.setattr(run_batch, "upsert_step_attempt", lambda **_: None)
+    monkeypatch.setattr(run_batch, "collect_run_provenance", lambda **_: {})
+
+    captured = {}
+
+    def _fake_run_pipeline(*args, **kwargs):
+        captured["run_started"] = kwargs.get("run_started")
+        return RunResult(
+            run_id="runfixed",
+            steps=[
+                StepResult(
+                    step=Step(name="s0", script="echo.py"),
+                    success=True,
+                    attempt_no=1,
+                    attempts=[{"attempt_no": 1, "success": True, "skipped": False, "error": None, "outputs": {}}],
+                )
+            ],
+            artifact_dir=str(tmp_path / ".runs"),
+        )
+
+    monkeypatch.setattr(run_batch, "run_pipeline", _fake_run_pipeline)
+
+    rc = run_batch.main(
+        [
+            str(pipeline_path),
+            "--steps",
+            "0",
+            "--run-id",
+            "runfixed",
+            "--run-started-at",
+            "2026-02-15T23:22:42Z",
+            "--workdir",
+            str(tmp_path / ".runs"),
+        ]
+    )
+    assert rc == 0
+    assert captured["run_started"] is not None
+    assert captured["run_started"].strftime("%H%M%S") == "232242"
