@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import tempfile
 import math
+import re
 from datetime import datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -31,6 +32,32 @@ from ..tracking import fetch_plugin_resource_stats, upsert_run_status
 
 class SlurmSubmitError(RuntimeError):
     """Raised when sbatch submission fails."""
+
+
+_TPL_RE = re.compile(r"\{([^{}]+)\}")
+
+
+def _lookup_ctx_path(ctx: Dict[str, Any], dotted: str) -> tuple[Any, bool]:
+    cur: Any = ctx
+    for part in str(dotted or "").split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+            continue
+        return None, False
+    return cur, True
+
+
+def _resolve_text_with_ctx(value: str, ctx: Dict[str, Any]) -> str:
+    text = str(value or "")
+
+    def _repl(match: re.Match[str]) -> str:
+        key = str(match.group(1) or "")
+        found, ok = _lookup_ctx_path(ctx, key)
+        if not ok or isinstance(found, (dict, list)):
+            return match.group(0)
+        return str(found)
+
+    return _TPL_RE.sub(_repl, text)
 
 
 def _parse_slurm_time_to_minutes(value: str) -> Optional[float]:
@@ -134,6 +161,7 @@ class SlurmEnv:
     source_snapshot: Optional[str] = None
     allow_workspace_source: Optional[bool] = False
     git_remote_url: Optional[str] = None
+    propagate_db_secret: Optional[bool] = True
 
 
 class SlurmExecutor(Executor):
@@ -166,7 +194,7 @@ class SlurmExecutor(Executor):
             "venv", "requirements", "python", "step_max_retries", "step_retry_delay_seconds",
             "max_time", "max_cpus_per_task", "max_mem", "setup_time",
             "execution_source", "source_bundle", "source_snapshot", "allow_workspace_source",
-            "git_remote_url",
+            "git_remote_url", "propagate_db_secret",
         }}
         self.env = SlurmEnv(**env_kwargs)
         # Limits/concurrency hints; used by future array/dependency planner.
@@ -195,6 +223,7 @@ class SlurmExecutor(Executor):
         )
         self.source_bundle = source_bundle or env_config.get("source_bundle")
         self.source_snapshot = source_snapshot or env_config.get("source_snapshot")
+        self.propagate_db_secret = bool(env_config.get("propagate_db_secret", True))
         if allow_workspace_source is None:
             self.allow_workspace_source = bool(env_config.get("allow_workspace_source", False))
         else:
@@ -535,7 +564,23 @@ class SlurmExecutor(Executor):
                     (Path(checkout_root) / ec_path).as_posix() if not ec_path.is_absolute() else ec_path.as_posix()
                 )
 
-        base_logdir = Path(self.env.logdir or (self.workdir / "slurm_logs"))
+        pipeline_logdir_template = str((getattr(pipeline, "dirs", {}) or {}).get("logdir") or "").strip()
+        pipeline_logdir_resolved = ""
+        if pipeline_logdir_template:
+            resolve_ctx = {
+                "workdir": remote_workdir,
+                "dirs": {"workdir": remote_workdir},
+                "sys": {
+                    "now": {"yymmdd": run_date, "hhmmss": run_stamp},
+                    "run": {"id": run_id, "short_id": run_id[:8]},
+                },
+                "vars": dict(getattr(pipeline, "vars", {}) or {}),
+            }
+            pipeline_logdir_resolved = _resolve_text_with_ctx(pipeline_logdir_template, resolve_ctx)
+            if "{" in pipeline_logdir_resolved or "}" in pipeline_logdir_resolved:
+                pipeline_logdir_resolved = ""
+        use_pipeline_logdir = bool(pipeline_logdir_resolved)
+        base_logdir = Path(pipeline_logdir_resolved or self.env.logdir or (self.workdir / "slurm_logs"))
 
         if self.env.ssh_host and self.env.sync and not self.enforce_git_checkout:
             self._sync_repo()
@@ -547,7 +592,10 @@ class SlurmExecutor(Executor):
         )
 
         # submit setup job to prep venv and work dirs
-        setup_logdir = (base_logdir / jobname / "setup" / run_date / run_fs_id).as_posix()
+        if use_pipeline_logdir:
+            setup_logdir = (base_logdir / "setup").as_posix()
+        else:
+            setup_logdir = (base_logdir / jobname / "setup" / run_date / run_fs_id).as_posix()
         workdirs_to_create = []
         logdirs_to_create = [setup_logdir]
         # gather work/log dirs for batches
@@ -558,7 +606,10 @@ class SlurmExecutor(Executor):
                 step_name = getattr(steps[0], "name", f"step{step_indices[0]}")
                 label = step_name
                 step_workdir = (remote_workdir_root / label).as_posix()
-                step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
+                if use_pipeline_logdir:
+                    step_logdir = (base_logdir / label).as_posix()
+                else:
+                    step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
                 workdirs_to_create.append(step_workdir)
                 logdirs_to_create.append(step_logdir)
             else:
@@ -569,7 +620,10 @@ class SlurmExecutor(Executor):
                     first_name = getattr(chunk[0][1], "name", f"step{chunk[0][0]}")
                     label = f"{first_name}_array{batch_idx}_chunk{start}"
                     step_workdir = (remote_workdir_root / label).as_posix()
-                    step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
+                    if use_pipeline_logdir:
+                        step_logdir = (base_logdir / label).as_posix()
+                    else:
+                        step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
                     workdirs_to_create.append(step_workdir)
                     logdirs_to_create.append(step_logdir)
                     start += chunk_size
@@ -603,7 +657,10 @@ class SlurmExecutor(Executor):
                 step_name = getattr(steps[0], "name", f"step{step_indices[0]}")
                 label = step_name
                 step_workdir = (remote_workdir_root / step_name).as_posix()
-                step_logdir = (base_logdir / jobname / step_name / run_date / run_fs_id).as_posix()
+                if use_pipeline_logdir:
+                    step_logdir = (base_logdir / step_name).as_posix()
+                else:
+                    step_logdir = (base_logdir / jobname / step_name / run_date / run_fs_id).as_posix()
                 batch_resources = self._resolve_batch_resources(steps)
                 script_text = self._render_batch_script(
                     run_id,
@@ -641,7 +698,10 @@ class SlurmExecutor(Executor):
                     first_name = getattr(chunk_steps[0], "name", f"step{chunk_indices[0]}")
                     label = f"{first_name}_array{batch_idx}_chunk{start}"
                     step_workdir = (remote_workdir_root / label).as_posix()
-                    step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
+                    if use_pipeline_logdir:
+                        step_logdir = (base_logdir / label).as_posix()
+                    else:
+                        step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
                     batch_resources = self._resolve_batch_resources(chunk_steps)
                     script_text = self._render_batch_script(
                         run_id,
@@ -1108,7 +1168,8 @@ class SlurmExecutor(Executor):
 
         if self.env.ssh_host:
             target = f"{self.env.ssh_user + '@' if self.env.ssh_user else ''}{self.env.ssh_host}"
-            self._ensure_remote_secrets_file(target)
+            if self.propagate_db_secret:
+                self._ensure_remote_secrets_file(target)
             remote_dir = remote_dest_dir or self.env.remote_repo or "/tmp"
             remote_file = f"{remote_dir}/etl-{run_id}-{label}.sbatch"
             # ensure remote dir

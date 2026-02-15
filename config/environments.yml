@@ -35,4 +35,6 @@ environments:
     remote_repo: "{basedir}/etl"
     workdir: "{basedir}/work"
     logdir: "{workdir}/logs"
+    db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
+    propagate_db_secret: false
     sync: true

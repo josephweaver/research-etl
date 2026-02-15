@@ -16,6 +16,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from etl.db_sync_queue import queue_tracking_update
 from etl.config import load_global_config, resolve_global_config_path, ConfigError
 from etl.execution_config import (
     load_execution_config,
@@ -64,12 +65,17 @@ def _build_step_attempt_summary(result: RunResult) -> list[dict]:
     return summary
 
 
-def _safe_tracking_write(action_name: str, fn, **kwargs) -> None:
+def _safe_tracking_write(action_name: str, fn, *, queue_dir: Path, **kwargs) -> None:
     try:
         fn(**kwargs)
     except Exception as exc:  # noqa: BLE001
         # Do not block batch execution when DB tracking is unavailable.
-        print(f"Tracking warning ({action_name}): {exc}")
+        op = "upsert_step_attempt" if action_name == "step_attempt" else "upsert_run_status"
+        try:
+            queued_path = queue_tracking_update(queue_dir, operation=op, payload=kwargs)
+            print(f"Tracking warning ({action_name}): {exc} | queued={queued_path}")
+        except Exception as queue_exc:  # noqa: BLE001
+            print(f"Tracking warning ({action_name}): {exc} | queue_failed={queue_exc}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -177,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         states = load_run_step_states(str(args.resume_run_id))
         resume_succeeded_steps = {name for name, st in states.items() if st.success}
         prior_step_outputs = {name: st.outputs for name, st in states.items()}
+    queue_dir = Path(exec_env.get("db_sync_queue_dir") or (Path(args.workdir) / "db_sync_queue" / "pending"))
     for step in pipeline.steps:
         if step.output_var and step.name in prior_step_outputs:
             ctx[step.output_var] = prior_step_outputs.get(step.name, {})
@@ -184,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     _safe_tracking_write(
         "batch_started",
         upsert_run_status,
+        queue_dir=queue_dir,
         run_id=run_id,
         pipeline=args.pipeline,
         project_id=project_id,
@@ -219,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
                 _safe_tracking_write(
                     "step_attempt",
                     upsert_step_attempt,
+                    queue_dir=queue_dir,
                     run_id=run_id,
                     step_name=step_res.step.name,
                     attempt_no=int(att.get("attempt_no", step_res.attempt_no)),
@@ -244,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
             _safe_tracking_write(
                 "step_attempt",
                 upsert_step_attempt,
+                queue_dir=queue_dir,
                 run_id=run_id,
                 step_name=step_res.step.name,
                 attempt_no=step_res.attempt_no,
@@ -275,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         _safe_tracking_write(
             "batch_failed",
             upsert_run_status,
+            queue_dir=queue_dir,
             run_id=run_id,
             pipeline=args.pipeline,
             project_id=project_id,
@@ -297,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     _safe_tracking_write(
         "batch_completed",
         upsert_run_status,
+        queue_dir=queue_dir,
         run_id=run_id,
         pipeline=args.pipeline,
         project_id=project_id,
@@ -317,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         _safe_tracking_write(
             "run_completed",
             upsert_run_status,
+            queue_dir=queue_dir,
             run_id=run_id,
             pipeline=args.pipeline,
             project_id=project_id,

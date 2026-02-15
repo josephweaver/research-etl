@@ -286,6 +286,39 @@ def test_slurm_submit_prefers_execution_env_git_remote_url(monkeypatch, tmp_path
     assert "REPO_URL=git@github.com:josephweaver/research-etl.git" in setup_script
 
 
+def test_slurm_submit_script_skips_secret_propagation_when_disabled(monkeypatch, tmp_path: Path) -> None:
+    ex = SlurmExecutor(
+        {
+            "ssh_host": "example.org",
+            "ssh_user": "alice",
+            "propagate_db_secret": False,
+            "workdir": "/tmp/work",
+            "logdir": "/tmp/logs",
+        },
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+
+    called = {"secret": 0}
+
+    def _fake_secret(_target: str) -> None:
+        called["secret"] += 1
+
+    class _P:
+        def __init__(self, rc=0, out="Submitted batch job 123\n", err=""):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = err
+
+    monkeypatch.setattr(ex, "_ensure_remote_secrets_file", _fake_secret)
+    monkeypatch.setattr(slurm_mod.subprocess, "run", lambda *a, **k: _P())
+
+    jobid = ex._submit_script("#!/bin/bash\necho ok\n", run_id="r123", label="x")
+    assert jobid == "123"
+    assert called["secret"] == 0
+
+
 def test_slurm_verbose_scripts_include_safe_step_logs(monkeypatch, tmp_path: Path) -> None:
     pipeline = Pipeline(steps=[Step(name="s1", script="echo.py")])
     monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
@@ -390,3 +423,44 @@ def test_slurm_setup_time_can_be_overridden(monkeypatch, tmp_path: Path) -> None
 
     setup_script = calls[0]["script_text"]
     assert "#SBATCH -t 00:06:00" in setup_script
+
+
+def test_slurm_pipeline_logdir_overrides_env_logdir(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(
+        vars={"jobname": "tiger_state"},
+        dirs={"logdir": "{workdir}/logs"},
+        steps=[Step(name="s1", script="echo.py")],
+    )
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/work", "logdir": "/tmp/env_logs"},
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+    ex.submit("pipelines/tiger/state.yml", {"run_id": "runabc1234"})
+
+    setup_script = calls[0]["script_text"]
+    batch_script = calls[1]["script_text"]
+    assert "/tmp/env_logs" not in setup_script
+    assert "/tmp/env_logs" not in batch_script
+    assert "/logs/setup/" in setup_script
+    assert "/logs/s1/" in batch_script
