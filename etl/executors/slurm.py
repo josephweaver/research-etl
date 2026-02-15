@@ -941,6 +941,7 @@ class SlurmExecutor(Executor):
             lines.append("log_step 'activating runtime environment'")
         lines.append(f"PYTHON={python_bin}")
         lines.append(f"VENV={venv_path}")
+        lines.append(f"export ETL_REPO_ROOT={checkout_root}")
         if self.load_secrets_file:
             if self.verbose:
                 lines.append("log_step 'loading optional secrets file (values hidden)'")
@@ -1126,6 +1127,7 @@ class SlurmExecutor(Executor):
             lines.append("log_step 'bootstrapping venv'")
         lines.append(f"PYTHON={python_bin}")
         lines.append(f"VENV={venv_path}")
+        lines.append(f"export ETL_REPO_ROOT={checkout_root}")
         if self.load_secrets_file:
             if self.verbose:
                 lines.append("log_step 'loading optional secrets file (values hidden)'")

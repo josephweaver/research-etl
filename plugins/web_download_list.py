@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import List
@@ -38,6 +39,11 @@ def _resolve_path(path_text: str, ctx) -> Path:
     p = Path(str(path_text or "")).expanduser()
     if p.is_absolute():
         return p
+    repo_root = str(os.environ.get("ETL_REPO_ROOT", "") or "").strip()
+    if repo_root:
+        repo_candidate = (Path(repo_root).expanduser() / p).resolve()
+        if repo_candidate.exists():
+            return repo_candidate
     repo_rel = (Path(".").resolve() / p).resolve()
     if repo_rel.exists():
         return repo_rel

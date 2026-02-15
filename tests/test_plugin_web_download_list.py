@@ -88,3 +88,29 @@ def test_web_download_list_skips_existing_when_no_overwrite(tmp_path: Path, monk
     assert outputs["downloaded_count"] == 0
     assert outputs["skipped_count"] == 1
     assert existing.read_bytes() == b"OLD"
+
+
+def test_web_download_list_resolves_repo_relative_urls_file_with_env_root(tmp_path: Path, monkeypatch) -> None:
+    plugin = load_plugin(Path("plugins/web_download_list.py"))
+    assert plugin.module is not None
+
+    repo_root = tmp_path / "repo"
+    urls_file = repo_root / "pipelines" / "tiger" / "state_urls.txt"
+    urls_file.parent.mkdir(parents=True, exist_ok=True)
+    urls_file.write_text("https://example.com/state.zip\n", encoding="utf-8")
+
+    workdir = tmp_path / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(workdir)
+    monkeypatch.setenv("ETL_REPO_ROOT", str(repo_root))
+
+    def _fake_urlopen(req, timeout=0):  # noqa: ANN001
+        return _FakeResponse(b"STATE")
+
+    monkeypatch.setattr(plugin.module.request, "urlopen", _fake_urlopen)
+
+    out_dir = tmp_path / "out3"
+    outputs = plugin.run({"urls_file": "pipelines/tiger/state_urls.txt", "out": str(out_dir)}, _ctx(workdir))
+    assert outputs["downloaded_count"] == 1
+    assert outputs["failed_count"] == 0
+    assert (out_dir / "state.zip").exists()
