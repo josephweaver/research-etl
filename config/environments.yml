@@ -34,6 +34,8 @@ environments:
     ssh_retries: 2
     scp_retries: 2
     remote_retry_delay_seconds: 2
+    ssh_connect_timeout: 20
+    ssh_strict_host_key_checking: accept-new
     ssh_host: dev-amd24.passwordless
     ssh_user: weave151
     basedir: /mnt/scratch/weave151

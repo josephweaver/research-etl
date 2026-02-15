@@ -359,6 +359,43 @@ def test_slurm_submit_script_retries_transient_remote_failures(monkeypatch, tmp_
     assert calls["mkdir"] == 1
 
 
+def test_slurm_remote_commands_use_noninteractive_ssh_options(monkeypatch, tmp_path: Path) -> None:
+    ex = SlurmExecutor(
+        {
+            "ssh_host": "example.org",
+            "ssh_user": "alice",
+            "propagate_db_secret": False,
+            "workdir": "/tmp/work",
+            "logdir": "/tmp/logs",
+            "ssh_connect_timeout": 17,
+            "ssh_strict_host_key_checking": "accept-new",
+        },
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+
+    observed_cmds = []
+
+    class _P:
+        def __init__(self, rc=0, out="Submitted batch job 123\n", err=""):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = err
+
+    def _fake_run(cmd, **_kwargs):
+        observed_cmds.append([str(x) for x in cmd])
+        return _P()
+
+    monkeypatch.setattr(slurm_mod.subprocess, "run", _fake_run)
+    ex._submit_script("#!/bin/bash\necho ok\n", run_id="r123", label="x")
+
+    flat = " ".join(" ".join(c) for c in observed_cmds)
+    assert "-o BatchMode=yes" in flat
+    assert "-o ConnectTimeout=17" in flat
+    assert "-o StrictHostKeyChecking=accept-new" in flat
+
+
 def test_slurm_verbose_scripts_include_safe_step_logs(monkeypatch, tmp_path: Path) -> None:
     pipeline = Pipeline(steps=[Step(name="s1", script="echo.py")])
     monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)

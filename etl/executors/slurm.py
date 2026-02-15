@@ -157,6 +157,8 @@ class SlurmEnv:
     ssh_retries: Optional[int] = None
     scp_retries: Optional[int] = None
     remote_retry_delay_seconds: Optional[float] = None
+    ssh_connect_timeout: Optional[int] = None
+    ssh_strict_host_key_checking: Optional[str] = None
 
 
 class SlurmExecutor(Executor):
@@ -191,6 +193,7 @@ class SlurmExecutor(Executor):
             "execution_source", "source_bundle", "source_snapshot", "allow_workspace_source",
             "git_remote_url", "propagate_db_secret", "load_secrets_file",
             "ssh_retries", "scp_retries", "remote_retry_delay_seconds",
+            "ssh_connect_timeout", "ssh_strict_host_key_checking",
         }}
         self.env = SlurmEnv(**env_kwargs)
         # Limits/concurrency hints; used by future array/dependency planner.
@@ -202,6 +205,10 @@ class SlurmExecutor(Executor):
         self.ssh_retries = max(0, int(env_config.get("ssh_retries", 2)))
         self.scp_retries = max(0, int(env_config.get("scp_retries", 2)))
         self.remote_retry_delay_seconds = max(0.0, float(env_config.get("remote_retry_delay_seconds", 2.0)))
+        self.ssh_connect_timeout = max(1, int(env_config.get("ssh_connect_timeout", min(30, self.ssh_timeout))))
+        self.ssh_strict_host_key_checking = str(
+            env_config.get("ssh_strict_host_key_checking", "accept-new")
+        ).strip()
         self.step_max_retries = int(env_config.get("step_max_retries", 0))
         self.step_retry_delay_seconds = float(env_config.get("step_retry_delay_seconds", 0.0))
         self.resource_low_sample_multiplier = float(env_config.get("resource_low_sample_multiplier", 1.5))
@@ -270,6 +277,32 @@ class SlurmExecutor(Executor):
         if last_timeout is not None:
             raise SlurmSubmitError(f"{op_name} timed out after {attempts} attempts")
         raise SlurmSubmitError(f"{op_name} failed after {attempts} attempts")
+
+    def _ssh_common_args(self) -> List[str]:
+        args: List[str] = []
+        if self.env.ssh_jump:
+            args += ["-J", self.env.ssh_jump]
+        args += [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={int(self.ssh_connect_timeout)}",
+            "-o",
+            "ConnectionAttempts=1",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=2",
+        ]
+        if self.ssh_strict_host_key_checking:
+            args += ["-o", f"StrictHostKeyChecking={self.ssh_strict_host_key_checking}"]
+        return args
+
+    def _build_ssh_cmd(self, target: str, *remote_parts: str) -> List[str]:
+        return ["ssh"] + self._ssh_common_args() + [target, *remote_parts]
+
+    def _build_scp_cmd(self, *parts: str) -> List[str]:
+        return ["scp"] + self._ssh_common_args() + list(parts)
 
     @staticmethod
     def _group_steps_with_indices(steps: List[Any]) -> List[List[Tuple[int, Any]]]:
@@ -1239,7 +1272,7 @@ class SlurmExecutor(Executor):
         target = f"{self.env.ssh_user + '@' if self.env.ssh_user else ''}{self.env.ssh_host}"
         remote_dir = f"{remote_workdir}/source"
         remote_file = f"{remote_dir}/{local_candidate.name}"
-        mkdir_cmd = ["ssh"] + (["-J", self.env.ssh_jump] if self.env.ssh_jump else []) + [target, f"mkdir -p {remote_dir}"]
+        mkdir_cmd = self._build_ssh_cmd(target, f"mkdir -p {remote_dir}")
         proc = self._run_cmd_with_retries(
             mkdir_cmd,
             timeout=self.ssh_timeout,
@@ -1248,7 +1281,7 @@ class SlurmExecutor(Executor):
         )
         if proc.returncode != 0:
             raise SlurmSubmitError(proc.stderr or proc.stdout)
-        scp_cmd = ["scp"] + (["-J", self.env.ssh_jump] if self.env.ssh_jump else []) + [str(local_candidate), f"{target}:{remote_file}"]
+        scp_cmd = self._build_scp_cmd(str(local_candidate), f"{target}:{remote_file}")
         proc2 = self._run_cmd_with_retries(
             scp_cmd,
             timeout=self.scp_timeout,
@@ -1274,7 +1307,7 @@ class SlurmExecutor(Executor):
             remote_dir = remote_dest_dir or self.env.remote_repo or "/tmp"
             remote_file = f"{remote_dir}/etl-{run_id}-{label}.sbatch"
             # ensure remote dir
-            mkdir_cmd = ["ssh"] + (["-J", self.env.ssh_jump] if self.env.ssh_jump else []) + [target, f"mkdir -p {remote_dir}"]
+            mkdir_cmd = self._build_ssh_cmd(target, f"mkdir -p {remote_dir}")
             if self.verbose:
                 print("SSH mkdir:", " ".join(mkdir_cmd))
             proc = self._run_cmd_with_retries(
@@ -1289,7 +1322,7 @@ class SlurmExecutor(Executor):
             with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch", prefix="etl-", newline="\n") as tmp:
                 tmp.write(script_text.replace("\r\n", "\n"))
                 tmp_path = Path(tmp.name)
-            scp_cmd = ["scp"] + (["-J", self.env.ssh_jump] if self.env.ssh_jump else []) + [str(tmp_path), f"{target}:{remote_file}"]
+            scp_cmd = self._build_scp_cmd(str(tmp_path), f"{target}:{remote_file}")
             if self.verbose:
                 print("SCP script:", " ".join(scp_cmd))
             proc_scp = self._run_cmd_with_retries(
@@ -1301,7 +1334,7 @@ class SlurmExecutor(Executor):
             if proc_scp.returncode != 0:
                 raise SlurmSubmitError(proc_scp.stderr or proc_scp.stdout)
             # submit remotely
-            remote_cmd = ["ssh"] + (["-J", self.env.ssh_jump] if self.env.ssh_jump else []) + [target, "sbatch"] + dependency_arg + [remote_file]
+            remote_cmd = self._build_ssh_cmd(target, "sbatch", *dependency_arg, remote_file)
             if self.verbose:
                 print("SSH sbatch:", " ".join(remote_cmd))
             proc_submit = self._run_cmd_with_retries(
@@ -1356,7 +1389,7 @@ class SlurmExecutor(Executor):
                 ]
             )
         remote_script = "bash -lc " + shlex.quote("\n".join(remote_lines))
-        cmd = ["ssh"] + (["-J", self.env.ssh_jump] if self.env.ssh_jump else []) + [target, remote_script]
+        cmd = self._build_ssh_cmd(target, remote_script)
         if self.verbose:
             print("SSH secrets init: ~/.secrets/etl")
         proc = self._run_cmd_with_retries(
@@ -1417,7 +1450,7 @@ class SlurmExecutor(Executor):
         target = f"{self.env.ssh_user + '@' if self.env.ssh_user else ''}{self.env.ssh_host}"
         remote_path = f"{target}:{self.env.remote_repo}"
         # Create remote dir then copy
-        mkdir_cmd = ["ssh", target, f"mkdir -p {self.env.remote_repo}"]
+        mkdir_cmd = self._build_ssh_cmd(target, f"mkdir -p {self.env.remote_repo}")
         proc = self._run_cmd_with_retries(
             mkdir_cmd,
             timeout=self.ssh_timeout,
@@ -1427,7 +1460,7 @@ class SlurmExecutor(Executor):
         if proc.returncode != 0:
             raise SlurmSubmitError(proc.stderr or proc.stdout)
         # Use scp to sync repo (simple recursive copy)
-        scp_cmd = ["scp", "-r", str(Path(".").resolve()), remote_path]
+        scp_cmd = self._build_scp_cmd("-r", str(Path(".").resolve()), remote_path)
         proc2 = self._run_cmd_with_retries(
             scp_cmd,
             timeout=self.scp_timeout,
