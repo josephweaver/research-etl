@@ -3421,6 +3421,8 @@ def _build_builder_namespace(
     env_vars: dict[str, Any],
     raw_vars: Optional[dict[str, Any]] = None,
     raw_dirs: Optional[dict[str, Any]] = None,
+    preview_run_id: Optional[str] = None,
+    preview_run_started: Optional[datetime] = None,
 ) -> dict[str, Any]:
     def _step_arg_map(script: str) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -3500,15 +3502,23 @@ def _build_builder_namespace(
             current = nxt
         return current, max_passes, False
 
-    now = datetime.now(timezone.utc)
+    now = preview_run_started or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+    run_id_preview = str(preview_run_id or "")
+    if not run_id_preview:
+        run_id_preview = "run_abcd0123"
+    run_short_preview = run_id_preview[:8] if preview_run_id else "abcd0123"
     sys_ns: dict[str, Any] = {
         "run": {
             # Runtime-populated on real execution paths; placeholder values are used in builder preview.
-            "id": "run_abcd0123",
-            "short_id": "abcd0123",
+            "id": run_id_preview,
+            "short_id": run_short_preview,
         },
         "job": {
-            "id": "job_abcd0123",
+            "id": run_id_preview,
             "name": str((pipeline.vars or {}).get("jobname") or ""),
         },
         "step": {
@@ -4160,6 +4170,15 @@ def api_builder_generate(payload: Optional[dict[str, Any]] = Body(default=None))
 @app.post("/api/builder/test-step")
 def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     payload = payload or {}
+    run_id_seed = str(payload.get("run_id") or "").strip() or None
+    run_started_seed = str(payload.get("run_started_at") or "").strip() or None
+    run_started_dt = None
+    if run_started_seed:
+        try:
+            run_started_dt = datetime.fromisoformat(run_started_seed.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            run_started_dt = None
+
     global_config_raw = str(payload.get("global_config") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
     environments_config_raw = str(payload.get("environments_config") or "").strip()
@@ -4185,6 +4204,8 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
         env_vars=env_vars,
         raw_vars=raw_vars,
         raw_dirs=raw_dirs,
+        preview_run_id=run_id_seed,
+        preview_run_started=run_started_dt,
     )
     resolve_max_passes = resolve_max_passes_setting(global_vars=global_vars, env_vars=env_vars)
     step_name = str(payload.get("step_name") or "").strip()
@@ -4250,14 +4271,6 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
     )
     logdir = Path(logdir_resolved) if logdir_resolved else None
     dry_run = _parse_bool(payload.get("dry_run"), default=False)
-    run_id_seed = str(payload.get("run_id") or "").strip() or None
-    run_started_seed = str(payload.get("run_started_at") or "").strip() or None
-    run_started_dt = None
-    if run_started_seed:
-        try:
-            run_started_dt = datetime.fromisoformat(run_started_seed.replace("Z", "+00:00")).replace(tzinfo=None)
-        except Exception:
-            run_started_dt = None
     max_retries = int(payload.get("max_retries", 0) or 0)
     retry_delay_seconds = float(payload.get("retry_delay_seconds", 0.0) or 0.0)
     if max_retries < 0 or retry_delay_seconds < 0:

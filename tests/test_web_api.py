@@ -942,12 +942,21 @@ def test_web_api_builder_test_step_resolves_template_workdir(monkeypatch):
 
     monkeypatch.setattr(web_api, "run_pipeline", _fake_run_pipeline)
     client = TestClient(web_api.app)
-    r = client.post("/api/builder/test-step", json={"yaml_text": "steps: []", "env": "local"})
+    r = client.post(
+        "/api/builder/test-step",
+        json={
+            "yaml_text": "steps: []",
+            "env": "local",
+            "run_id": "12345678deadbeef12345678deadbeef",
+            "run_started_at": "2026-02-15T08:31:19Z",
+        },
+    )
     assert r.status_code == 200
     assert "{sys." not in called["workdir"]
     assert "{env." not in called["workdir"]
     assert "{name}" not in called["workdir"]
     assert called["workdir"].replace("\\", "/").startswith(".out/work/yanroy/")
+    assert "/260215/083119-12345678" in called["workdir"].replace("\\", "/")
 
 
 def test_web_api_builder_test_step_falls_back_when_workdir_unresolved(monkeypatch):
