@@ -23,7 +23,7 @@ environments:
     cpus_per_task: 2
     mem: "8G"
 
-    modules: [ "Python/3.11.3-GCCcore-12.3.0"]
+    modules: [ "Python/3.11.3-GCCcore-12.3.0", "rclone/1.63.1-amd64"]
     job_limit: 1000
     array_task_limit: 1000
     max_parallel: 50

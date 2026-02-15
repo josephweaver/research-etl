@@ -1,9 +1,9 @@
 project_id: land_core
 
 requires_pipelines:
-  - pipelines/yanroy/extract_field.yml
+  - pipelines/yanroy/extract_fields.yml
   - pipelines/tiger/state.yml
-  
+
 vars:
   dataset_id: "stage.yanroy_tiles_of_interest_v1"
   name: yanroy.tiles_of_interest
@@ -19,7 +19,7 @@ vars:
   gdrive_tiles_dst: "Data/ETL/Meta"
 
 dirs:
-  workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  workdir: "{env.workdir}/yanroy/tile.of.interest/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
   logdir: "{workdir}/logs"
   metadir: "{workdir}/meta"
   tiger_state_extractdir: "{env.basedir}/data/tiger/state/extract"

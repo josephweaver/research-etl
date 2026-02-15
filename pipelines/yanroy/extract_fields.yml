@@ -3,7 +3,7 @@ requires_pipelines:
 vars:
   name: yanroy.extract_fields
 dirs:
-  workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  workdir: "{env.workdir}/yanroy/fields/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
   archivedir: "{env.basedir}\\data\\yanroy\\raw"
   logdir: "{workdir}\\logs"
   fieldsdir: "{env.basedir}\\data\\yanroy\\fields"

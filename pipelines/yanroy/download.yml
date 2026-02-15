@@ -13,9 +13,9 @@ vars:
   # Shared drive ID is optional; if set it overrides shared_drive_name in the plugin.
   gdrive_shared_drive_id: "0AKJcAvvAyp4oUk9PVA"
 dirs:
-  workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  workdir: "{env.workdir}/yanroy/download/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
   logdir: "{workdir}/logs"
-  rawdir: "{env.basedir}/data/{name}/raw"
+  rawdir: "{env.basedir}/data/yanroy/raw"
 
 
 steps:
