@@ -65,6 +65,7 @@ class LocalExecutor(Executor):
         plugin_dir = self.plugin_dir
         global_vars = context.get("global_vars") or {}
         execution_env = context.get("execution_env") or {}
+        commandline_vars = context.get("commandline_vars") or {}
 
         if self.enforce_git_checkout:
             repo_root = Path(context.get("repo_root") or Path(".").resolve()).resolve()
@@ -140,6 +141,7 @@ class LocalExecutor(Executor):
                 pipeline_ref,
                 global_vars=global_vars,
                 env_vars=execution_env,
+                context_vars=commandline_vars,
             )
         except PipelineError as exc:
             raise RuntimeError(f"Pipeline parse failed: {exc}") from exc

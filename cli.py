@@ -67,17 +67,49 @@ def _first_non_empty_text(*values: Any) -> str | None:
 def _resolve_workdir(
     *,
     cli_workdir: str | None,
+    commandline_vars: Dict[str, Any] | None = None,
     pipeline,
     env_vars: Dict[str, Any],
     global_vars: Dict[str, Any],
 ) -> str:
     resolved = _first_non_empty_text(
         cli_workdir,
+        (commandline_vars or {}).get("workdir"),
         getattr(pipeline, "workdir", None),
         env_vars.get("workdir"),
         global_vars.get("workdir"),
     )
     return resolved or ".runs"
+
+
+def _assign_dotted_path(target: Dict[str, Any], dotted_key: str, value: Any) -> None:
+    parts = [p.strip() for p in str(dotted_key or "").split(".")]
+    if not parts or any(not p for p in parts):
+        raise ValueError(f"Invalid --var key: '{dotted_key}'")
+    cur: Dict[str, Any] = target
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[part] = nxt
+        cur = nxt
+    cur[parts[-1]] = value
+
+
+def _parse_cli_var_overrides(entries: List[str] | None) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for raw in list(entries or []):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if "=" not in text:
+            raise ValueError(f"Invalid --var '{text}': expected KEY=VALUE")
+        key, value = text.split("=", 1)
+        key_text = key.strip()
+        if not key_text:
+            raise ValueError(f"Invalid --var '{text}': key may not be empty")
+        _assign_dotted_path(out, key_text, value)
+    return out
 
 
 def _has_successful_run_for_pipeline(pipeline_path: Path, *, workdir: str) -> bool:
@@ -98,6 +130,7 @@ def _resolve_required_pipelines(
     *,
     global_vars: Dict[str, Any],
     env_vars: Dict[str, Any],
+    context_vars: Dict[str, Any] | None,
     stack: List[Path],
     visiting: Set[str],
     ordered: List[Path],
@@ -112,7 +145,7 @@ def _resolve_required_pipelines(
 
     visiting.add(key)
     stack.append(canonical)
-    pipeline = parse_pipeline(canonical, global_vars=global_vars, env_vars=env_vars)
+    pipeline = parse_pipeline(canonical, global_vars=global_vars, env_vars=env_vars, context_vars=context_vars)
     base_dir = canonical.parent
     for req in pipeline.requires_pipelines:
         req_path = Path(req)
@@ -126,6 +159,7 @@ def _resolve_required_pipelines(
             req_path,
             global_vars=global_vars,
             env_vars=env_vars,
+            context_vars=context_vars,
             stack=stack,
             visiting=visiting,
             ordered=ordered,
@@ -142,17 +176,24 @@ def _submit_pipeline_run(
     pipeline_path: Path,
     global_vars: Dict[str, Any],
     exec_env: Dict[str, Any],
+    commandline_vars: Dict[str, Any],
     resume_run_id: str | None,
 ) -> int:
     plugins_dir_path = Path(args.plugins_dir)
     repo_root = Path(".").resolve()
     try:
-        pipeline = parse_pipeline(pipeline_path, global_vars=global_vars, env_vars=exec_env)
+        pipeline = parse_pipeline(
+            pipeline_path,
+            global_vars=global_vars,
+            env_vars=exec_env,
+            context_vars=commandline_vars,
+        )
     except (PipelineError, FileNotFoundError) as exc:
         print(f"Invalid pipeline: {exc}", file=sys.stderr)
         return 1
     resolved_workdir = _resolve_workdir(
-        cli_workdir=args.workdir,
+        cli_workdir=None,
+        commandline_vars=commandline_vars,
         pipeline=pipeline,
         env_vars=exec_env,
         global_vars=global_vars,
@@ -227,6 +268,7 @@ def _submit_pipeline_run(
                 "provenance": provenance,
                 "repo_root": repo_root,
                 "global_vars": global_vars,
+                "commandline_vars": commandline_vars,
                 "execution_source": execution_source,
                 "source_bundle": source_bundle,
                 "source_snapshot": source_snapshot,
@@ -412,6 +454,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Ensure SLURM path inherits explicit CLI overrides even when environments config is used.
     exec_env["step_max_retries"] = max_retries
     exec_env["step_retry_delay_seconds"] = retry_delay_seconds
+    try:
+        commandline_vars = _parse_cli_var_overrides(getattr(args, "var", None))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.workdir:
+        # Keep explicit --workdir as the strongest CLI override, unified under one overlay.
+        commandline_vars["workdir"] = str(args.workdir)
     if bool(getattr(args, "ignore_dependencies", False)):
         print("Ignoring pipeline dependencies (--ignore-dependencies).")
         return _submit_pipeline_run(
@@ -419,6 +469,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             pipeline_path=pipeline_path.resolve(),
             global_vars=global_vars,
             exec_env=exec_env,
+            commandline_vars=commandline_vars,
             resume_run_id=args.resume_run_id,
         )
     try:
@@ -427,6 +478,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             pipeline_path.resolve(),
             global_vars=global_vars,
             env_vars=exec_env,
+            context_vars=commandline_vars,
             stack=[],
             visiting=set(),
             ordered=ordered_reqs,
@@ -440,12 +492,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         if dep.resolve() == target:
             continue
         try:
-            dep_pipeline = parse_pipeline(dep, global_vars=global_vars, env_vars=exec_env)
+            dep_pipeline = parse_pipeline(
+                dep,
+                global_vars=global_vars,
+                env_vars=exec_env,
+                context_vars=commandline_vars,
+            )
         except (PipelineError, FileNotFoundError) as exc:
             print(f"Invalid pipeline: {exc}", file=sys.stderr)
             return 1
         dep_workdir = _resolve_workdir(
-            cli_workdir=args.workdir,
+            cli_workdir=None,
+            commandline_vars=commandline_vars,
             pipeline=dep_pipeline,
             env_vars=exec_env,
             global_vars=global_vars,
@@ -459,6 +517,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             pipeline_path=dep,
             global_vars=global_vars,
             exec_env=exec_env,
+            commandline_vars=commandline_vars,
             resume_run_id=None,
         )
         if dep_rc != 0:
@@ -470,6 +529,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         pipeline_path=target,
         global_vars=global_vars,
         exec_env=exec_env,
+        commandline_vars=commandline_vars,
         resume_run_id=args.resume_run_id,
     )
 
@@ -791,6 +851,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--project-id", default=None, help="Project partition id override (default inferred from pipeline metadata/path).")
     p_run.add_argument("--plugins-dir", default="plugins", help="Directory containing plugins")
     p_run.add_argument("--workdir", default=None, help="Directory to store run artifacts (overrides pipeline/env/global workdir).")
+    p_run.add_argument(
+        "--var",
+        action="append",
+        default=[],
+        help="Runtime variable override in KEY=VALUE form (repeatable; highest precedence).",
+    )
     p_run.add_argument("--dry-run", action="store_true", help="Parse and plan without executing plugins")
     p_run.add_argument("--max-retries", type=int, default=None, help="Max retries per step after first failure")
     p_run.add_argument("--retry-delay-seconds", type=float, default=None, help="Delay between retries in seconds")

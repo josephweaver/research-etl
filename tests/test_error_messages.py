@@ -56,3 +56,14 @@ def test_apply_execution_env_overrides_rejects_bad_integer(monkeypatch) -> None:
     monkeypatch.setenv("ETL_MAX_PARALLEL", "not-int")
     with pytest.raises(ExecutionConfigError):
         apply_execution_env_overrides({})
+
+
+def test_cmd_run_rejects_invalid_var_syntax(capsys) -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["run", "pipelines/sample.yml", "--var", "missing_equals"])
+    args._raw_argv = ["run", "pipelines/sample.yml", "--var", "missing_equals"]
+
+    rc = cli.cmd_run(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "expected KEY=VALUE" in captured.err

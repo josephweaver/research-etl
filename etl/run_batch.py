@@ -39,6 +39,36 @@ def _vprint(enabled: bool, message: str) -> None:
         print(f"[run_batch] {message}")
 
 
+def _assign_dotted_path(target: dict, dotted_key: str, value: str) -> None:
+    parts = [p.strip() for p in str(dotted_key or "").split(".")]
+    if not parts or any(not p for p in parts):
+        raise ValueError(f"Invalid --var key: '{dotted_key}'")
+    cur = target
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[part] = nxt
+        cur = nxt
+    cur[parts[-1]] = value
+
+
+def _parse_cli_var_overrides(entries: list[str] | None) -> dict:
+    out: dict = {}
+    for raw in list(entries or []):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if "=" not in text:
+            raise ValueError(f"Invalid --var '{text}': expected KEY=VALUE")
+        key, value = text.split("=", 1)
+        key_text = key.strip()
+        if not key_text:
+            raise ValueError(f"Invalid --var '{text}': key may not be empty")
+        _assign_dotted_path(out, key_text, value)
+    return out
+
+
 def load_context(path: Path) -> dict:
     if not path or not path.exists():
         return {}
@@ -104,8 +134,19 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
     )
     parser.add_argument("--env", help="Execution environment name (from environments config)", default=None)
+    parser.add_argument(
+        "--var",
+        action="append",
+        default=[],
+        help="Runtime variable override in KEY=VALUE form (repeatable; highest precedence).",
+    )
     parser.add_argument("--verbose", action="store_true", help="Print batch progress details")
     args = parser.parse_args(argv)
+    try:
+        commandline_vars = _parse_cli_var_overrides(args.var)
+    except ValueError as exc:
+        print(str(exc))
+        return 1
     run_id = args.run_id
     if not run_id:
         print("run_batch.py requires --run-id for remote tracking consistency")
@@ -159,7 +200,12 @@ def main(argv: list[str] | None = None) -> int:
         args.environments_config = str(resolved_exec_cfg)
 
     try:
-        full_pipeline = parse_pipeline(Path(args.pipeline), global_vars=global_vars, env_vars=exec_env)
+        full_pipeline = parse_pipeline(
+            Path(args.pipeline),
+            global_vars=global_vars,
+            env_vars=exec_env,
+            context_vars=commandline_vars,
+        )
     except PipelineError as exc:
         print(f"Pipeline error: {exc}")
         return 1

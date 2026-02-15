@@ -29,47 +29,11 @@ from ..pipeline import Pipeline
 from ..pipeline import parse_pipeline
 from ..plugins.base import load_plugin
 from ..tracking import fetch_plugin_resource_stats, upsert_run_status
+from ..variable_solver import VariableSolver
 
 
 class SlurmSubmitError(RuntimeError):
     """Raised when sbatch submission fails."""
-
-
-_TPL_RE = re.compile(r"\{([^{}]+)\}")
-
-
-def _lookup_ctx_path(ctx: Dict[str, Any], dotted: str) -> tuple[Any, bool]:
-    cur: Any = ctx
-    for part in str(dotted or "").split("."):
-        if isinstance(cur, dict) and part in cur:
-            cur = cur[part]
-            continue
-        return None, False
-    return cur, True
-
-
-def _resolve_text_with_ctx(value: str, ctx: Dict[str, Any]) -> str:
-    text = str(value or "")
-
-    def _repl(match: re.Match[str]) -> str:
-        key = str(match.group(1) or "")
-        found, ok = _lookup_ctx_path(ctx, key)
-        if not ok or isinstance(found, (dict, list)):
-            return match.group(0)
-        return str(found)
-
-    return _TPL_RE.sub(_repl, text)
-
-
-def _resolve_text_with_ctx_iterative(value: str, ctx: Dict[str, Any], *, max_passes: int = 20) -> str:
-    cur = str(value or "")
-    passes = max(1, int(max_passes or 20))
-    for _ in range(passes):
-        nxt = _resolve_text_with_ctx(cur, ctx)
-        if nxt == cur:
-            return cur
-        cur = nxt
-    return cur
 
 
 def _parse_slurm_time_to_minutes(value: str) -> Optional[float]:
@@ -107,6 +71,21 @@ def _format_minutes_as_slurm_time(minutes: float) -> str:
     hours, rem = divmod(total_seconds, 3600)
     mins, secs = divmod(rem, 60)
     return f"{hours:02d}:{mins:02d}:{secs:02d}"
+
+
+def _flatten_vars_for_cli(values: Dict[str, Any], prefix: str = "") -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    for key in sorted(values.keys()):
+        k = str(key).strip()
+        if not k:
+            continue
+        full_key = f"{prefix}.{k}" if prefix else k
+        raw = values.get(key)
+        if isinstance(raw, dict):
+            items.extend(_flatten_vars_for_cli(raw, prefix=full_key))
+            continue
+        items.append((full_key, "" if raw is None else str(raw)))
+    return items
 
 
 def _parse_mem_to_mb(value: str) -> Optional[int]:
@@ -483,6 +462,7 @@ class SlurmExecutor(Executor):
             Path(pipeline_path),
             global_vars=context.get("global_vars") or {},
             env_vars=context.get("execution_env") or {},
+            context_vars=context.get("commandline_vars") or {},
         )
         batches = self._group_steps_with_indices(pipeline.steps)
         submission_records = []
@@ -491,41 +471,46 @@ class SlurmExecutor(Executor):
         default_remote_workdir = (Path(self.env.workdir or self.workdir) / jobname / run_date / run_fs_id).as_posix()
         pipeline_workdir_template = str((getattr(pipeline, "dirs", {}) or {}).get("workdir") or "").strip()
         resolve_max_passes = max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20))
-        remote_workdir = default_remote_workdir
-        if pipeline_workdir_template:
-            workdir_ctx: Dict[str, Any] = {
-                "sys": {
-                    "now": {"yymmdd": run_date, "hhmmss": run_stamp},
-                    "run": {"id": run_id, "short_id": run_id[:8]},
-                    "job": {"id": run_id, "name": jobname},
-                },
-                "vars": dict(getattr(pipeline, "vars", {}) or {}),
-                "env": dict(context.get("execution_env") or {}),
-                "global": dict(context.get("global_vars") or {}),
-                "globals": dict(context.get("global_vars") or {}),
-                "dirs": dict(getattr(pipeline, "dirs", {}) or {}),
-                "workdir": default_remote_workdir,
-                "jobname": jobname,
-                "run_id": run_id,
+        path_style = str((context.get("execution_env") or {}).get("path_style") or "").strip()
+        style_norm = VariableSolver._normalize_path_style(path_style)
+        if not style_norm:
+            # SLURM submission paths are cluster-side paths; default to POSIX.
+            style_norm = "unix"
+        solver = VariableSolver(max_passes=resolve_max_passes)
+        global_ns = dict(context.get("global_vars") or {})
+        env_ns = dict(context.get("execution_env") or {})
+        commandline_ns = dict(context.get("commandline_vars") or {})
+        solver.overlay("global", global_ns, add_namespace=True, add_flat=True)
+        solver.overlay("globals", global_ns, add_namespace=True, add_flat=False)
+        solver.overlay("env", env_ns, add_namespace=True, add_flat=True)
+        solver.overlay("pipe", dict(getattr(pipeline, "vars", {}) or {}), add_namespace=True, add_flat=True)
+        solver.overlay("vars", dict(getattr(pipeline, "vars", {}) or {}), add_namespace=True, add_flat=False)
+        solver.overlay("dirs", dict(getattr(pipeline, "dirs", {}) or {}), add_namespace=True, add_flat=True)
+        solver.overlay("commandline", commandline_ns, add_namespace=True, add_flat=True)
+        solver.with_sys(
+            {
+                "run": {"id": run_id, "short_id": run_id[:8]},
+                "job": {"id": run_id, "name": jobname},
+                "step": {"id": "", "name": "", "index": ""},
+                "now": {"yymmdd": run_date, "hhmmss": run_stamp},
             }
-            current = pipeline_workdir_template
-            for _ in range(resolve_max_passes):
-                workdir_ctx["workdir"] = current
-                dirs_ns = dict(workdir_ctx.get("dirs") or {})
-                dirs_ns["workdir"] = current
-                workdir_ctx["dirs"] = dirs_ns
-                nxt = _resolve_text_with_ctx_iterative(current, workdir_ctx, max_passes=resolve_max_passes)
-                if nxt == current:
-                    break
-                current = nxt
-            candidate = str(current or "").strip()
+        )
+        solver.update({"run_id": run_id, "jobname": jobname})
+        existing_workdir = str(solver.get("workdir", "", resolve=False) or "").strip()
+        if not existing_workdir:
+            solver.update({"workdir": default_remote_workdir})
+        remote_workdir = solver.get_path("workdir", default_remote_workdir, path_style=style_norm)
+        if pipeline_workdir_template:
+            solver.update({"_candidate_workdir": pipeline_workdir_template})
+            candidate = str(solver.get("_candidate_workdir", "", resolve=True) or "").strip()
             if "{" in candidate or "}" in candidate:
                 raise SlurmSubmitError(
                     "Could not fully resolve pipeline dirs.workdir for SLURM submit: "
                     f"{pipeline_workdir_template}"
                 )
             if candidate:
-                remote_workdir = candidate
+                remote_workdir = solver.get_path("_candidate_workdir", candidate, resolve=True, path_style=style_norm)
+        solver.update({"workdir": remote_workdir})
         remote_workdir_root = Path(remote_workdir)
         context_file = f"{remote_workdir}/context.json"
         checkout_root = (self.remote_base / self.local_repo_name).as_posix()
@@ -662,26 +647,9 @@ class SlurmExecutor(Executor):
                     (Path(checkout_root) / ec_path).as_posix() if not ec_path.is_absolute() else ec_path.as_posix()
                 )
 
-        pipeline_logdir_template = str((getattr(pipeline, "dirs", {}) or {}).get("logdir") or "").strip()
-        pipeline_logdir_resolved = ""
-        if pipeline_logdir_template:
-            resolve_ctx = {
-                "workdir": remote_workdir,
-                "dirs": dict(getattr(pipeline, "dirs", {}) or {}),
-                "sys": {
-                    "now": {"yymmdd": run_date, "hhmmss": run_stamp},
-                    "run": {"id": run_id, "short_id": run_id[:8]},
-                },
-                "vars": dict(getattr(pipeline, "vars", {}) or {}),
-            }
-            resolve_ctx["dirs"]["workdir"] = remote_workdir
-            pipeline_logdir_resolved = _resolve_text_with_ctx_iterative(
-                pipeline_logdir_template,
-                resolve_ctx,
-                max_passes=resolve_max_passes,
-            )
-            if "{" in pipeline_logdir_resolved or "}" in pipeline_logdir_resolved:
-                pipeline_logdir_resolved = ""
+        pipeline_logdir_resolved = str(solver.get_path("dirs.logdir", "", path_style=style_norm) or "").strip()
+        if "{" in pipeline_logdir_resolved or "}" in pipeline_logdir_resolved:
+            pipeline_logdir_resolved = ""
         use_pipeline_logdir = bool(pipeline_logdir_resolved)
         base_logdir = Path(pipeline_logdir_resolved or self.env.logdir or (self.workdir / "slurm_logs"))
 
@@ -782,6 +750,7 @@ class SlurmExecutor(Executor):
                     resume_run_id=resume_run_id,
                     global_config_path=global_config_remote,
                     environments_config_path=environments_config_remote,
+                    commandline_vars=commandline_ns,
                     sbatch_time=batch_resources.get("time"),
                     sbatch_cpus_per_task=batch_resources.get("cpus_per_task"),
                     sbatch_mem=batch_resources.get("mem"),
@@ -823,6 +792,7 @@ class SlurmExecutor(Executor):
                         resume_run_id=resume_run_id,
                         global_config_path=global_config_remote,
                         environments_config_path=environments_config_remote,
+                        commandline_vars=commandline_ns,
                         sbatch_time=batch_resources.get("time"),
                         sbatch_cpus_per_task=batch_resources.get("cpus_per_task"),
                         sbatch_mem=batch_resources.get("mem"),
@@ -1001,6 +971,7 @@ class SlurmExecutor(Executor):
         resume_run_id: Optional[str] = None,
         global_config_path: Optional[str] = None,
         environments_config_path: Optional[str] = None,
+        commandline_vars: Optional[Dict[str, Any]] = None,
         sbatch_time: Optional[str] = None,
         sbatch_cpus_per_task: Optional[int] = None,
         sbatch_mem: Optional[str] = None,
@@ -1098,6 +1069,8 @@ class SlurmExecutor(Executor):
             cmd += ["--global-config", global_config_path]
         if environments_config_path and self.env_name:
             cmd += ["--environments-config", environments_config_path, "--env", self.env_name]
+        for key, value in _flatten_vars_for_cli(dict(commandline_vars or {})):
+            cmd += ["--var", f"{key}={value}"]
         if self.verbose:
             cmd += ["--verbose"]
 
