@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -56,6 +57,7 @@ def _build_step_attempt_summary(result: RunResult) -> list[dict]:
         summary.append(
             {
                 "step_name": step_res.step.name,
+                "step_id": step_res.step_id,
                 "attempts": int(step_res.attempt_no),
                 "success": bool(step_res.success),
                 "skipped": bool(step_res.skipped),
@@ -184,6 +186,10 @@ def main(argv: list[str] | None = None) -> int:
         resume_succeeded_steps = {name for name, st in states.items() if st.success}
         prior_step_outputs = {name: st.outputs for name, st in states.items()}
     queue_dir = Path(exec_env.get("db_sync_queue_dir") or (Path(args.workdir) / "db_sync_queue" / "pending"))
+    scheduler_meta = {
+        "slurm_job_id": str(os.environ.get("SLURM_JOB_ID", "") or ""),
+        "slurm_array_task_id": str(os.environ.get("SLURM_ARRAY_TASK_ID", "") or ""),
+    }
     for step in pipeline.steps:
         if step.output_var and step.name in prior_step_outputs:
             ctx[step.output_var] = prior_step_outputs.get(step.name, {})
@@ -204,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         artifact_dir=str(args.workdir),
         provenance=provenance,
         event_type="batch_started",
-        event_details={"step_indices": indices},
+        event_details={"step_indices": indices, "scheduler": scheduler_meta},
     )
 
     result: RunResult = run_pipeline(
@@ -221,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     batch_ended_at = datetime.utcnow().isoformat() + "Z"
     for step_res in result.steps:
+        step_artifact_dir = str(Path(args.workdir) / step_res.step.name / str(step_res.step_id or ""))
         attempts = step_res.attempts or []
         if attempts:
             for att in attempts:
@@ -246,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
                     ended_at=att.get("ended_at", batch_ended_at),
                     pipeline=args.pipeline,
                     project_id=project_id,
-                    artifact_dir=str(args.workdir),
+                    artifact_dir=step_artifact_dir,
                     executor="slurm",
                 )
         elif step_res.attempt_no > 0:
@@ -266,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
                 ended_at=batch_ended_at,
                 pipeline=args.pipeline,
                 project_id=project_id,
-                artifact_dir=str(args.workdir),
+                artifact_dir=step_artifact_dir,
                 executor="slurm",
             )
 
@@ -298,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
             artifact_dir=str(args.workdir),
             provenance=provenance,
             event_type="batch_failed",
-            event_details={"step_indices": indices, "step_attempts": step_attempts},
+            event_details={"step_indices": indices, "step_attempts": step_attempts, "scheduler": scheduler_meta},
         )
         return 1
 
@@ -321,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         artifact_dir=str(args.workdir),
         provenance=provenance,
         event_type="batch_skipped" if all_skipped else "batch_completed",
-        event_details={"step_indices": indices, "step_attempts": step_attempts},
+        event_details={"step_indices": indices, "step_attempts": step_attempts, "scheduler": scheduler_meta},
     )
 
     # No polling: mark run complete when the last planned step index completes.
@@ -342,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
             artifact_dir=str(args.workdir),
             provenance=provenance,
             event_type="run_completed",
-            event_details={"step_indices": indices, "step_attempts": step_attempts},
+            event_details={"step_indices": indices, "step_attempts": step_attempts, "scheduler": scheduler_meta},
         )
 
     return 0

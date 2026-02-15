@@ -3,6 +3,11 @@ project_id: land_core
 vars:
   dataset_id: "raw.tiger_county_download_v1"
   name: tiger_county
+  data_class: RAW
+  dataset_title: "U.S. Census TIGER/Line County Boundaries (2025)"
+  dataset_notes: "National county boundary polygons from TIGER/Line. Includes county-level administrative boundaries for U.S. analysis workflows."
+  catalog_json: ".runs/catalog/catalog.json"
+  catalog_repo: "../landcore-data-catalog"
 
 dirs:
   workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
@@ -34,3 +39,46 @@ steps:
       input_dir: "{extractdir}"
       output_dir: "{workdir}/vector_facts"
     output_var: vector_facts
+
+  - name: ai_evidence_tiger_county
+    plugin: ai_dataset_evidence_bundle.py
+    args:
+      dataset_id: "{dataset_id}"
+      input_path: "{extractdir}"
+      vector_facts_json: "{vector_facts.vector_facts_json}"
+      output_dir: "{workdir}/ai_context"
+      supplemental_urls_file: "pipelines/tiger/county_urls.txt"
+      notes: "{dataset_notes}"
+    output_var: evidence
+
+  - name: ai_research_tiger_county
+    plugin: ai_dataset_research.py
+    args:
+      dataset_id: "{dataset_id}"
+      data_class: "{data_class}"
+      title: "{dataset_title}"
+      artifact_uri: "{extractdir}"
+      sample_file: "{evidence.sample_file}"
+      schema_file: "{evidence.schema_file}"
+      notes_file: "{evidence.notes_file}"
+      supplemental_urls_file: "{evidence.supplemental_urls_file}"
+      output_dir: "{workdir}/catalog_ai"
+    output_var: catalog_ai
+
+  - name: catalog_json_upsert_tiger_county
+    plugin: catalog_json_upsert.py
+    args:
+      research_file: "{catalog_ai.output_file}"
+      catalog_json: "{catalog_json}"
+      project_id: land_core
+      source_step: ai_research_tiger_county
+    output_var: catalog_json_out
+
+  - name: catalog_yaml_sync_tiger_county
+    plugin: catalog_yaml_sync.py
+    args:
+      dataset_id: "{dataset_id}"
+      catalog_json: "{catalog_json}"
+      catalog_repo: "{catalog_repo}"
+      overwrite_managed_fields: false
+    output_var: catalog_yaml

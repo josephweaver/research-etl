@@ -29,7 +29,7 @@ def test_runner_resolves_sys_placeholders_in_step_args(tmp_path: Path) -> None:
         steps=[
             Step(
                 name="s1",
-                script="capture.py tag={sys.now.yymmdd}-{sys.run.short_id} rid={sys.run.id} sname={sys.step.name}",
+                script="capture.py tag={sys.now.yymmdd}-{sys.run.short_id} rid={sys.run.id} sname={sys.step.name} sid={sys.step.id}",
                 output_var="out",
             )
         ],
@@ -46,6 +46,7 @@ def test_runner_resolves_sys_placeholders_in_step_args(tmp_path: Path) -> None:
     out = result.steps[0].outputs["args"]
     assert out["rid"] == run_id
     assert out["sname"] == "s1"
+    assert len(str(out["sid"])) == 32
     assert out["tag"].endswith("-12345678")
     assert "{" not in out["tag"]
 

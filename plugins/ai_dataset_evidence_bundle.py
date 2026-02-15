@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import struct
 import zipfile
 from collections import Counter
 from io import StringIO
@@ -39,6 +40,8 @@ meta = {
         "input_glob": {"type": "str", "default": ""},
         "pipeline_glob": {"type": "str", "default": "pipelines/*.yml"},
         "code_glob": {"type": "str", "default": ""},
+        "vector_facts_json": {"type": "str", "default": ""},
+        "vector_facts_csv": {"type": "str", "default": ""},
         "supplemental_urls": {"type": "str", "default": ""},
         "supplemental_urls_file": {"type": "str", "default": ""},
         "notes": {"type": "str", "default": ""},
@@ -140,6 +143,19 @@ def _resolve_glob_files(pattern: str) -> List[Path]:
     if p.is_absolute():
         return [p] if p.exists() and p.is_file() else []
     return [v for v in Path(".").glob(pat) if v.is_file()]
+
+
+def _read_json_list_optional(path_text: str) -> List[Dict[str, Any]]:
+    raw = str(path_text or "").strip()
+    if not raw:
+        return []
+    p = Path(raw).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"input file not found: {p}")
+    data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
 
 
 def _read_archive_members(path: Path) -> List[str]:
@@ -274,6 +290,75 @@ def _infer_tabular_schema_from_text(text: str, suffix: str, sample_rows: int, sc
         return {"format": "jsonl", "fields": fields, "sample_rows": sample}
 
     return {"format": suffix.lstrip("."), "fields": [], "sample_rows": []}
+
+
+def _infer_dbf_schema(path: Path, sample_rows: int) -> Dict[str, Any]:
+    raw = path.read_bytes()
+    if len(raw) < 32:
+        return {"format": "dbf", "fields": [], "sample_rows": [], "record_count": 0}
+    record_count = int(struct.unpack("<I", raw[4:8])[0])
+    header_len = int(struct.unpack("<H", raw[8:10])[0])
+    record_len = int(struct.unpack("<H", raw[10:12])[0])
+
+    fields: List[Dict[str, Any]] = []
+    pos = 32
+    while pos + 32 <= len(raw):
+        desc = raw[pos : pos + 32]
+        if not desc or desc[0] == 0x0D:
+            break
+        name = desc[0:11].split(b"\x00", 1)[0].decode("ascii", errors="replace").strip()
+        dbf_type = chr(desc[11])
+        width = int(desc[16])
+        decimals = int(desc[17])
+        inferred = "string"
+        if dbf_type in {"N", "F"}:
+            inferred = "number" if decimals > 0 else "integer"
+        elif dbf_type == "L":
+            inferred = "boolean"
+        elif dbf_type == "D":
+            inferred = "date"
+        fields.append(
+            {
+                "name": name,
+                "dbf_type": dbf_type,
+                "length": width,
+                "decimal_count": decimals,
+                "inferred_type": inferred,
+            }
+        )
+        pos += 32
+
+    samples: List[Dict[str, Any]] = []
+    if header_len > 0 and record_len > 1 and fields:
+        row_pos = header_len
+        for _ in range(min(max(0, int(sample_rows)), max(0, record_count))):
+            if row_pos + record_len > len(raw):
+                break
+            rec = raw[row_pos : row_pos + record_len]
+            row_pos += record_len
+            if not rec or rec[0] == 0x2A:
+                continue
+            out: Dict[str, Any] = {}
+            cursor = 1
+            for field in fields:
+                width = int(field.get("length") or 0)
+                chunk = rec[cursor : cursor + width]
+                cursor += width
+                text = chunk.decode("latin-1", errors="replace").strip()
+                ftype = str(field.get("dbf_type") or "")
+                if not text:
+                    out[str(field.get("name") or "")] = ""
+                elif ftype in {"N", "F"}:
+                    try:
+                        out[str(field.get("name") or "")] = float(text) if "." in text else int(text)
+                    except Exception:
+                        out[str(field.get("name") or "")] = text
+                elif ftype == "L":
+                    out[str(field.get("name") or "")] = text[:1].upper() in {"Y", "T", "1"}
+                else:
+                    out[str(field.get("name") or "")] = text
+            samples.append(out)
+    return {"format": "dbf", "fields": fields, "sample_rows": samples, "record_count": record_count}
 
 
 def _collect_archive_records(path: Path, max_files: int) -> List[Dict[str, Any]]:
@@ -514,6 +599,21 @@ def run(args, ctx):
             )
         except Exception as exc:  # noqa: BLE001
             schema_candidates.append({"path": str(rec.get("path") or ""), "error": str(exc)})
+    dbf_candidates = [
+        Path(record["path"])
+        for record in file_records
+        if "::" not in str(record["path"]) and Path(str(record["path"])).suffix.lower() == ".dbf"
+    ]
+    for path in dbf_candidates[:3]:
+        try:
+            schema_candidates.append(
+                {
+                    "path": path.as_posix(),
+                    "schema": _infer_dbf_schema(path, sample_rows=sample_rows),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            schema_candidates.append({"path": path.as_posix(), "error": str(exc)})
 
     raster_count = sum(1 for record in file_records if str(record.get("suffix") or "").lower() in _RASTER_EXTS)
     raster_examples = [record["path"] for record in file_records if record["suffix"] in _RASTER_EXTS][:20]
@@ -546,6 +646,20 @@ def run(args, ctx):
         [*_split_csvish(str(args.get("supplemental_urls") or "")), *_read_lines_file(str(args.get("supplemental_urls_file") or ""))]
     )
 
+    vector_details = _read_json_list_optional(str(args.get("vector_facts_json") or ""))
+    vector_feature_total = 0
+    vector_types: Counter[str] = Counter()
+    for row in vector_details:
+        gtype = str(row.get("geometry_type") or "").strip()
+        if gtype:
+            vector_types[gtype] += 1
+        try:
+            feature_val = row.get("feature_count")
+            if feature_val is not None and str(feature_val).strip() != "":
+                vector_feature_total += int(feature_val)
+        except Exception:
+            pass
+
     manifest: Dict[str, Any] = {
         "dataset_id": dataset_id,
         "inputs": [p.resolve().as_posix() for p in roots],
@@ -564,7 +678,11 @@ def run(args, ctx):
         "dataset_references": dataset_refs,
         "raster_examples": raster_examples,
         "raster_details": raster_details,
+        "vector_details": vector_details,
+        "vector_geometry_types": dict(sorted(vector_types.items(), key=lambda kv: (-kv[1], kv[0]))),
     }
+    manifest["counts"]["vector_file_count"] = len(vector_details)
+    manifest["counts"]["vector_feature_total"] = vector_feature_total
 
     schema_payload = {
         "dataset_id": dataset_id,
@@ -572,6 +690,8 @@ def run(args, ctx):
         "suffix_counts": manifest["suffix_counts"],
         "tile_segments": tile_segments,
         "raster_details": raster_details,
+        "vector_details": vector_details,
+        "vector_geometry_types": manifest["vector_geometry_types"],
     }
     sample_payload = {
         "dataset_id": dataset_id,
@@ -579,6 +699,7 @@ def run(args, ctx):
         "readme_excerpts": text_excerpts,
         "dataset_references": dataset_refs,
         "raster_details": raster_details[:20],
+        "vector_details": vector_details[:20],
     }
 
     note_lines = [
@@ -587,6 +708,18 @@ def run(args, ctx):
         f"file_records: {manifest['counts']['file_records']}",
         f"raster_file_count: {raster_count}",
     ]
+    if len(vector_details):
+        note_lines.append(f"vector_file_count: {len(vector_details)}")
+        note_lines.append(f"vector_feature_total: {vector_feature_total}")
+        note_lines.append(f"vector_geometry_types: {', '.join(sorted(vector_types.keys()))}")
+    dbf_schema_hits = [
+        item for item in schema_candidates if isinstance(item, dict) and str((item.get("schema") or {}).get("format") or "") == "dbf"
+    ]
+    if dbf_schema_hits:
+        first_fields = (dbf_schema_hits[0].get("schema") or {}).get("fields") or []
+        field_names = [str(f.get("name") or "") for f in first_fields if str(f.get("name") or "").strip()]
+        if field_names:
+            note_lines.append(f"dbf_fields: {', '.join(field_names[:24])}")
     if tile_segments:
         note_lines.append(f"tile_segments_detected: {', '.join(tile_segments)}")
     if supplemental_urls:

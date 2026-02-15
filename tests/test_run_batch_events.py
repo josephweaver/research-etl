@@ -83,6 +83,7 @@ def test_run_batch_emits_completed_and_run_completed_events(monkeypatch, tmp_pat
     assert completed_payload["step_attempts"] == [
         {
             "step_name": "s1",
+            "step_id": None,
             "attempts": 2,
             "success": True,
             "skipped": False,
@@ -90,6 +91,7 @@ def test_run_batch_emits_completed_and_run_completed_events(monkeypatch, tmp_pat
         },
         {
             "step_name": "s2",
+            "step_id": None,
             "attempts": 1,
             "success": True,
             "skipped": False,
@@ -150,6 +152,7 @@ def test_run_batch_emits_failed_event_with_attempt_summary(monkeypatch, tmp_path
     assert failed_payload["step_attempts"] == [
         {
             "step_name": "s1",
+            "step_id": None,
             "attempts": 2,
             "success": False,
             "skipped": False,

@@ -464,3 +464,40 @@ def test_slurm_pipeline_logdir_overrides_env_logdir(monkeypatch, tmp_path: Path)
     assert "/tmp/env_logs" not in batch_script
     assert "/logs/setup/" in setup_script
     assert "/logs/s1/" in batch_script
+    assert "mkdir -p /tmp/work" in batch_script
+
+
+def test_slurm_uses_pipeline_name_as_jobname_fallback(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(
+        vars={"name": "tiger_state"},
+        steps=[Step(name="s1", script="echo.py")],
+    )
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "remote_dest_dir": remote_dest_dir, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/work", "logdir": "/tmp/logs"},
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+    ex.submit("pipelines/tiger/state.yml", {"run_id": "runabc1234"})
+
+    setup_call = calls[0]
+    assert "/tmp/work/tiger_state/" in str(setup_call["remote_dest_dir"])

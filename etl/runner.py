@@ -146,6 +146,7 @@ def _estimate_cpu_cores_used(cpu_seconds: float, wall_seconds: float) -> Optiona
 class StepResult:
     step: Step
     success: bool
+    step_id: Optional[str] = None
     outputs: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     skipped: bool = False
@@ -461,6 +462,7 @@ def _with_runtime_sys(
     run_started: datetime,
     job_name: str = "",
     step_name: str = "",
+    step_id: str = "",
     step_index: Optional[int] = None,
 ) -> Dict[str, Any]:
     out = dict(base_ctx or {})
@@ -474,7 +476,7 @@ def _with_runtime_sys(
             "name": str(job_name or ""),
         },
         "step": {
-            "id": str(step_name or ""),
+            "id": str(step_id or step_name or ""),
             "name": str(step_name or ""),
             "index": "" if step_index is None else str(step_index),
         },
@@ -680,18 +682,20 @@ def _execute_step(
     step_log_func=None,
 ) -> StepResult:
     log(f"step {step.name}")
+    step_id = uuid.uuid4().hex
     runtime_ctx = _with_runtime_sys(
         dict(ctx_vars),
         run_id=run_id,
         run_started=run_started,
         job_name=str(ctx_vars.get("job_name") or ""),
         step_name=step.name,
+        step_id=step_id,
         step_index=step_index,
     )
 
     if not _eval_when(step.when, runtime_ctx):
         log(f"step {step.name} skipped (when={step.when})")
-        return StepResult(step=step, success=True, skipped=True, attempt_no=0, attempts=[])
+        return StepResult(step=step, success=True, step_id=step_id, skipped=True, attempt_no=0, attempts=[])
     script_runtime = str(_resolve_with_ctx(step.script, runtime_ctx, max_passes=resolve_max_passes))
     env_runtime = _resolve_with_ctx(step.env, runtime_ctx, max_passes=resolve_max_passes)
     plugin_ref, arg_tokens = _parse_script(script_runtime)
@@ -699,14 +703,14 @@ def _execute_step(
         plugin_path = _resolve_plugin_path(plugin_dir, plugin_ref)
         plugin = load_plugin(plugin_path)
     except Exception as exc:  # noqa: BLE001
-        return StepResult(step=step, success=False, error=f"Plugin load failed: {exc}")
+        return StepResult(step=step, success=False, step_id=step_id, error=f"Plugin load failed: {exc}")
 
     args = _parse_args(arg_tokens)
     args = _apply_param_types(args, plugin.meta.params)
     args["env"] = env_runtime
 
-    step_workdir = base_workdir / step.name
-    step_logdir = base_logdir / step.name
+    step_workdir = base_workdir / step.name / step_id
+    step_logdir = base_logdir / step.name / step_id / "logs"
 
     sinks: List[Any] = [ConsoleLogSink(run_id, step.name), FileLogSink(step_logdir / "step.log")]
     if step_log_func is not None:
@@ -723,6 +727,7 @@ def _execute_step(
         return StepResult(
             step=step,
             success=True,
+            step_id=step_id,
             outputs={},
             attempt_no=1,
             attempts=[
@@ -800,6 +805,7 @@ def _execute_step(
             return StepResult(
                 step=step,
                 success=True,
+                step_id=step_id,
                 outputs=outputs,
                 attempt_no=attempt_no,
                 attempts=attempt_history,
@@ -842,6 +848,7 @@ def _execute_step(
                 return StepResult(
                     step=step,
                     success=False,
+                    step_id=step_id,
                     error=err,
                     attempt_no=attempt_no,
                     attempts=attempt_history,

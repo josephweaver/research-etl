@@ -426,7 +426,7 @@ class SlurmExecutor(Executor):
         batches = self._group_steps_with_indices(pipeline.steps)
         submission_records = []
         prev_jobid = None
-        jobname = str(pipeline.vars.get("jobname", "run"))
+        jobname = str(pipeline.vars.get("jobname") or pipeline.vars.get("name") or "run")
         remote_workdir_root = Path(self.env.workdir or self.workdir) / jobname / run_date / run_fs_id
         remote_workdir = remote_workdir_root.as_posix()
         context_file = f"{remote_workdir}/context.json"
@@ -669,7 +669,7 @@ class SlurmExecutor(Executor):
                     steps,
                     step_indices,
                     context_file,
-                    step_workdir,
+                    remote_workdir,
                     plugins_remote,
                     step_logdir,
                     venv_path,
@@ -710,7 +710,7 @@ class SlurmExecutor(Executor):
                         chunk_steps,
                         chunk_indices,
                         context_file,
-                        step_workdir,
+                        remote_workdir,
                         plugins_remote,
                         step_logdir,
                         venv_path,
@@ -956,6 +956,9 @@ class SlurmExecutor(Executor):
             lines.append(f"source activate {self.env.conda_env}")
 
         env_workdir = Path(workdir).as_posix()
+        if self.verbose:
+            lines.append("log_step 'ensuring step workdir exists'")
+        lines.append(f"mkdir -p {env_workdir}")
         if self.verbose:
             lines.append("log_step 'switching to step workdir'")
         lines.append(f"cd {env_workdir}")

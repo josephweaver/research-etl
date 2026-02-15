@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import types
 import zipfile
 from pathlib import Path
@@ -10,6 +11,53 @@ from etl.plugins.base import PluginContext, load_plugin
 
 def _ctx(tmp_path: Path) -> PluginContext:
     return PluginContext(run_id="r1", workdir=tmp_path, log=lambda *a, **k: None)
+
+
+def _write_dbf_with_fields(path: Path) -> None:
+    # dBASE III-style file with one record and three fields.
+    # Fields: GEOID (C,5), NAME (C,20), ALAND (N,14,0)
+    fields = [
+        ("GEOID", b"C", 5, 0),
+        ("NAME", b"C", 20, 0),
+        ("ALAND", b"N", 14, 0),
+    ]
+    nrec = 1
+    header_len = 32 + (32 * len(fields)) + 1
+    rec_len = 1 + sum(f[2] for f in fields)
+
+    header = bytearray(32)
+    header[0] = 0x03
+    struct.pack_into("<I", header, 4, nrec)
+    struct.pack_into("<H", header, 8, header_len)
+    struct.pack_into("<H", header, 10, rec_len)
+
+    body = bytearray()
+    for name, ftype, flen, dec in fields:
+        desc = bytearray(32)
+        name_bytes = name.encode("ascii")[:11]
+        desc[0 : len(name_bytes)] = name_bytes
+        desc[11] = ftype[0]
+        desc[16] = flen
+        desc[17] = dec
+        body.extend(desc)
+    body.append(0x0D)
+
+    record = bytearray(rec_len)
+    record[0] = 0x20  # active row
+    cursor = 1
+    values = ["01001", "Autauga", "1539637834"]
+    for (_, _, flen, _), raw_val in zip(fields, values):
+        text = str(raw_val)
+        if len(text) > flen:
+            text = text[:flen]
+        if text.isdigit():
+            text = text.rjust(flen)
+        else:
+            text = text.ljust(flen)
+        record[cursor : cursor + flen] = text.encode("ascii")
+        cursor += flen
+
+    path.write_bytes(bytes(header) + bytes(body) + bytes(record) + b"\x1A")
 
 
 def test_evidence_bundle_scans_nested_tile_dirs_and_builds_outputs(tmp_path: Path) -> None:
@@ -143,3 +191,32 @@ def test_evidence_bundle_reads_7z_member_inventory_with_py7zr(tmp_path: Path, mo
     assert any(item["path"].endswith("README.md") for item in manifest["readme_excerpts"])
     assert any(item["path"].endswith("attrib.csv") for item in manifest["schema_candidates"])
     assert any(item["source"] == "archive_member" for item in manifest["raster_details"])
+
+
+def test_evidence_bundle_extracts_dbf_schema_and_sample_rows(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/ai_dataset_evidence_bundle.py"))
+    data_root = tmp_path / "county"
+    data_root.mkdir(parents=True, exist_ok=True)
+    _write_dbf_with_fields(data_root / "tl_2025_us_county.dbf")
+
+    outputs = plugin.run(
+        {
+            "dataset_id": "raw.tiger_county_download_v1",
+            "input_path": str(data_root),
+            "output_dir": str(tmp_path / "out"),
+        },
+        _ctx(tmp_path),
+    )
+
+    manifest = json.loads(Path(outputs["manifest_file"]).read_text(encoding="utf-8"))
+    dbf_entries = [
+        item for item in (manifest.get("schema_candidates") or [])
+        if str(((item or {}).get("schema") or {}).get("format") or "") == "dbf"
+    ]
+    assert dbf_entries
+    fields = dbf_entries[0]["schema"]["fields"]
+    assert any(str(f.get("name")) == "GEOID" for f in fields)
+    assert any(str(f.get("name")) == "NAME" for f in fields)
+    assert any(str(f.get("name")) == "ALAND" for f in fields)
+    rows = dbf_entries[0]["schema"]["sample_rows"]
+    assert rows and rows[0]["GEOID"] == "01001"
