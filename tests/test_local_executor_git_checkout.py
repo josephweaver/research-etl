@@ -5,6 +5,8 @@ from pathlib import Path
 import etl.executors.local as local_mod
 from etl.executors.local import LocalExecutor
 from etl.git_checkout import GitExecutionSpec
+from etl.pipeline import Pipeline, Step
+from etl.runner import RunResult, StepResult
 
 
 def test_local_executor_runs_from_checkout_when_enforced(tmp_path: Path, monkeypatch) -> None:
@@ -168,3 +170,53 @@ def test_local_executor_prefers_execution_env_git_remote_url(tmp_path: Path, mon
     )
     assert submit.run_id
     assert seen["origin_url"] == "git@github.com:josephweaver/research-etl.git"
+
+
+def test_local_executor_workdir_prefers_commandline_vars_override(tmp_path: Path, monkeypatch) -> None:
+    pipeline_path = tmp_path / "pipeline.yml"
+    pipeline_path.write_text("steps:\n  - name: s1\n    script: echo.py\n", encoding="utf-8")
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(
+        local_mod,
+        "parse_pipeline",
+        lambda *_args, **_kwargs: Pipeline(
+            workdir="/pipe/work",
+            vars={"name": "sample"},
+            steps=[Step(name="s1", script="echo.py")],
+        ),
+    )
+
+    captured = {}
+
+    def _fake_run_pipeline(*args, **kwargs):
+        captured["run_workdir"] = kwargs.get("workdir")
+        return RunResult(
+            run_id="run1",
+            steps=[StepResult(step=Step(name="s1", script="echo.py"), success=True)],
+            artifact_dir=str(kwargs.get("workdir")),
+        )
+
+    def _fake_record_run(_run_result, _pipeline_path, store, **_kwargs):
+        captured["store"] = store
+
+    monkeypatch.setattr(local_mod, "run_pipeline", _fake_run_pipeline)
+    monkeypatch.setattr(local_mod, "record_run", _fake_record_run)
+
+    ex = LocalExecutor(
+        plugin_dir=plugins_dir,
+        workdir=Path("/default/work"),
+        dry_run=True,
+    )
+    submit = ex.submit(
+        str(pipeline_path),
+        context={
+            "global_vars": {"workdir": "/global/work"},
+            "execution_env": {"workdir": "/env/work"},
+            "commandline_vars": {"workdir": "/cli/work"},
+        },
+    )
+    assert submit.run_id
+    assert str(captured["run_workdir"]).replace("\\", "/") == "/cli/work"
+    assert str(captured["store"]).replace("\\", "/") == "/cli/work/runs.jsonl"

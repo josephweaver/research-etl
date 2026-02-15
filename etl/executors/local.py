@@ -21,6 +21,7 @@ from ..git_checkout import (
 from ..pipeline import Pipeline, parse_pipeline, PipelineError
 from ..runner import run_pipeline, RunResult
 from ..tracking import record_run, load_run_step_states
+from ..variable_solver import VariableSolver
 
 
 class LocalExecutor(Executor):
@@ -66,6 +67,29 @@ class LocalExecutor(Executor):
         global_vars = context.get("global_vars") or {}
         execution_env = context.get("execution_env") or {}
         commandline_vars = context.get("commandline_vars") or {}
+        path_style = str(commandline_vars.get("path_style") or execution_env.get("path_style") or "").strip()
+
+        def _resolve_effective_workdir(pipeline_obj: Optional[Pipeline]) -> Path:
+            solver = VariableSolver(max_passes=20)
+            solver.overlay("global", dict(global_vars), add_namespace=True, add_flat=True)
+            solver.overlay("globals", dict(global_vars), add_namespace=True, add_flat=False)
+            solver.overlay("env", dict(execution_env), add_namespace=True, add_flat=True)
+            if pipeline_obj is not None:
+                solver.overlay("pipe", dict(getattr(pipeline_obj, "vars", {}) or {}), add_namespace=True, add_flat=True)
+                solver.overlay("vars", dict(getattr(pipeline_obj, "vars", {}) or {}), add_namespace=True, add_flat=False)
+                solver.overlay("dirs", dict(getattr(pipeline_obj, "dirs", {}) or {}), add_namespace=True, add_flat=True)
+                pipeline_workdir = str(getattr(pipeline_obj, "workdir", "") or "").strip()
+                if pipeline_workdir:
+                    solver.update({"workdir": pipeline_workdir})
+            solver.overlay("commandline", dict(commandline_vars), add_namespace=True, add_flat=True)
+            default_workdir = str(self.workdir)
+            existing = str(solver.get("workdir", "", resolve=False) or "").strip()
+            if not existing:
+                solver.update({"workdir": default_workdir})
+            resolved = str(solver.get_path("workdir", default_workdir, path_style=path_style) or "").strip()
+            return Path(resolved or default_workdir)
+
+        preparse_workdir = _resolve_effective_workdir(None)
 
         if self.enforce_git_checkout:
             repo_root = Path(context.get("repo_root") or Path(".").resolve()).resolve()
@@ -94,7 +118,7 @@ class LocalExecutor(Executor):
                         )
                         if git_remote_override:
                             spec = replace(spec, origin_url=git_remote_override)
-                        checkout_root = ensure_repo_checkout(self.workdir / "_code", spec)
+                        checkout_root = ensure_repo_checkout(preparse_workdir / "_code", spec)
                     elif mode == "git_bundle":
                         if not bundle:
                             raise GitCheckoutError("No source bundle configured.")
@@ -104,7 +128,7 @@ class LocalExecutor(Executor):
                             require_clean=self.require_clean_git,
                             require_origin=False,
                         )
-                        checkout_root = ensure_bundle_checkout(self.workdir / "_code", spec, Path(bundle))
+                        checkout_root = ensure_bundle_checkout(preparse_workdir / "_code", spec, Path(bundle))
                     elif mode == "snapshot":
                         if not snapshot:
                             raise GitCheckoutError("No source snapshot configured.")
@@ -114,7 +138,7 @@ class LocalExecutor(Executor):
                             require_clean=False,
                             require_origin=False,
                         )
-                        checkout_root = ensure_snapshot_checkout(self.workdir / "_code", spec, Path(snapshot))
+                        checkout_root = ensure_snapshot_checkout(preparse_workdir / "_code", spec, Path(snapshot))
                     else:
                         raise GitCheckoutError(f"Unsupported execution_source: {mode}")
                 except Exception as exc:  # noqa: BLE001
@@ -145,6 +169,7 @@ class LocalExecutor(Executor):
             )
         except PipelineError as exc:
             raise RuntimeError(f"Pipeline parse failed: {exc}") from exc
+        effective_workdir = _resolve_effective_workdir(pipeline)
         resume_run_id = context.get("resume_run_id")
         resume_succeeded_steps = None
         prior_step_outputs = None
@@ -168,7 +193,7 @@ class LocalExecutor(Executor):
         run_result = run_pipeline(
             pipeline,
             plugin_dir=plugin_dir,
-            workdir=self.workdir,
+            workdir=effective_workdir,
             run_id=str(context.get("run_id") or "").strip() or None,
             run_started=run_started,
             dry_run=self.dry_run,
@@ -187,7 +212,7 @@ class LocalExecutor(Executor):
         record_run(
             run_result,
             pipeline_path,
-            self.workdir / "runs.jsonl",
+            effective_workdir / "runs.jsonl",
             executor=self.name,
             artifact_dir=getattr(run_result, "artifact_dir", None),
             provenance=context.get("provenance"),
