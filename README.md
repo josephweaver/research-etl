@@ -201,6 +201,8 @@ def run(args, ctx):
   - `env` (optional mapping, templated)
   - `when` (optional string condition; evaluated later)
   - `foreach` (optional list var name; fans out one step per item)
+  - `foreach_glob` (optional glob pattern; fans out one step per matched path)
+  - `foreach_kind` (optional filter for `foreach_glob`: `any`, `files`, `dirs`)
   - `parallel_with` (optional string; consecutive steps with the same value run in parallel)
 
 ### Hierarchical variable resolution
@@ -458,7 +460,9 @@ Artifact browsing uses executor-specific retrieval methods. `local` reads local 
 - Params are type-coerced using plugin `meta.params` (`type`: int/float/bool/str) and defaults applied.  
 - Step `env` entries are applied to process env for the step only.  
 - `when` expressions run in a restricted eval against the pipeline vars/dirs and previously stored outputs; falsey â†’ step skipped (recorded as skipped).  
-- `foreach` fans out a step over a list variable; each item gets its own step instance. `{item}` placeholders in script/env are filled per item; `output_var` is suffixed with the item index.  
+- `foreach` fans out a step over a list variable (supports dotted paths like `step_out.items`) and is expanded at runtime, so it can use outputs from earlier steps.
+- `foreach_glob` fans out a step over filesystem matches (for example extracted tile directories), with optional `foreach_kind` filtering (`any|files|dirs`).
+- Each fan-out item gets its own step instance. `{item}` placeholders in script/env are filled per item, along with `{item_index}`, `{item_name}`, `{item_stem}`; `output_var` is suffixed with the item index.
 - `parallel_with`: consecutive steps sharing the same value are executed in parallel within a batch.  
 - Step retries are supported: `--max-retries` and `--retry-delay-seconds` apply per-step retry behavior (also configurable in execution env via `step_max_retries` and `step_retry_delay_seconds`).
 - Each step gets its own workdir under `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>`.  

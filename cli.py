@@ -40,6 +40,7 @@ from etl.tracking import load_runs, find_run
 from etl.execution_config import (
     load_execution_config,
     apply_execution_env_overrides,
+    resolve_execution_env_templates,
     resolve_execution_config_path,
     validate_environment_executor,
     ExecutionConfigError,
@@ -368,6 +369,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 return 1
             validate_environment_executor(selected_env_name, exec_env, executor=args.executor)
             exec_env = apply_execution_env_overrides(exec_env)
+            exec_env = resolve_execution_env_templates(exec_env, global_vars=global_vars)
         except ExecutionConfigError as exc:
             print(f"Environments config error: {exc}", file=sys.stderr)
             return 1

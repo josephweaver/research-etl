@@ -187,6 +187,28 @@ def test_parse_pipeline_supports_plugin_with_arg_list(tmp_path: Path) -> None:
     assert "'pos 2'" in script
 
 
+def test_parse_pipeline_supports_step_resources_mapping(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    plugin: echo.py",
+                "    resources:",
+                "      cpu_cores: 8",
+                "      memory_gb: 32",
+                "      wall_minutes: 45",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    assert pipeline.steps[0].resources["cpu_cores"] == 8
+    assert pipeline.steps[0].resources["memory_gb"] == 32
+    assert pipeline.steps[0].resources["wall_minutes"] == 45
+
+
 def test_parse_pipeline_supports_script_as_token_list(tmp_path: Path) -> None:
     p = tmp_path / "p.yml"
     p.write_text(
@@ -328,3 +350,60 @@ def test_parse_pipeline_respects_configured_resolve_max_passes(tmp_path: Path) -
     assert full.resolve_max_passes == 10
     assert capped_low.resolve_max_passes == 1
     assert capped_high.resolve_max_passes == 100
+
+
+def test_parse_pipeline_supports_foreach_glob_fields(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "dirs:",
+                "  root: /tmp/data",
+                "steps:",
+                "  - name: s1",
+                "    script: \"echo.py in={item}\"",
+                "    foreach_glob: \"{dirs.root}/*\"",
+                "    foreach_kind: dirs",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    step = pipeline.steps[0]
+    assert step.foreach_glob == "/tmp/data/*"
+    assert step.foreach_kind == "dirs"
+
+
+def test_parse_pipeline_rejects_both_foreach_and_foreach_glob(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+                "    foreach: items",
+                "    foreach_glob: /tmp/*",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="both `foreach` and `foreach_glob`"):
+        parse_pipeline(p)
+
+
+def test_parse_pipeline_rejects_foreach_kind_without_foreach_glob(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+                "    foreach_kind: dirs",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="requires `foreach_glob`"):
+        parse_pipeline(p)

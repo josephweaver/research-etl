@@ -37,6 +37,37 @@ def _write_echo_plugin(path: Path) -> None:
     )
 
 
+def _write_make_dirs_plugin(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "meta = {'name': 'make_dirs', 'version': '0.1.0', 'description': 'test'}",
+                "def run(args, ctx):",
+                "    root = Path(str(args.get('root') or ctx.workdir / 'tiles'))",
+                "    root.mkdir(parents=True, exist_ok=True)",
+                "    (root / 'tile_a').mkdir(parents=True, exist_ok=True)",
+                "    (root / 'tile_b').mkdir(parents=True, exist_ok=True)",
+                "    return {'root': root.resolve().as_posix()}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_item_plugin(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "meta = {'name': 'item_echo', 'version': '0.1.0', 'description': 'test'}",
+                "def run(args, ctx):",
+                "    return {'item': str(args.get('item') or '')}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_runner_retries_foreach_parallel_group(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -76,6 +107,45 @@ def test_runner_retries_foreach_parallel_group(tmp_path: Path) -> None:
     assert [a["success"] for a in by_name["fan_0"].attempts] == [False, True]
     assert [a["success"] for a in by_name["fan_1"].attempts] == [False, True]
     assert by_name["gate"].success is True
+
+
+def test_runner_expands_foreach_glob_after_prior_step_outputs(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_make_dirs_plugin(plugin_dir / "make_dirs.py")
+    _write_item_plugin(plugin_dir / "item_echo.py")
+
+    pipeline = Pipeline(
+        steps=[
+            Step(
+                name="prepare",
+                script=f"make_dirs.py root={(tmp_path / 'tiles').as_posix()}",
+                output_var="prepared",
+            ),
+            Step(
+                name="fan",
+                script='item_echo.py item="{item}"',
+                foreach_glob="{prepared.root}/*",
+                foreach_kind="dirs",
+                parallel_with="g1",
+                output_var="out",
+            ),
+        ],
+    )
+    result = run_pipeline(
+        pipeline,
+        plugin_dir=plugin_dir,
+        workdir=tmp_path / ".runs",
+    )
+
+    assert result.success is True
+    by_name = {s.step.name: s for s in result.steps}
+    assert by_name["prepare"].success is True
+    assert by_name["fan_0"].success is True
+    assert by_name["fan_1"].success is True
+    items = sorted([by_name["fan_0"].outputs["item"], by_name["fan_1"].outputs["item"]])
+    assert items[0].endswith("/tile_a")
+    assert items[1].endswith("/tile_b")
 
 
 def test_runner_resume_skips_foreach_parallel_and_uses_prior_outputs(tmp_path: Path) -> None:

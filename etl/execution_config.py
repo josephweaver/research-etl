@@ -12,6 +12,10 @@ from typing import Any, Dict, Optional
 
 import yaml
 import os
+import copy
+import re
+
+from .pipeline import resolve_max_passes_setting
 
 
 class ExecutionConfigError(ValueError):
@@ -19,6 +23,65 @@ class ExecutionConfigError(ValueError):
 
 
 DEFAULT_ENV_CONFIG_PATH = Path("config/environments.yml")
+_PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+
+
+def _lookup_path(ctx: Dict[str, Any], path: str) -> tuple[Any, bool]:
+    current: Any = ctx
+    for part in path.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        return None, False
+    return current, True
+
+
+def _resolve_string(value: str, ctx: Dict[str, Any]) -> Any:
+    exact = _PLACEHOLDER_RE.fullmatch(value)
+    if exact:
+        resolved, ok = _lookup_path(ctx, exact.group(1))
+        if ok:
+            if isinstance(resolved, (dict, list)):
+                return copy.deepcopy(resolved)
+            return str(resolved)
+        return value
+
+    def _repl(match: re.Match[str]) -> str:
+        resolved, ok = _lookup_path(ctx, match.group(1))
+        if not ok or isinstance(resolved, (dict, list)):
+            return match.group(0)
+        return str(resolved)
+
+    return _PLACEHOLDER_RE.sub(_repl, value)
+
+
+def _interpolate(value: Any, ctx: Dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        return _resolve_string(value, ctx)
+    if isinstance(value, list):
+        return [_interpolate(v, ctx) for v in value]
+    if isinstance(value, dict):
+        return {k: _interpolate(v, ctx) for k, v in value.items()}
+    return value
+
+
+def _resolve_context_iterative(ctx: Dict[str, Any], max_passes: int) -> Dict[str, Any]:
+    current = copy.deepcopy(ctx)
+    for _ in range(max_passes):
+        nxt = _interpolate(current, current)
+        if nxt == current:
+            return current
+        current = nxt
+    return current
+
+
+def _merge_with_namespace(ctx: Dict[str, Any], namespace: str, values: Dict[str, Any]) -> Dict[str, Any]:
+    out = copy.deepcopy(ctx)
+    ns_values = copy.deepcopy(values or {})
+    out[namespace] = ns_values
+    for k, v in ns_values.items():
+        out[k] = copy.deepcopy(v)
+    return out
 
 
 def resolve_execution_config_path(path: Optional[Path]) -> Optional[Path]:
@@ -90,10 +153,35 @@ def apply_execution_env_overrides(env: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def resolve_execution_env_templates(
+    env: Dict[str, Any],
+    *,
+    global_vars: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Resolve templated execution env values (for example `{basedir}/jobs`)
+    using the same namespace precedence model as pipeline parsing:
+    global -> env.
+    """
+    if not isinstance(env, dict):
+        return {}
+    max_passes = resolve_max_passes_setting(global_vars=global_vars, env_vars=env)
+    ctx: Dict[str, Any] = {}
+    ctx = _merge_with_namespace(ctx, "global", global_vars or {})
+    ctx = _merge_with_namespace(ctx, "globals", global_vars or {})
+    ctx = _merge_with_namespace(ctx, "env", env)
+    resolved = _resolve_context_iterative(ctx, max_passes=max_passes)
+    env_resolved = resolved.get("env")
+    if isinstance(env_resolved, dict):
+        return copy.deepcopy(env_resolved)
+    return copy.deepcopy(env)
+
+
 __all__ = [
     "load_execution_config",
     "apply_execution_env_overrides",
     "resolve_execution_config_path",
     "validate_environment_executor",
+    "resolve_execution_env_templates",
     "ExecutionConfigError",
 ]

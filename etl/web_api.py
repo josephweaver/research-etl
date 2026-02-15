@@ -23,6 +23,7 @@ from .execution_config import (
     ExecutionConfigError,
     apply_execution_env_overrides,
     load_execution_config,
+    resolve_execution_env_templates,
     resolve_execution_config_path,
     validate_environment_executor,
 )
@@ -40,7 +41,7 @@ from .provenance import collect_run_provenance
 from .projects import infer_project_id_from_pipeline_path, normalize_project_id, resolve_project_id
 from .plugins.base import PluginLoadError, load_plugin
 from .runner import run_pipeline
-from .tracking import upsert_run_status
+from .tracking import fetch_plugin_resource_stats, upsert_run_status
 from .web_queries import (
     WebQueryError,
     fetch_pipeline_detail,
@@ -287,6 +288,9 @@ INDEX_HTML = """<!doctype html>
     body.builder-mode .grid { grid-template-columns: 1fr; }
     body.builder-mode .grid > section:first-child { display:none; }
     body.builder-mode .grid > section:last-child { max-width:none; width:100%; margin:0; }
+    body.plugins-mode .grid { grid-template-columns: 1fr; }
+    body.plugins-mode .grid > section:first-child { display:none; }
+    body.plugins-mode .grid > section:last-child { max-width:none; width:100%; margin:0; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; box-shadow:0 2px 10px rgba(10,25,60,.06); }
     .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
     input, select, button { border:1px solid var(--line); border-radius:8px; padding:6px 8px; font-size:13px; }
@@ -392,6 +396,7 @@ INDEX_HTML = """<!doctype html>
       <div class="links">
         <a id="nav_ops" href="/">Operations</a>
         <a id="nav_pipelines" href="/pipelines">Pipelines</a>
+        <a id="nav_plugins" href="/plugins">Plugins</a>
         <a id="nav_new_pipeline" href="/pipelines/new">New Pipeline</a>
         <a id="nav_context_back" class="context" href="#" style="display:none;">Back</a>
       </div>
@@ -467,6 +472,13 @@ INDEX_HTML = """<!doctype html>
         <h3 id="right_title">Run Detail</h3>
         <div id="pipeline_summary" class="muted" style="display:none;"></div>
         <div id="pipeline_validations" class="muted" style="display:none;"></div>
+        <div id="plugins_controls" class="controls" style="display:none;">
+          <select id="plugins_env">
+            <option value="">env (optional)</option>
+          </select>
+          <button id="btn_plugins_refresh">Refresh Plugins</button>
+          <span id="plugins_msg" class="muted"></span>
+        </div>
         <div id="builder_panel" style="display:none;">
           <div class="builder-surface" id="builder_surface">
             <div class="builder-card" id="builder_preview_card">
@@ -570,6 +582,15 @@ INDEX_HTML = """<!doctype html>
                     <pre id="builder_namespace">Loading...</pre>
                   </div>
                 </section>
+                <section class="builder-subsection" id="builder_section_plugins">
+                  <div class="builder-subsection-head">
+                    <h4>Plugin Stats</h4>
+                    <button id="btn_builder_toggle_plugins" type="button">Collapse</button>
+                  </div>
+                  <div class="builder-subsection-body">
+                    <div id="builder_plugin_stats">Loading plugin stats...</div>
+                  </div>
+                </section>
               </div>
             </div>
           </div>
@@ -625,6 +646,7 @@ INDEX_HTML = """<!doctype html>
     let selected = null;
     let selectedPipeline = null;
     const isPipelinesView = window.location.pathname.startsWith("/pipelines");
+    const isPluginsView = window.location.pathname === "/plugins";
     const isOperationsView = window.location.pathname === "/";
     const liveMatch = window.location.pathname.match(/^\/runs\/(.+)\/live$/);
     const isLiveRunView = !!liveMatch;
@@ -642,6 +664,7 @@ INDEX_HTML = """<!doctype html>
     let builderModel = { vars: {}, dirs: {}, requires_pipelines: [], steps: [] };
     let builderPlugins = [];
     let builderPluginMeta = {};
+    let builderPluginStats = {};
     let builderValidationState = "unknown";
     let builderStepStatus = {};
     let builderStepTesting = {};
@@ -651,7 +674,7 @@ INDEX_HTML = """<!doctype html>
     let builderPipelineRunState = "not-run";
     let builderPipelineRunning = false;
     let builderPreviewCollapsed = false;
-    let builderPreviewSectionCollapsed = { yaml: false, output: false, vars: false };
+    let builderPreviewSectionCollapsed = { yaml: false, output: false, vars: false, plugins: false };
     let builderTreeFiles = [];
     let builderTreeFileSelection = "";
     let builderNamespaceTimer = null;
@@ -775,12 +798,15 @@ INDEX_HTML = """<!doctype html>
       const path = window.location.pathname;
       const ops = document.getElementById("nav_ops");
       const pipes = document.getElementById("nav_pipelines");
+      const plugins = document.getElementById("nav_plugins");
       const newp = document.getElementById("nav_new_pipeline");
       const back = document.getElementById("nav_context_back");
-      [ops, pipes, newp].forEach(el => el.classList.remove("active"));
+      [ops, pipes, plugins, newp].forEach(el => el.classList.remove("active"));
       back.style.display = "none";
       if (path === "/") {
         ops.classList.add("active");
+      } else if (path === "/plugins") {
+        plugins.classList.add("active");
       } else if (path === "/pipelines/new") {
         newp.classList.add("active");
       } else if (path.startsWith("/pipelines")) {
@@ -803,6 +829,17 @@ INDEX_HTML = """<!doctype html>
       if(isOperationsView){
         document.getElementById("page_title").textContent = "Research ETL Operations";
         document.getElementById("left_title").textContent = "Operations Inbox";
+      }
+      if(isPluginsView){
+        document.body.classList.add("plugins-mode");
+        document.getElementById("page_title").textContent = "Research ETL Plugins";
+        document.getElementById("right_title").textContent = "Plugin Catalog + Recommendations";
+        document.getElementById("ops_panel").style.display = "none";
+        document.getElementById("pipelines_panel").style.display = "none";
+        document.getElementById("pipeline_summary").style.display = "none";
+        document.getElementById("pipeline_validations").style.display = "none";
+        document.getElementById("plugins_controls").style.display = "flex";
+        document.getElementById("detail").textContent = "Loading plugin stats...";
       }
       if(isPipelinesView){
         document.getElementById("page_title").textContent = "Research ETL Pipelines";
@@ -1024,8 +1061,27 @@ INDEX_HTML = """<!doctype html>
           if ((st.type || "sequential") === "parallel" && (st.parallel_with || "").trim()) {
             lines.push(`    parallel_with: ${_yamlEsc(st.parallel_with)}`);
           }
-          if ((st.type || "sequential") === "foreach" && (st.foreach || "").trim()) {
-            lines.push(`    foreach: ${_yamlEsc(st.foreach)}`);
+          if ((st.type || "sequential") === "foreach") {
+            const foreachMode = String(st.foreach_mode || (String(st.foreach_glob || "").trim() ? "glob" : "var")).trim().toLowerCase() === "glob" ? "glob" : "var";
+            if (foreachMode === "glob" && (st.foreach_glob || "").trim()) {
+              lines.push(`    foreach_glob: ${_yamlEsc(st.foreach_glob)}`);
+              if ((st.foreach_kind || "").trim()) {
+                lines.push(`    foreach_kind: ${_yamlEsc(st.foreach_kind)}`);
+              }
+            } else if ((st.foreach || "").trim()) {
+              lines.push(`    foreach: ${_yamlEsc(st.foreach)}`);
+            }
+          }
+          const rentries = Object.entries(st.resources || {}).filter(([_, v]) => {
+            if (v === null || v === undefined) return false;
+            if (typeof v === "string") return String(v).trim().length > 0;
+            return true;
+          });
+          if (rentries.length){
+            lines.push("    resources:");
+            for(const [k, v] of rentries){
+              lines.push(`      ${k}: ${_yamlArgVal(v)}`);
+            }
           }
           if ((st.output_var || "").trim()) lines.push(`    output_var: ${_yamlEsc(st.output_var)}`);
           if ((st.when || "").trim()) lines.push(`    when: ${_yamlEsc(st.when)}`);
@@ -1095,6 +1151,7 @@ INDEX_HTML = """<!doctype html>
         { key: "yaml", sectionId: "builder_section_yaml", btnId: "btn_builder_toggle_yaml", title: "YAML" },
         { key: "output", sectionId: "builder_section_output", btnId: "btn_builder_toggle_output", title: "Output" },
         { key: "vars", sectionId: "builder_section_vars", btnId: "btn_builder_toggle_vars", title: "Variables" },
+        { key: "plugins", sectionId: "builder_section_plugins", btnId: "btn_builder_toggle_plugins", title: "Plugins" },
       ];
       for(const d of defs){
         const section = document.getElementById(d.sectionId);
@@ -1155,7 +1212,134 @@ INDEX_HTML = """<!doctype html>
       builderPlugins = payload.plugins || [];
       builderPluginMeta = {};
       for(const p of builderPlugins){ builderPluginMeta[p.path] = p; }
+      await loadBuilderPluginStats();
+      renderBuilderPluginStats();
       renderBuilderModel();
+    }
+    function pluginRecommendation(path){
+      const st = builderPluginStats[String(path || "")] || {};
+      return st.recommendation || {};
+    }
+    async function loadBuilderPluginStats(){
+      if(!isBuilderView) return;
+      const qp = new URLSearchParams();
+      const envName = String((document.getElementById("b_env_name") || {}).value || "").trim();
+      if(envName) qp.set("env", envName);
+      const res = await fetch(`/api/plugins/stats?${qp.toString()}`);
+      if(!res.ok){
+        builderPluginStats = {};
+        return;
+      }
+      const payload = await res.json();
+      const statsMap = {};
+      for(const p of (payload.plugins || [])){
+        statsMap[String(p.path || "")] = p;
+      }
+      builderPluginStats = statsMap;
+    }
+    async function loadPluginsPage(){
+      if(!isPluginsView) return;
+      const msgEl = document.getElementById("plugins_msg");
+      const envSel = document.getElementById("plugins_env");
+      const envName = String((envSel || {}).value || "").trim();
+      const qp = new URLSearchParams();
+      if(envName) qp.set("env", envName);
+      const res = await fetch(`/api/plugins/stats?${qp.toString()}`);
+      if(!res.ok){
+        document.getElementById("detail").textContent = await readMessage(res);
+        if(msgEl) msgEl.textContent = "Failed to load plugin stats.";
+        return;
+      }
+      const payload = await res.json();
+      const caps = payload.caps || {};
+      const rows = (payload.plugins || []).map((p) => {
+        const rec = p.recommendation || {};
+        const stats = p.stats || {};
+        return `
+          <tr>
+            <td>${esc(String(p.path || ""))}</td>
+            <td>${esc(String(p.name || ""))}</td>
+            <td>${esc(String(p.version || ""))}</td>
+            <td>${esc(String(rec.samples || 0))}</td>
+            <td>${esc(rec.cpu_cores === null || rec.cpu_cores === undefined ? "" : Number(rec.cpu_cores).toFixed(2))}</td>
+            <td>${esc(rec.memory_gb === null || rec.memory_gb === undefined ? "" : Number(rec.memory_gb).toFixed(2))}</td>
+            <td>${esc(rec.wall_minutes === null || rec.wall_minutes === undefined ? "" : Number(rec.wall_minutes).toFixed(2))}</td>
+            <td>${esc(stats.wall_minutes_mean === null || stats.wall_minutes_mean === undefined ? "" : Number(stats.wall_minutes_mean).toFixed(2))}</td>
+          </tr>
+        `;
+      }).join("");
+      document.getElementById("detail").innerHTML = `
+        <div class="muted">Caps: cpu=${esc(String(caps.max_cpus_per_task ?? "-"))}, mem_gb=${esc(String(caps.max_mem_gb ?? "-"))}, wall_min=${esc(String(caps.max_wall_minutes ?? "-"))}</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Path</th><th>Name</th><th>Version</th><th>Samples</th>
+              <th>Rec CPU</th><th>Rec Mem GB</th><th>Rec Wall Min</th><th>Mean Wall Min</th>
+            </tr>
+          </thead>
+          <tbody>${rows || `<tr><td colspan="8" class="muted">No plugins found.</td></tr>`}</tbody>
+        </table>
+      `;
+      if(msgEl) msgEl.textContent = `Loaded ${Array.isArray(payload.plugins) ? payload.plugins.length : 0} plugins`;
+    }
+    async function loadPluginEnvOptions(){
+      if(!isPluginsView) return;
+      const sel = document.getElementById("plugins_env");
+      if(!sel) return;
+      const current = String(sel.value || "").trim();
+      const res = await fetch(`/api/builder/environments`);
+      if(!res.ok){
+        sel.innerHTML = `<option value="">env (optional)</option>`;
+        return;
+      }
+      const payload = await res.json();
+      const envs = Array.isArray(payload.environments) ? payload.environments : [];
+      sel.innerHTML = `<option value="">env (optional)</option>` + envs.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join("");
+      if(current && envs.includes(current)){
+        sel.value = current;
+      }
+    }
+    function renderBuilderPluginStats(){
+      const el = document.getElementById("builder_plugin_stats");
+      if(!el) return;
+      const rows = (builderPlugins || []).map((p) => {
+        const path = String(p.path || "");
+        const stat = builderPluginStats[path] || {};
+        const rec = stat.recommendation || {};
+        const samples = Number(rec.samples || 0);
+        const cpu = rec.cpu_cores === null || rec.cpu_cores === undefined ? "" : Number(rec.cpu_cores).toFixed(2);
+        const mem = rec.memory_gb === null || rec.memory_gb === undefined ? "" : Number(rec.memory_gb).toFixed(2);
+        const wall = rec.wall_minutes === null || rec.wall_minutes === undefined ? "" : Number(rec.wall_minutes).toFixed(2);
+        return `
+          <tr>
+            <td>${esc(path)}</td>
+            <td>${esc(String(p.version || stat.version || ""))}</td>
+            <td>${esc(String(samples || 0))}</td>
+            <td>${esc(cpu)}</td>
+            <td>${esc(mem)}</td>
+            <td>${esc(wall)}</td>
+          </tr>
+        `;
+      }).join("");
+      if(!rows){
+        el.innerHTML = `<span class="muted">No plugins loaded.</span>`;
+        return;
+      }
+      el.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Plugin</th>
+              <th>Version</th>
+              <th>Samples</th>
+              <th>Rec CPU</th>
+              <th>Rec Mem GB</th>
+              <th>Rec Wall Min</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
     }
     function addBuilderRequire(){
       builderModel.requires_pipelines = builderModel.requires_pipelines || [];
@@ -1205,7 +1389,19 @@ INDEX_HTML = """<!doctype html>
     function addBuilderStep(){
       const firstPlugin = builderPlugins.length ? builderPlugins[0].path : "echo.py";
       builderModel.steps = builderModel.steps || [];
-      builderModel.steps.push({ type:"sequential", plugin:firstPlugin, params:{}, output_var:"", when:"", parallel_with:"", foreach:"" });
+      builderModel.steps.push({
+        type:"sequential",
+        plugin:firstPlugin,
+        params:{},
+        resources:{},
+        output_var:"",
+        when:"",
+        parallel_with:"",
+        foreach:"",
+        foreach_mode:"var",
+        foreach_glob:"",
+        foreach_kind:"dirs",
+      });
       renderBuilderModel();
       syncYamlPreview();
     }
@@ -1213,7 +1409,19 @@ INDEX_HTML = """<!doctype html>
       const firstPlugin = builderPlugins.length ? builderPlugins[0].path : "echo.py";
       const steps = builderModel.steps || [];
       const idx = Math.max(0, Math.min(Number(index || 0), steps.length));
-      steps.splice(idx, 0, { type:"sequential", plugin:firstPlugin, params:{}, output_var:"", when:"", parallel_with:"", foreach:"" });
+      steps.splice(idx, 0, {
+        type:"sequential",
+        plugin:firstPlugin,
+        params:{},
+        resources:{},
+        output_var:"",
+        when:"",
+        parallel_with:"",
+        foreach:"",
+        foreach_mode:"var",
+        foreach_glob:"",
+        foreach_kind:"dirs",
+      });
       builderModel.steps = steps;
       renderBuilderModel();
       syncYamlPreview();
@@ -1411,11 +1619,38 @@ INDEX_HTML = """<!doctype html>
         card.className = "builder-item";
         const badge = stepStatusMeta(idx);
         const loading = !!builderStepTesting[idx];
+        const rec = pluginRecommendation(st.plugin);
+        const recCpu = rec.cpu_cores === null || rec.cpu_cores === undefined ? "" : Number(rec.cpu_cores).toFixed(2);
+        const recMem = rec.memory_gb === null || rec.memory_gb === undefined ? "" : Number(rec.memory_gb).toFixed(2);
+        const recWall = rec.wall_minutes === null || rec.wall_minutes === undefined ? "" : Number(rec.wall_minutes).toFixed(2);
+        const hasRec = !!(recCpu || recMem || recWall);
+        st.resources = st.resources || {};
         let typeSpecificHtml = "";
         if(type === "parallel"){
           typeSpecificHtml = `<div class="controls"><input data-kind="step-parallel" data-idx="${idx}" value="${esc(st.parallel_with || "")}" placeholder="parallel_with group key" /></div>`;
         } else if (type === "foreach"){
-          typeSpecificHtml = `<div class="controls"><input data-kind="step-foreach" data-idx="${idx}" value="${esc(st.foreach || "")}" placeholder="foreach var name" /></div>`;
+          const foreachMode = String(st.foreach_mode || (String(st.foreach_glob || "").trim() ? "glob" : "var")).toLowerCase() === "glob" ? "glob" : "var";
+          const foreachKind = String(st.foreach_kind || "dirs").trim().toLowerCase() || "dirs";
+          typeSpecificHtml = `
+            <div class="controls">
+              <select data-kind="step-foreach-mode" data-idx="${idx}">
+                <option value="var" ${foreachMode==="var"?"selected":""}>foreach variable</option>
+                <option value="glob" ${foreachMode==="glob"?"selected":""}>foreach filesystem glob</option>
+              </select>
+              ${foreachMode==="var"
+                ? `<input data-kind="step-foreach" data-idx="${idx}" value="${esc(st.foreach || "")}" placeholder="foreach var name (e.g. datasets)" />`
+                : `<input data-kind="step-foreach-glob" data-idx="${idx}" value="${esc(st.foreach_glob || "")}" placeholder="glob pattern (e.g. {fieldsdir}/**/*field_segments)" />`
+              }
+              ${foreachMode==="glob"
+                ? `<select data-kind="step-foreach-kind" data-idx="${idx}">
+                    <option value="dirs" ${foreachKind==="dirs"?"selected":""}>directories</option>
+                    <option value="files" ${foreachKind==="files"?"selected":""}>files</option>
+                    <option value="any" ${foreachKind==="any"?"selected":""}>any</option>
+                  </select>`
+                : ``
+              }
+            </div>
+          `;
         }
         card.innerHTML = `
           <div class="step-head">
@@ -1432,11 +1667,21 @@ INDEX_HTML = """<!doctype html>
             <button class="spin-btn ${loading ? "loading" : ""}" data-test-step="${idx}" ${loading ? "disabled" : ""}>
               <span>Test Step</span><span class="spin"></span>
             </button>
+            <button data-apply-step-rec="${idx}" ${hasRec ? "" : "disabled"}>Apply Recommended</button>
             <button data-del-step="${idx}">Remove Step</button>
           </div>
           <div class="param-panel">
             <div class="param-panel-title">Input Parameters</div>
             <div class="param-grid">${paramsHtml || '<span class="muted">No plugin params</span>'}</div>
+          </div>
+          <div class="param-panel">
+            <div class="param-panel-title">Resources</div>
+            <div class="param-grid">
+              <div class="param-row"><div class="param-label">cpu_cores</div><div class="param-value"><input data-kind="step-res-cpu" data-idx="${idx}" value="${esc(st.resources.cpu_cores ?? "")}" placeholder="e.g. 4" /></div></div>
+              <div class="param-row"><div class="param-label">memory_gb</div><div class="param-value"><input data-kind="step-res-mem" data-idx="${idx}" value="${esc(st.resources.memory_gb ?? "")}" placeholder="e.g. 16" /></div></div>
+              <div class="param-row"><div class="param-label">wall_minutes</div><div class="param-value"><input data-kind="step-res-wall" data-idx="${idx}" value="${esc(st.resources.wall_minutes ?? "")}" placeholder="e.g. 60" /></div></div>
+            </div>
+            <div class="muted">Recommended: cpu=${esc(recCpu || "-")}, mem_gb=${esc(recMem || "-")}, wall_min=${esc(recWall || "-")} (samples=${esc(String(rec.samples || 0))})</div>
           </div>
           <div class="controls">
             <input data-kind="step-output" data-idx="${idx}" value="${esc(st.output_var || "")}" placeholder="output_var (optional)" />
@@ -1512,6 +1757,13 @@ INDEX_HTML = """<!doctype html>
           if(st.type === "parallel" && !(String(st.parallel_with || "").trim())){
             st.parallel_with = nextParallelGroupKey(`step${idx+2}`);
           }
+          if(st.type === "foreach"){
+            const hasGlob = String(st.foreach_glob || "").trim().length > 0;
+            st.foreach_mode = hasGlob ? "glob" : (String(st.foreach_mode || "var").trim().toLowerCase() === "glob" ? "glob" : "var");
+            if(!String(st.foreach_kind || "").trim()){
+              st.foreach_kind = "dirs";
+            }
+          }
           renderBuilderModel();
           changed = true;
         }
@@ -1520,6 +1772,25 @@ INDEX_HTML = """<!doctype html>
         if(kind === "step-when"){ st.when = t.value; changed = true; }
         if(kind === "step-parallel"){ st.parallel_with = t.value; changed = true; }
         if(kind === "step-foreach"){ st.foreach = t.value; changed = true; }
+        if(kind === "step-foreach-mode"){
+          st.foreach_mode = String(t.value || "var").trim().toLowerCase() === "glob" ? "glob" : "var";
+          renderBuilderModel();
+          changed = true;
+        }
+        if(kind === "step-foreach-glob"){ st.foreach_glob = t.value; changed = true; }
+        if(kind === "step-foreach-kind"){ st.foreach_kind = t.value; changed = true; }
+        if(kind === "step-res-cpu" || kind === "step-res-mem" || kind === "step-res-wall"){
+          st.resources = st.resources || {};
+          const key = kind === "step-res-cpu" ? "cpu_cores" : (kind === "step-res-mem" ? "memory_gb" : "wall_minutes");
+          const raw = String(t.value ?? "").trim();
+          if(!raw.length){
+            delete st.resources[key];
+          } else {
+            const n = Number(raw);
+            st.resources[key] = Number.isNaN(n) ? raw : n;
+          }
+          changed = true;
+        }
         if(kind === "step-param"){
           st.params = st.params || {};
           st.params[t.getAttribute("data-param")] = t.value;
@@ -1565,6 +1836,27 @@ INDEX_HTML = """<!doctype html>
         const idx = Number(testStepBtn.getAttribute("data-test-step") || "-1");
         if(idx >= 0){
           await testBuilderStepAt(idx);
+        }
+        return;
+      }
+      const applyRec = t.getAttribute("data-apply-step-rec");
+      if (applyRec !== null){
+        const idx = Number(applyRec);
+        if(idx >= 0 && builderModel.steps && builderModel.steps[idx]){
+          const st = builderModel.steps[idx];
+          const rec = pluginRecommendation(st.plugin);
+          st.resources = st.resources || {};
+          if(rec.cpu_cores !== null && rec.cpu_cores !== undefined){
+            st.resources.cpu_cores = Math.max(1, Math.ceil(Number(rec.cpu_cores)));
+          }
+          if(rec.memory_gb !== null && rec.memory_gb !== undefined){
+            st.resources.memory_gb = Number(Number(rec.memory_gb).toFixed(2));
+          }
+          if(rec.wall_minutes !== null && rec.wall_minutes !== undefined){
+            st.resources.wall_minutes = Math.max(1, Math.ceil(Number(rec.wall_minutes)));
+          }
+          renderBuilderModel();
+          syncYamlPreview();
         }
         return;
       }
@@ -2656,6 +2948,10 @@ INDEX_HTML = """<!doctype html>
         await loadBuilderSource();
         return;
       }
+      if(isPluginsView){
+        await loadPluginsPage();
+        return;
+      }
       await loadOps();
       await loadPipelines();
       await loadPipelineSummary();
@@ -2698,6 +2994,10 @@ INDEX_HTML = """<!doctype html>
       builderPreviewSectionCollapsed.vars = !builderPreviewSectionCollapsed.vars;
       renderBuilderPreviewSections();
     };
+    document.getElementById("btn_builder_toggle_plugins").onclick = () => {
+      builderPreviewSectionCollapsed.plugins = !builderPreviewSectionCollapsed.plugins;
+      renderBuilderPreviewSections();
+    };
     document.getElementById("btn_builder_add_req").onclick = addBuilderRequire;
     document.getElementById("btn_builder_add_var").onclick = addBuilderVar;
     document.getElementById("btn_builder_add_dir").onclick = addBuilderDir;
@@ -2706,6 +3006,13 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("btn_builder_generate").onclick = generateBuilderDraft;
     document.getElementById("btn_builder_validate").onclick = validateBuilderDraft;
     document.getElementById("btn_builder_run").onclick = runBuilderPipeline;
+    document.getElementById("btn_plugins_refresh").onclick = tick;
+    document.getElementById("plugins_env").onchange = tick;
+    document.getElementById("b_env_name").onchange = async () => {
+      await loadBuilderPluginStats();
+      renderBuilderPluginStats();
+      renderBuilderModel();
+    };
     document.getElementById("b_requires").addEventListener("input", handleBuilderInput);
     document.getElementById("b_vars").addEventListener("input", handleBuilderInput);
     document.getElementById("b_dirs").addEventListener("input", handleBuilderInput);
@@ -2723,6 +3030,7 @@ INDEX_HTML = """<!doctype html>
     renderBuilderPreviewSections();
     initBuilderTreeComboBehavior();
     initBuilderTooltipResolution();
+    loadPluginEnvOptions();
     loadBuilderEnvironments();
     refreshBuilderTreeFiles();
     refreshBuilderNamespace();
@@ -2740,6 +3048,11 @@ def index() -> str:
 
 @app.get("/pipelines", response_class=HTMLResponse)
 def pipelines_index() -> str:
+    return INDEX_HTML
+
+
+@app.get("/plugins", response_class=HTMLResponse)
+def plugins_index() -> str:
     return INDEX_HTML
 
 
@@ -3194,6 +3507,7 @@ def _resolve_execution_env(
     env_name: Optional[str],
     *,
     executor: str,
+    global_vars: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], Optional[Path], Optional[str]]:
     try:
         resolved = resolve_execution_config_path(environments_config_path)
@@ -3216,7 +3530,9 @@ def _resolve_execution_env(
         if not env:
             raise HTTPException(status_code=400, detail=f"Execution env '{selected_env_name}' not found in config.")
         validate_environment_executor(str(selected_env_name), env, executor=executor)
-        return apply_execution_env_overrides(env), resolved, selected_env_name
+        resolved_env = apply_execution_env_overrides(env)
+        resolved_env = resolve_execution_env_templates(resolved_env, global_vars=global_vars or {})
+        return resolved_env, resolved, selected_env_name
     except HTTPException:
         raise
     except ExecutionConfigError as exc:
@@ -3227,6 +3543,7 @@ def _resolve_builder_env_vars(
     *,
     environments_config_path: Optional[Path],
     env_name: Optional[str],
+    global_vars: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     name = str(env_name or "").strip()
     if not name:
@@ -3248,7 +3565,8 @@ def _resolve_builder_env_vars(
         if name == "local":
             return {}
         raise HTTPException(status_code=400, detail=f"Execution env '{name}' not found in config.")
-    return apply_execution_env_overrides(dict(env))
+    resolved_env = apply_execution_env_overrides(dict(env))
+    return resolve_execution_env_templates(resolved_env, global_vars=global_vars or {})
 
 
 def _parse_pipeline_from_yaml_text(
@@ -3261,7 +3579,10 @@ def _parse_pipeline_from_yaml_text(
     if not (yaml_text or "").strip():
         raise HTTPException(status_code=400, detail="`yaml_text` is required.")
     global_vars = _resolve_global_vars(global_config_path)
-    env_vars = _resolve_builder_env_vars(environments_config_path=environments_config_path, env_name=env_name)
+    env_vars = _resolve_builder_env_vars(
+        environments_config_path=environments_config_path,
+        env_name=env_name,
+    )
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as tmp:
         tmp.write(yaml_text)
         tmp_path = Path(tmp.name)
@@ -3300,6 +3621,70 @@ def _resolve_builder_plugins_dir(*, global_config_path: Optional[Path], plugins_
     if cfg_plugins:
         return Path(cfg_plugins).expanduser()
     return Path("plugins")
+
+
+def _estimate_from_stats(mean: Optional[Any], std: Optional[Any], samples: Optional[Any], low_mult: float) -> Optional[float]:
+    if mean in (None, "") or samples in (None, ""):
+        return None
+    try:
+        mu = float(mean)
+        n = int(samples)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    if n < 5:
+        return mu * float(low_mult)
+    try:
+        sigma = float(std or 0.0)
+    except (TypeError, ValueError):
+        sigma = 0.0
+    return mu + (3.0 * max(0.0, sigma))
+
+
+def _parse_mem_text_gb(raw: Any) -> Optional[float]:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return None
+    m = re.match(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([kmgt]?b?)?\s*$", text)
+    if not m:
+        return None
+    num = float(m.group(1))
+    unit = str(m.group(2) or "").strip().lower()
+    if unit.startswith("k"):
+        return num / (1024.0 * 1024.0)
+    if unit.startswith("m"):
+        return num / 1024.0
+    if unit.startswith("t"):
+        return num * 1024.0
+    return num
+
+
+def _parse_slurm_time_minutes(raw: Any) -> Optional[float]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    days = 0
+    rest = text
+    if "-" in text:
+        dpart, rest = text.split("-", 1)
+        try:
+            days = int(dpart)
+        except ValueError:
+            return None
+    parts = rest.split(":")
+    try:
+        if len(parts) == 3:
+            h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+        elif len(parts) == 2:
+            h, m, s = 0, int(parts[0]), int(parts[1])
+        elif len(parts) == 1:
+            h, m, s = 0, int(parts[0]), 0
+        else:
+            return None
+    except ValueError:
+        return None
+    return float(days * 24 * 60 + h * 60 + m + (s / 60.0))
 
 
 def _parse_step_script_for_builder(script: str) -> tuple[str, dict[str, Any]]:
@@ -3349,8 +3734,19 @@ def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
             if not plugin_ref:
                 plugin_ref, script_params = _parse_step_script_for_builder(str(step_map.get("script") or ""))
                 params = script_params
+            resources: dict[str, Any] = {}
+            resources_raw = step_map.get("resources")
+            if isinstance(resources_raw, dict):
+                for k, v in resources_raw.items():
+                    resources[str(k)] = v
             stype = "sequential"
-            if step_map.get("foreach"):
+            foreach_raw = str(step_map.get("foreach") or "")
+            foreach_glob_raw = str(step_map.get("foreach_glob") or "")
+            foreach_kind_raw = str(step_map.get("foreach_kind") or "")
+            foreach_mode = "var"
+            if foreach_glob_raw.strip():
+                foreach_mode = "glob"
+            if step_map.get("foreach") or step_map.get("foreach_glob"):
                 stype = "foreach"
             elif step_map.get("parallel_with"):
                 stype = "parallel"
@@ -3359,10 +3755,14 @@ def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
                     "type": stype,
                     "plugin": plugin_ref,
                     "params": params,
+                    "resources": resources,
                     "output_var": str(step_map.get("output_var") or ""),
                     "when": str(step_map.get("when") or ""),
                     "parallel_with": str(step_map.get("parallel_with") or ""),
-                    "foreach": str(step_map.get("foreach") or ""),
+                    "foreach": foreach_raw,
+                    "foreach_mode": foreach_mode,
+                    "foreach_glob": foreach_glob_raw,
+                    "foreach_kind": foreach_kind_raw or "dirs",
                 }
             )
     return {
@@ -3692,6 +4092,8 @@ def _collect_unresolved_step_inputs(pipeline: Pipeline) -> list[dict[str, Any]]:
             ("when", step.when),
             ("parallel_with", step.parallel_with),
             ("foreach", step.foreach),
+            ("foreach_glob", getattr(step, "foreach_glob", None)),
+            ("foreach_kind", getattr(step, "foreach_kind", None)),
         ):
             unresolved = _extract_unresolved_tokens(str(field_val or ""))
             if unresolved:
@@ -3725,7 +4127,7 @@ def _filter_builder_unresolved_issues(issues: list[dict[str, Any]], pipeline: Pi
         root = text.split(".", 1)[0]
         if root == "sys":
             return False
-        if root == "item":
+        if root in {"item", "item_index", "item_name", "item_stem"}:
             return False
         if root in prior_output_vars_by_step.get(int(step_index), set()):
             return False
@@ -3924,6 +4326,7 @@ def api_builder_plugins(
     plugins_dir: Optional[str] = Query(default=None),
 ) -> dict:
     global_config_path = Path(global_config).expanduser() if (global_config or "").strip() else None
+    global_vars = _resolve_global_vars(global_config_path)
     root = _resolve_builder_plugins_dir(global_config_path=global_config_path, plugins_dir=plugins_dir)
     if not root.exists() or not root.is_dir():
         raise HTTPException(status_code=400, detail=f"Plugins directory not found: {root}")
@@ -3938,13 +4341,131 @@ def api_builder_plugins(
                 {
                     "path": rel,
                     "name": pd.meta.name,
+                    "version": pd.meta.version,
                     "description": pd.meta.description,
                     "params": pd.meta.params or {},
+                    "resources": pd.meta.resources or {},
                 }
             )
         except PluginLoadError:
-            entries.append({"path": rel, "name": rel, "description": "unloadable plugin", "params": {}})
+            entries.append(
+                {"path": rel, "name": rel, "version": "", "description": "unloadable plugin", "params": {}, "resources": {}}
+            )
     return {"plugins_dir": str(root), "plugins": entries}
+
+
+@app.get("/api/plugins/stats")
+def api_plugins_stats(
+    global_config: Optional[str] = Query(default=None),
+    plugins_dir: Optional[str] = Query(default=None),
+    environments_config: Optional[str] = Query(default=None),
+    env: Optional[str] = Query(default=None),
+    low_sample_multiplier: float = Query(default=1.5, ge=1.0, le=10.0),
+    limit: int = Query(default=200, ge=10, le=5000),
+) -> dict:
+    global_config_path = Path(global_config).expanduser() if (global_config or "").strip() else None
+    root = _resolve_builder_plugins_dir(global_config_path=global_config_path, plugins_dir=plugins_dir)
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"Plugins directory not found: {root}")
+
+    environments_config_path = Path(environments_config).expanduser() if (environments_config or "").strip() else None
+    env_name = str(env or "").strip() or None
+    env_vars = _resolve_builder_env_vars(
+        environments_config_path=environments_config_path,
+        env_name=env_name,
+    )
+    max_cpu = env_vars.get("max_cpus_per_task")
+    try:
+        max_cpu = int(max_cpu) if max_cpu not in (None, "") else None
+    except (TypeError, ValueError):
+        max_cpu = None
+    max_mem_gb = _parse_mem_text_gb(env_vars.get("max_mem"))
+    max_wall_minutes = _parse_slurm_time_minutes(env_vars.get("max_time"))
+
+    entries: list[dict[str, Any]] = []
+    for f in sorted(root.rglob("*.py")):
+        if f.name.startswith("_"):
+            continue
+        rel = f.relative_to(root).as_posix()
+        try:
+            pd = load_plugin(f)
+        except PluginLoadError:
+            entries.append(
+                {
+                    "path": rel,
+                    "name": rel,
+                    "version": "",
+                    "description": "unloadable plugin",
+                    "resources": {},
+                    "stats": {},
+                    "recommendation": {},
+                }
+            )
+            continue
+
+        plugin_name = str(pd.meta.name or "").strip()
+        plugin_version = str(pd.meta.version or "").strip()
+        stats = fetch_plugin_resource_stats(
+            plugin_name=plugin_name,
+            plugin_version=plugin_version,
+            plugin_refs=[rel],
+            executor="slurm",
+            limit=limit,
+        )
+        rec_cpu = _estimate_from_stats(
+            stats.get("cpu_cores_mean"),
+            stats.get("cpu_cores_std"),
+            stats.get("cpu_cores_samples", stats.get("samples")),
+            low_sample_multiplier,
+        )
+        rec_mem_gb = _estimate_from_stats(
+            stats.get("memory_gb_mean"),
+            stats.get("memory_gb_std"),
+            stats.get("memory_gb_samples", stats.get("samples")),
+            low_sample_multiplier,
+        )
+        rec_wall = _estimate_from_stats(
+            stats.get("wall_minutes_mean"),
+            stats.get("wall_minutes_std"),
+            stats.get("wall_minutes_samples", stats.get("samples")),
+            low_sample_multiplier,
+        )
+
+        if max_cpu is not None and rec_cpu is not None:
+            rec_cpu = min(rec_cpu, float(max_cpu))
+        if max_mem_gb is not None and rec_mem_gb is not None:
+            rec_mem_gb = min(rec_mem_gb, float(max_mem_gb))
+        if max_wall_minutes is not None and rec_wall is not None:
+            rec_wall = min(rec_wall, float(max_wall_minutes))
+
+        recommendation = {
+            "cpu_cores": rec_cpu,
+            "memory_gb": rec_mem_gb,
+            "wall_minutes": rec_wall,
+            "samples": int(stats.get("samples", 0) or 0),
+            "low_sample_multiplier": float(low_sample_multiplier),
+        }
+        entries.append(
+            {
+                "path": rel,
+                "name": plugin_name or rel,
+                "version": plugin_version,
+                "description": pd.meta.description or "",
+                "resources": pd.meta.resources or {},
+                "stats": stats or {},
+                "recommendation": recommendation,
+            }
+        )
+    return {
+        "plugins_dir": str(root),
+        "env": env_name,
+        "caps": {
+            "max_cpus_per_task": max_cpu,
+            "max_mem_gb": max_mem_gb,
+            "max_wall_minutes": max_wall_minutes,
+        },
+        "plugins": entries,
+    }
 
 
 @app.get("/api/builder/environments")
@@ -3979,7 +4500,11 @@ def api_builder_resolve_text(payload: Optional[dict[str, Any]] = Body(default=No
     environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
     env_name = str(payload.get("env") or "").strip() or None
     global_vars = _resolve_global_vars(global_config_path)
-    env_vars = _resolve_builder_env_vars(environments_config_path=environments_config_path, env_name=env_name)
+    env_vars = _resolve_builder_env_vars(
+        environments_config_path=environments_config_path,
+        env_name=env_name,
+        global_vars=global_vars,
+    )
     raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(str(payload.get("yaml_text") or ""))
     pipeline = _parse_pipeline_from_yaml_text(
         str(payload.get("yaml_text") or ""),
@@ -4007,7 +4532,11 @@ def api_builder_namespace(payload: Optional[dict[str, Any]] = Body(default=None)
     environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
     env_name = str(payload.get("env") or "").strip() or None
     global_vars = _resolve_global_vars(global_config_path)
-    env_vars = _resolve_builder_env_vars(environments_config_path=environments_config_path, env_name=env_name)
+    env_vars = _resolve_builder_env_vars(
+        environments_config_path=environments_config_path,
+        env_name=env_name,
+        global_vars=global_vars,
+    )
     raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(str(payload.get("yaml_text") or ""))
     pipeline = _parse_pipeline_from_yaml_text(
         str(payload.get("yaml_text") or ""),
@@ -4190,6 +4719,7 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
     env_vars = _resolve_builder_env_vars(
         environments_config_path=environments_config_path,
         env_name=env_name,
+        global_vars=global_vars,
     )
     pipeline = _parse_pipeline_from_yaml_text(
         yaml_text,
@@ -4337,6 +4867,7 @@ def api_action_validate(request: Request, payload: Optional[dict[str, Any]] = Bo
         args["environments_config_path"],
         args["env_name"],
         executor=args["executor"],
+        global_vars=global_vars,
     )
     try:
         pipeline = parse_pipeline(args["pipeline_path"], global_vars=global_vars, env_vars=execution_env)
@@ -4387,6 +4918,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
         args["environments_config_path"],
         args["env_name"],
         executor=args["executor"],
+        global_vars=global_vars,
     )
     max_retries = (
         args["max_retries"] if args["max_retries"] is not None else int(execution_env.get("step_max_retries", 0) or 0)

@@ -45,7 +45,8 @@ class PluginContext:
     run_id: str
         Unique identifier for the pipeline run.
     workdir: Path
-        Directory where the plugin can read/write work files.
+        Plugin scratch root path for this step. The executor provides the path,
+        but plugins should create directories lazily when they write files.
     log: Callable[..., None]
         Standard logger; supports log(message) and log(message, level).
     """
@@ -55,7 +56,7 @@ class PluginContext:
     log: Callable[..., None]
 
     def temp_path(self, name: str) -> Path:
-        """Return a path under the workdir for temporary artifacts."""
+        """Return a path under workdir for temporary artifacts (path only)."""
         return self.workdir / name
 
     def info(self, message: str) -> None:

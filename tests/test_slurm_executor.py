@@ -88,3 +88,148 @@ def test_slurm_submit_uses_array_batches_and_passes_resume_retry(monkeypatch, tm
 
     # foreach remains a single pipeline step index here; fan-out happens in run_batch.
     assert "--steps 3" in calls[3]["script_text"]
+
+
+def test_slurm_submit_applies_step_resource_hints_and_env_caps(monkeypatch, tmp_path: Path) -> None:
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    (plugins_dir / "heavy.py").write_text(
+        "\n".join(
+            [
+                "meta = {",
+                "  'name': 'heavy',",
+                "  'version': '1.2.3',",
+                "  'description': 'heavy test',",
+                "  'resources': {'cpu_cores': 32, 'memory_gb': 96, 'wall_minutes': 720},",
+                "}",
+                "def run(args, ctx):",
+                "  return {'ok': True}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    pipeline = Pipeline(
+        steps=[
+            Step(
+                name="heavy_step",
+                script="heavy.py",
+                resources={"cpu_cores": 48, "memory_gb": 140, "wall_minutes": 6000},
+            )
+        ],
+    )
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {
+            "workdir": "/tmp/work",
+            "logdir": "/tmp/logs",
+            "time": "72:00:00",
+            "cpus_per_task": 4,
+            "mem": "8G",
+            "max_time": "10:00:00",
+            "max_cpus_per_task": 20,
+            "max_mem": "64G",
+        },
+        repo_root=tmp_path,
+        plugins_dir=plugins_dir,
+        dry_run=False,
+    )
+    ex.submit("pipelines/sample.yml", {"run_id": "runabc1234"})
+
+    # call[0]=setup, call[1]=batch
+    assert len(calls) == 2
+    batch_script = calls[1]["script_text"]
+    assert "#SBATCH -c 20" in batch_script
+    assert "#SBATCH --mem=64G" in batch_script
+    assert "#SBATCH -t 10:00:00" in batch_script
+
+
+def test_slurm_submit_uses_db_metrics_with_low_sample_1_5x(monkeypatch, tmp_path: Path) -> None:
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    (plugins_dir / "smart.py").write_text(
+        "\n".join(
+            [
+                "meta = {",
+                "  'name': 'smart',",
+                "  'version': '2.0.0',",
+                "  'description': 'smart test',",
+                "}",
+                "def run(args, ctx):",
+                "  return {'ok': True}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = Pipeline(steps=[Step(name="smart_step", script="smart.py")])
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+    monkeypatch.setattr(
+        slurm_mod,
+        "fetch_plugin_resource_stats",
+        lambda **_k: {
+            "samples": 3,
+            "wall_minutes_mean": 20.0,
+            "wall_minutes_std": 4.0,
+            "wall_minutes_samples": 3,
+            "memory_gb_mean": 10.0,
+            "memory_gb_std": 2.0,
+            "memory_gb_samples": 3,
+            "cpu_cores_mean": 2.0,
+            "cpu_cores_std": 1.0,
+            "cpu_cores_samples": 3,
+        },
+    )
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {
+            "workdir": "/tmp/work",
+            "logdir": "/tmp/logs",
+            "time": "00:05:00",
+            "cpus_per_task": 1,
+            "mem": "2G",
+            "resource_low_sample_multiplier": 1.5,
+        },
+        repo_root=tmp_path,
+        plugins_dir=plugins_dir,
+        dry_run=False,
+    )
+    ex.submit("pipelines/sample.yml", {"run_id": "runabc1234"})
+    batch_script = calls[1]["script_text"]
+    assert "#SBATCH -t 00:30:00" in batch_script  # 20 * 1.5
+    assert "#SBATCH -c 3" in batch_script  # ceil(2 * 1.5)
+    assert "#SBATCH --mem=15G" in batch_script  # 10 * 1.5

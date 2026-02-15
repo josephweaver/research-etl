@@ -14,6 +14,7 @@ import os
 import shlex
 import subprocess
 import tempfile
+import math
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,11 +25,82 @@ from .base import Executor, RunState, RunStatus, SubmissionResult
 from ..git_checkout import repo_relative_path, resolve_execution_spec
 from ..pipeline import Pipeline
 from ..pipeline import parse_pipeline
-from ..tracking import upsert_run_status
+from ..plugins.base import load_plugin
+from ..tracking import fetch_plugin_resource_stats, upsert_run_status
 
 
 class SlurmSubmitError(RuntimeError):
     """Raised when sbatch submission fails."""
+
+
+def _parse_slurm_time_to_minutes(value: str) -> Optional[float]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    days = 0
+    rest = text
+    if "-" in text:
+        parts = text.split("-", 1)
+        if len(parts) != 2:
+            return None
+        try:
+            days = int(parts[0])
+        except ValueError:
+            return None
+        rest = parts[1]
+    toks = rest.split(":")
+    try:
+        if len(toks) == 3:
+            h, m, s = int(toks[0]), int(toks[1]), int(toks[2])
+        elif len(toks) == 2:
+            h, m, s = 0, int(toks[0]), int(toks[1])
+        elif len(toks) == 1:
+            h, m, s = 0, int(toks[0]), 0
+        else:
+            return None
+    except ValueError:
+        return None
+    return float(days * 24 * 60 + h * 60 + m + (s / 60.0))
+
+
+def _format_minutes_as_slurm_time(minutes: float) -> str:
+    total_seconds = int(max(60, round(float(minutes) * 60.0)))
+    hours, rem = divmod(total_seconds, 3600)
+    mins, secs = divmod(rem, 60)
+    return f"{hours:02d}:{mins:02d}:{secs:02d}"
+
+
+def _parse_mem_to_mb(value: str) -> Optional[int]:
+    text = str(value or "").strip().upper()
+    if not text:
+        return None
+    unit = "M"
+    number_text = text
+    if text[-1].isalpha():
+        unit = text[-1]
+        number_text = text[:-1]
+    try:
+        amount = float(number_text.strip())
+    except ValueError:
+        return None
+    if amount < 0:
+        return None
+    if unit == "K":
+        return max(1, int(math.ceil(amount / 1024.0)))
+    if unit == "M":
+        return max(1, int(math.ceil(amount)))
+    if unit == "G":
+        return max(1, int(math.ceil(amount * 1024.0)))
+    if unit == "T":
+        return max(1, int(math.ceil(amount * 1024.0 * 1024.0)))
+    return None
+
+
+def _format_mb_as_slurm_mem(mb: int) -> str:
+    value = max(1, int(mb))
+    if value % 1024 == 0:
+        return f"{value // 1024}G"
+    return f"{value}M"
 
 
 @dataclass
@@ -53,6 +125,9 @@ class SlurmEnv:
     python: Optional[str] = None
     step_max_retries: Optional[int] = None
     step_retry_delay_seconds: Optional[float] = None
+    max_time: Optional[str] = None
+    max_cpus_per_task: Optional[int] = None
+    max_mem: Optional[str] = None
     execution_source: Optional[str] = None
     source_bundle: Optional[str] = None
     source_snapshot: Optional[str] = None
@@ -80,12 +155,14 @@ class SlurmExecutor(Executor):
         source_snapshot: Optional[str] = None,
         allow_workspace_source: Optional[bool] = None,
     ):
+        self.env_config = dict(env_config or {})
         # filter known SlurmEnv fields
         env_kwargs = {k: v for k, v in env_config.items() if k in {
             "partition", "account", "time", "cpus_per_task", "mem",
             "logdir", "workdir", "modules", "conda_env", "sbatch_extra",
             "ssh_host", "ssh_user", "ssh_jump", "remote_repo", "sync",
             "venv", "requirements", "python", "step_max_retries", "step_retry_delay_seconds",
+            "max_time", "max_cpus_per_task", "max_mem",
             "execution_source", "source_bundle", "source_snapshot", "allow_workspace_source",
         }}
         self.env = SlurmEnv(**env_kwargs)
@@ -97,6 +174,7 @@ class SlurmExecutor(Executor):
         self.scp_timeout = int(env_config.get("scp_timeout", 300))
         self.step_max_retries = int(env_config.get("step_max_retries", 0))
         self.step_retry_delay_seconds = float(env_config.get("step_retry_delay_seconds", 0.0))
+        self.resource_low_sample_multiplier = float(env_config.get("resource_low_sample_multiplier", 1.5))
         self.local_repo_name = Path(repo_root).name
         self.remote_base = Path(env_config.get("remote_repo") or repo_root)
         self.repo_root = self.remote_base / self.local_repo_name
@@ -139,6 +217,159 @@ class SlurmExecutor(Executor):
                 i += 1
             batches.append(group)
         return batches
+
+    @staticmethod
+    def _parse_script_plugin_ref(script: str) -> Optional[str]:
+        text = str(script or "").strip()
+        if not text:
+            return None
+        try:
+            parts = shlex.split(text)
+        except Exception:  # noqa: BLE001
+            parts = text.split()
+        if not parts:
+            return None
+        return str(parts[0]).strip() or None
+
+    def _resolve_plugin_resources(self, step) -> Dict[str, Any]:
+        plugin_ref = self._parse_script_plugin_ref(getattr(step, "script", ""))
+        if not plugin_ref:
+            return {}
+        candidates: List[Path] = []
+        ref_path = Path(plugin_ref)
+        if ref_path.is_absolute():
+            candidates.append(ref_path)
+        else:
+            candidates.append((self.plugins_dir / ref_path).resolve())
+            candidates.append((Path(".").resolve() / self.plugins_dir / ref_path).resolve())
+            candidates.append((Path(".").resolve() / ref_path).resolve())
+        for path in candidates:
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                plugin = load_plugin(path)
+            except Exception:  # noqa: BLE001
+                return {}
+            out = dict(getattr(plugin.meta, "resources", {}) or {})
+            out["plugin_ref"] = plugin_ref
+            if getattr(plugin.meta, "name", None) and "plugin_name" not in out:
+                out["plugin_name"] = str(plugin.meta.name)
+            if getattr(plugin.meta, "version", None) and "plugin_version" not in out:
+                out["plugin_version"] = str(plugin.meta.version)
+            return out
+        return {}
+
+    def _estimate_from_stats(self, stats: Dict[str, Any], key: str) -> Optional[float]:
+        samples_raw = stats.get(f"{key}_samples", stats.get("samples"))
+        mean_raw = stats.get(f"{key}_mean", stats.get("mean"))
+        std_raw = stats.get(f"{key}_std", stats.get("std"))
+        if samples_raw in (None, "") or mean_raw in (None, ""):
+            return None
+        try:
+            samples = int(samples_raw)
+            mean = float(mean_raw)
+        except (TypeError, ValueError):
+            return None
+        if samples <= 0:
+            return None
+        if samples < 5:
+            return mean * float(self.resource_low_sample_multiplier)
+        try:
+            std = float(std_raw or 0.0)
+        except (TypeError, ValueError):
+            std = 0.0
+        return mean + (3.0 * max(0.0, std))
+
+    def _resolve_batch_resources(self, steps: List[Any]) -> Dict[str, Optional[Any]]:
+        requested_time_min = _parse_slurm_time_to_minutes(str(self.env.time or ""))
+        requested_cpus = int(self.env.cpus_per_task or 0) or None
+        requested_mem_mb = _parse_mem_to_mb(str(self.env.mem or ""))
+
+        max_time_min = _parse_slurm_time_to_minutes(str(self.env.max_time or ""))
+        max_cpus = int(self.env.max_cpus_per_task or 0) or None
+        max_mem_mb = _parse_mem_to_mb(str(self.env.max_mem or ""))
+
+        history_map = {}
+        try:
+            history_map = dict(getattr(self, "env_config", {}) or {})
+        except Exception:  # noqa: BLE001
+            history_map = {}
+        history_map = dict(history_map.get("resource_history") or {})
+
+        for step in steps:
+            plugin_resources = self._resolve_plugin_resources(step)
+            step_resources = dict(getattr(step, "resources", {}) or {})
+            merged = dict(plugin_resources)
+            merged.update(step_resources)
+
+            plugin_name = str(plugin_resources.get("plugin_name") or "").strip()
+            plugin_version = str(plugin_resources.get("plugin_version") or "").strip()
+            plugin_ref = str(plugin_resources.get("plugin_ref") or "").strip()
+            hist_key = f"{plugin_name}@{plugin_version}" if plugin_name and plugin_version else ""
+            stats = dict(history_map.get(hist_key) or {})
+            db_stats = fetch_plugin_resource_stats(
+                plugin_name=plugin_name,
+                plugin_version=plugin_version,
+                plugin_refs=[plugin_ref] if plugin_ref else [],
+                executor="slurm",
+                limit=200,
+            )
+            if db_stats:
+                stats = db_stats
+
+            cpus_raw = merged.get("cpus_per_task", merged.get("cpu_cores"))
+            if cpus_raw not in (None, ""):
+                try:
+                    cpus = int(cpus_raw)
+                    if cpus > 0:
+                        requested_cpus = max(requested_cpus or 0, cpus)
+                except (TypeError, ValueError):
+                    pass
+            else:
+                est_cpus = self._estimate_from_stats(stats, "cpu_cores")
+                if est_cpus is not None and est_cpus > 0:
+                    requested_cpus = max(requested_cpus or 0, int(math.ceil(est_cpus)))
+
+            mem_raw = merged.get("mem")
+            if mem_raw in (None, "") and merged.get("memory_gb") not in (None, ""):
+                try:
+                    mem_raw = f"{float(merged.get('memory_gb'))}G"
+                except (TypeError, ValueError):
+                    mem_raw = None
+            mem_mb = _parse_mem_to_mb(str(mem_raw or ""))
+            if mem_mb is not None:
+                requested_mem_mb = max(requested_mem_mb or 0, mem_mb)
+            else:
+                est_mem_gb = self._estimate_from_stats(stats, "memory_gb")
+                if est_mem_gb is not None and est_mem_gb > 0:
+                    requested_mem_mb = max(requested_mem_mb or 0, int(math.ceil(est_mem_gb * 1024.0)))
+
+            wall_minutes = None
+            wm_raw = merged.get("wall_minutes")
+            if wm_raw not in (None, ""):
+                try:
+                    wall_minutes = float(wm_raw)
+                except (TypeError, ValueError):
+                    wall_minutes = None
+            if wall_minutes is None and merged.get("time") not in (None, ""):
+                wall_minutes = _parse_slurm_time_to_minutes(str(merged.get("time") or ""))
+            if wall_minutes is None:
+                wall_minutes = self._estimate_from_stats(stats, "wall_minutes")
+            if wall_minutes is not None and wall_minutes > 0:
+                requested_time_min = max(requested_time_min or 0.0, wall_minutes)
+
+        if max_cpus is not None and requested_cpus is not None:
+            requested_cpus = min(requested_cpus, max_cpus)
+        if max_mem_mb is not None and requested_mem_mb is not None:
+            requested_mem_mb = min(requested_mem_mb, max_mem_mb)
+        if max_time_min is not None and requested_time_min is not None:
+            requested_time_min = min(requested_time_min, max_time_min)
+
+        return {
+            "time": _format_minutes_as_slurm_time(requested_time_min) if requested_time_min is not None else None,
+            "cpus_per_task": requested_cpus,
+            "mem": _format_mb_as_slurm_mem(requested_mem_mb) if requested_mem_mb is not None else None,
+        }
 
     def submit(self, pipeline_path: str, context: Dict[str, Any]) -> SubmissionResult:
         pipeline_input = Path(pipeline_path)
@@ -367,6 +598,7 @@ class SlurmExecutor(Executor):
                 label = step_name
                 step_workdir = (remote_workdir_root / step_name).as_posix()
                 step_logdir = (base_logdir / jobname / step_name / run_date / run_fs_id).as_posix()
+                batch_resources = self._resolve_batch_resources(steps)
                 script_text = self._render_batch_script(
                     run_id,
                     checkout_root,
@@ -384,6 +616,9 @@ class SlurmExecutor(Executor):
                     resume_run_id=resume_run_id,
                     global_config_path=global_config_remote,
                     environments_config_path=environments_config_remote,
+                    sbatch_time=batch_resources.get("time"),
+                    sbatch_cpus_per_task=batch_resources.get("cpus_per_task"),
+                    sbatch_mem=batch_resources.get("mem"),
                     array_index=False,
                 )
                 jobid = self._submit_script(script_text, run_id, label=label, prev_dependency=prev_jobid, remote_dest_dir=step_workdir)
@@ -401,6 +636,7 @@ class SlurmExecutor(Executor):
                     label = f"{first_name}_array{batch_idx}_chunk{start}"
                     step_workdir = (remote_workdir_root / label).as_posix()
                     step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
+                    batch_resources = self._resolve_batch_resources(chunk_steps)
                     script_text = self._render_batch_script(
                         run_id,
                         checkout_root,
@@ -418,6 +654,9 @@ class SlurmExecutor(Executor):
                         resume_run_id=resume_run_id,
                         global_config_path=global_config_remote,
                         environments_config_path=environments_config_remote,
+                        sbatch_time=batch_resources.get("time"),
+                        sbatch_cpus_per_task=batch_resources.get("cpus_per_task"),
+                        sbatch_mem=batch_resources.get("mem"),
                         array_index=True,
                     )
                     jobid = self._submit_script(script_text, run_id, label=label, prev_dependency=prev_jobid, array_bounds=(0, len(chunk)-1), remote_dest_dir=step_workdir)
@@ -545,10 +784,10 @@ class SlurmExecutor(Executor):
         else:
             step_arg = ",".join(str(i) for i in step_indices)
 
-        module_path = (Path(checkout_root) / "etl" / "run_batch.py").as_posix()
         cmd = [
             "python",
-            module_path,
+            "-m",
+            "etl.run_batch",
             pipeline_path,
             "--steps",
             step_arg,
@@ -593,20 +832,26 @@ class SlurmExecutor(Executor):
         resume_run_id: Optional[str] = None,
         global_config_path: Optional[str] = None,
         environments_config_path: Optional[str] = None,
+        sbatch_time: Optional[str] = None,
+        sbatch_cpus_per_task: Optional[int] = None,
+        sbatch_mem: Optional[str] = None,
         array_index: bool = False,
     ) -> str:
         logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
         lines = ["#!/bin/bash --login"]
+        eff_time = str(sbatch_time or self.env.time or "").strip() or None
+        eff_cpus = sbatch_cpus_per_task if sbatch_cpus_per_task not in (None, 0) else self.env.cpus_per_task
+        eff_mem = str(sbatch_mem or self.env.mem or "").strip() or None
         if self.env.partition:
             lines.append(f"#SBATCH -p {self.env.partition}")
         if self.env.account:
             lines.append(f"#SBATCH -A {self.env.account}")
-        if self.env.time:
-            lines.append(f"#SBATCH -t {self.env.time}")
-        if self.env.cpus_per_task:
-            lines.append(f"#SBATCH -c {self.env.cpus_per_task}")
-        if self.env.mem:
-            lines.append(f"#SBATCH --mem={self.env.mem}")
+        if eff_time:
+            lines.append(f"#SBATCH -t {eff_time}")
+        if eff_cpus:
+            lines.append(f"#SBATCH -c {int(eff_cpus)}")
+        if eff_mem:
+            lines.append(f"#SBATCH --mem={eff_mem}")
         lines.append(f"#SBATCH -J etl-{run_id[:8]}")
         lines.append(f"#SBATCH -o {logdir}/etl-{run_id}-%j.%a.out" if array_index else f"#SBATCH -o {logdir}/etl-{run_id}-%j.out")
         if array_index:
@@ -639,10 +884,10 @@ class SlurmExecutor(Executor):
         else:
             step_arg = ",".join(str(i) for i in step_indices)
 
-        module_path = (Path(checkout_root) / "etl" / "run_batch.py").as_posix()
         cmd = [
             "$VENV/bin/python",
-            module_path,
+            "-m",
+            "etl.run_batch",
             pipeline_path,
             "--steps",
             step_arg,
@@ -688,16 +933,32 @@ class SlurmExecutor(Executor):
     ) -> str:
         logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
         lines = ["#!/bin/bash --login"]
+        setup_time = str(self.env.time or "").strip() or None
+        setup_cpus = int(self.env.cpus_per_task or 0) or None
+        setup_mem = str(self.env.mem or "").strip() or None
+        max_time_min = _parse_slurm_time_to_minutes(str(self.env.max_time or ""))
+        max_cpus = int(self.env.max_cpus_per_task or 0) or None
+        max_mem_mb = _parse_mem_to_mb(str(self.env.max_mem or ""))
+        if setup_time and max_time_min is not None:
+            cur_min = _parse_slurm_time_to_minutes(setup_time)
+            if cur_min is not None:
+                setup_time = _format_minutes_as_slurm_time(min(cur_min, max_time_min))
+        if setup_cpus and max_cpus is not None:
+            setup_cpus = min(setup_cpus, max_cpus)
+        if setup_mem and max_mem_mb is not None:
+            cur_mem_mb = _parse_mem_to_mb(setup_mem)
+            if cur_mem_mb is not None:
+                setup_mem = _format_mb_as_slurm_mem(min(cur_mem_mb, max_mem_mb))
         if self.env.partition:
             lines.append(f"#SBATCH -p {self.env.partition}")
         if self.env.account:
             lines.append(f"#SBATCH -A {self.env.account}")
-        if self.env.time:
-            lines.append(f"#SBATCH -t {self.env.time}")
-        if self.env.cpus_per_task:
-            lines.append(f"#SBATCH -c {self.env.cpus_per_task}")
-        if self.env.mem:
-            lines.append(f"#SBATCH --mem={self.env.mem}")
+        if setup_time:
+            lines.append(f"#SBATCH -t {setup_time}")
+        if setup_cpus:
+            lines.append(f"#SBATCH -c {setup_cpus}")
+        if setup_mem:
+            lines.append(f"#SBATCH --mem={setup_mem}")
         lines.append(f"#SBATCH -J etl-setup-{run_id[:6]}")
         lines.append(f"#SBATCH -o {logdir}/etl-setup-{run_id}-%j.out")
         if self.env.sbatch_extra:

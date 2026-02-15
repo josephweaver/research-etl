@@ -65,6 +65,9 @@ def test_web_api_endpoints(monkeypatch):
     r4 = client.get("/pipelines")
     assert r4.status_code == 200
 
+    r4c = client.get("/plugins")
+    assert r4c.status_code == 200
+
     r4b = client.get("/pipelines/new")
     assert r4b.status_code == 200
 
@@ -664,6 +667,160 @@ def test_web_api_builder_source_parses_plugin_args_model(tmp_path: Path):
     assert model["steps"][0]["params"]["src"] == "Data/Field_Boundaries"
     assert model["steps"][0]["params"]["recursive"] is True
     assert model["steps"][0]["params"]["max_files"] == 20
+
+
+def test_web_api_builder_source_parses_foreach_glob_model(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    p = tmp_path / "draft_foreach.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - plugin: echo.py",
+                "    foreach_glob: \"/tmp/data/*\"",
+                "    foreach_kind: dirs",
+                "    args:",
+                "      msg: \"{item_name}\"",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    s = client.get("/api/builder/source", params={"pipeline": str(p)})
+    assert s.status_code == 200
+    model = s.json()["model"]
+    step = model["steps"][0]
+    assert step["type"] == "foreach"
+    assert step["foreach_mode"] == "glob"
+    assert step["foreach_glob"] == "/tmp/data/*"
+    assert step["foreach_kind"] == "dirs"
+
+
+def test_web_api_builder_validate_allows_foreach_glob_item_tokens() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "dirs:",
+            "  workdir: .out/work",
+            "  logdir: .out/log",
+            "steps:",
+            "  - name: s1",
+            "    plugin: gdrive_download.py",
+            "    args:",
+            "      out: .out/work/raw",
+            "    output_var: staged_raw",
+            "  - name: s2",
+            "    plugin: echo.py",
+            "    foreach_glob: \"{staged_raw.output_dir}/*\"",
+            "    foreach_kind: dirs",
+            "    args:",
+            "      msg: \"{item_name}-{item_index}\"",
+        ]
+    ) + "\n"
+    r = client.post("/api/builder/validate", json={"yaml_text": yaml_text})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["valid"] is True
+
+
+def test_web_api_plugins_stats_recommendations(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    (plugins_dir / "demo.py").write_text(
+        "\n".join(
+            [
+                "meta = {'name': 'demo', 'version': '1.0.0', 'description': 'd', 'resources': {'cpu_cores': 2}}",
+                "def run(args, ctx):",
+                "    return {'ok': True}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(web_api, "_resolve_builder_plugins_dir", lambda **_k: plugins_dir)
+    monkeypatch.setattr(
+        web_api,
+        "fetch_plugin_resource_stats",
+        lambda **_k: {
+            "samples": 3,
+            "cpu_cores_mean": 2.0,
+            "cpu_cores_std": 1.0,
+            "cpu_cores_samples": 3,
+            "memory_gb_mean": 8.0,
+            "memory_gb_std": 2.0,
+            "memory_gb_samples": 3,
+            "wall_minutes_mean": 20.0,
+            "wall_minutes_std": 4.0,
+            "wall_minutes_samples": 3,
+        },
+    )
+    monkeypatch.setattr(web_api, "_resolve_builder_env_vars", lambda **_k: {})
+    client = TestClient(web_api.app)
+    r = client.get("/api/plugins/stats")
+    assert r.status_code == 200
+    p = r.json()["plugins"][0]
+    rec = p["recommendation"]
+    assert p["path"] == "demo.py"
+    assert rec["samples"] == 3
+    assert rec["cpu_cores"] == 3.0
+    assert rec["memory_gb"] == 12.0
+    assert rec["wall_minutes"] == 30.0
+
+
+def test_web_api_plugins_stats_clamps_to_env_caps(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    (plugins_dir / "demo.py").write_text(
+        "meta = {'name': 'demo', 'version': '1.0.0', 'description': 'd'}\n"
+        "def run(args, ctx):\n"
+        "    return {'ok': True}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(web_api, "_resolve_builder_plugins_dir", lambda **_k: plugins_dir)
+    monkeypatch.setattr(
+        web_api,
+        "fetch_plugin_resource_stats",
+        lambda **_k: {
+            "samples": 10,
+            "cpu_cores_mean": 10.0,
+            "cpu_cores_std": 3.0,
+            "cpu_cores_samples": 10,
+            "memory_gb_mean": 20.0,
+            "memory_gb_std": 5.0,
+            "memory_gb_samples": 10,
+            "wall_minutes_mean": 120.0,
+            "wall_minutes_std": 20.0,
+            "wall_minutes_samples": 10,
+        },
+    )
+    monkeypatch.setattr(
+        web_api,
+        "_resolve_builder_env_vars",
+        lambda **_k: {"max_cpus_per_task": 16, "max_mem": "32G", "max_time": "04:00:00"},
+    )
+    client = TestClient(web_api.app)
+    r = client.get("/api/plugins/stats", params={"env": "msu"})
+    assert r.status_code == 200
+    rec = r.json()["plugins"][0]["recommendation"]
+    assert rec["cpu_cores"] == 16.0
+    assert rec["memory_gb"] == 32.0
+    assert rec["wall_minutes"] == 180.0
 
 
 def test_web_api_builder_source_resolves_bare_filename_under_pipelines(monkeypatch, tmp_path: Path):

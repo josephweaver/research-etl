@@ -42,9 +42,12 @@ class Step:
     script: str
     output_var: Optional[str] = None
     env: Dict[str, str] = field(default_factory=dict)
+    resources: Dict[str, Any] = field(default_factory=dict)
     when: Optional[str] = None  # simple expression string, evaluated later
     parallel_with: Optional[str] = None  # group key for parallel batches
     foreach: Optional[str] = None  # name of list variable to fan out over
+    foreach_glob: Optional[str] = None  # glob pattern to fan out over filesystem paths
+    foreach_kind: Optional[str] = None  # any|files|dirs (applies to foreach_glob)
 
 
 @dataclass
@@ -382,6 +385,9 @@ def parse_pipeline(
         env = step_map.get("env", {}) or {}
         if not isinstance(env, dict):
             raise PipelineError(f"Step {idx} `env` must be a mapping")
+        resources = step_map.get("resources", {}) or {}
+        if not isinstance(resources, dict):
+            raise PipelineError(f"Step {idx} `resources` must be a mapping")
         when = step_map.get("when")
         parallel_with = step_map.get("parallel_with")
         if parallel_with is not None and not isinstance(parallel_with, str):
@@ -389,17 +395,38 @@ def parse_pipeline(
         foreach = step_map.get("foreach")
         if foreach is not None and not isinstance(foreach, str):
             raise PipelineError(f"Step {idx} `foreach` must be a string if provided")
+        foreach_glob = step_map.get("foreach_glob")
+        if foreach_glob is not None and not isinstance(foreach_glob, str):
+            raise PipelineError(f"Step {idx} `foreach_glob` must be a string if provided")
+        if foreach and foreach_glob:
+            raise PipelineError(f"Step {idx} may not define both `foreach` and `foreach_glob`.")
+        foreach_kind = step_map.get("foreach_kind")
+        if foreach_kind is not None and not isinstance(foreach_kind, str):
+            raise PipelineError(f"Step {idx} `foreach_kind` must be a string if provided")
+        foreach_kind_norm: Optional[str] = None
+        if foreach_kind is not None:
+            foreach_kind_norm = str(foreach_kind).strip().lower()
+            if foreach_kind_norm not in {"any", "files", "dirs"}:
+                raise PipelineError(f"Step {idx} `foreach_kind` must be one of: any, files, dirs")
+            if foreach_glob is None:
+                raise PipelineError(f"Step {idx} `foreach_kind` requires `foreach_glob`.")
         script_interp = _resolve_iterative(script, step_ctx, max_passes=resolve_max_passes)
         env_interp = _resolve_iterative(env, step_ctx, max_passes=resolve_max_passes)
+        foreach_glob_interp: Optional[str] = None
+        if foreach_glob is not None:
+            foreach_glob_interp = _resolve_iterative(foreach_glob, step_ctx, max_passes=resolve_max_passes)
         steps.append(
             Step(
                 name=name,
                 script=script_interp,
                 output_var=output_var,
                 env=env_interp,
+                resources=copy.deepcopy(resources),
                 when=when,
                 parallel_with=parallel_with,
                 foreach=foreach,
+                foreach_glob=foreach_glob_interp,
+                foreach_kind=foreach_kind_norm,
             )
         )
 

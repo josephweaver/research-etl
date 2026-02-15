@@ -21,6 +21,7 @@ import shlex
 import time
 import uuid
 from datetime import datetime
+import glob
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -140,6 +141,49 @@ def _eval_when(expr: Optional[str], ctx: Dict[str, Any]) -> bool:
         return False
 
 
+def _classify_attempt_failure(*, success: bool, skipped: bool, error: Optional[str]) -> str:
+    if skipped:
+        return "skipped"
+    if success:
+        return "success"
+    text = str(error or "").strip().lower()
+    if not text:
+        return "failed"
+    if any(tok in text for tok in ("cancel", "cancelled", "keyboardinterrupt", "sigint")):
+        return "cancelled"
+    if any(tok in text for tok in ("out of memory", "oom", "killed")):
+        return "oom"
+    if any(tok in text for tok in ("timeout", "time limit", "timed out")):
+        return "timeout"
+    if any(tok in text for tok in ("node fail", "slurmstepd", "connection reset", "temporary failure", "i/o error")):
+        return "infra"
+    return "failed"
+
+
+def _extract_numeric_metric(outputs: Dict[str, Any], keys: List[str]) -> Optional[float]:
+    if not isinstance(outputs, dict):
+        return None
+    for key in keys:
+        if key not in outputs:
+            continue
+        raw = outputs.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            text = str(raw).strip().lower()
+            m = re.match(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([gm]b?)?\s*$", text)
+            if not m:
+                continue
+            num = float(m.group(1))
+            unit = str(m.group(2) or "").strip().lower()
+            if unit.startswith("m"):
+                return num / 1024.0
+            return num
+    return None
+
+
 def _batch_steps(steps: List[Step]) -> List[List[Step]]:
     """
     Group steps into batches. Consecutive steps sharing the same
@@ -221,6 +265,95 @@ def _resolve_with_ctx(value: Any, ctx: Dict[str, Any], *, max_passes: int = 20) 
     return cur
 
 
+def _foreach_items_from_var(foreach: str, ctx: Dict[str, Any]) -> List[Any]:
+    items, ok = _lookup_ctx_path(ctx, str(foreach or ""))
+    if not ok:
+        return []
+    if not isinstance(items, (list, tuple)):
+        raise RunError(f"`foreach` expects a list; got {type(items)} for {foreach}")
+    return list(items)
+
+
+def _foreach_items_from_glob(
+    foreach_glob: str,
+    *,
+    foreach_kind: Optional[str],
+    ctx: Dict[str, Any],
+    max_passes: int,
+) -> List[str]:
+    pattern = str(_resolve_with_ctx(foreach_glob, ctx, max_passes=max_passes) or "").strip()
+    if not pattern:
+        return []
+    matches = sorted(glob.glob(pattern, recursive=True))
+    kind = str(foreach_kind or "any").strip().lower()
+    if kind == "dirs":
+        matches = [m for m in matches if Path(m).is_dir()]
+    elif kind == "files":
+        matches = [m for m in matches if Path(m).is_file()]
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for raw in matches:
+        resolved = Path(raw).resolve().as_posix()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(resolved)
+    return deduped
+
+
+def _expand_step(
+    step: Step,
+    *,
+    ctx_vars: Dict[str, Any],
+    run_id: str,
+    run_started: datetime,
+    job_name: str,
+    resolve_max_passes: int,
+) -> List[Step]:
+    if not step.foreach and not step.foreach_glob:
+        return [step]
+
+    if step.foreach:
+        items: List[Any] = _foreach_items_from_var(step.foreach, ctx_vars)
+    else:
+        items = _foreach_items_from_glob(
+            str(step.foreach_glob or ""),
+            foreach_kind=step.foreach_kind,
+            ctx=ctx_vars,
+            max_passes=resolve_max_passes,
+        )
+    expanded: List[Step] = []
+    for idx, item in enumerate(items):
+        item_text = str(item)
+        item_path = Path(item_text)
+        local_ctx = _with_runtime_sys(
+            dict(ctx_vars),
+            run_id=run_id,
+            run_started=run_started,
+            job_name=job_name,
+            step_name=f"{step.name}_{idx}",
+            step_index=idx,
+        )
+        local_ctx["item"] = item
+        local_ctx["item_index"] = idx
+        local_ctx["item_name"] = item_path.name
+        local_ctx["item_stem"] = item_path.stem
+        new_step = Step(
+            name=f"{step.name}_{idx}",
+            script=str(_resolve_with_ctx(step.script, local_ctx, max_passes=resolve_max_passes)),
+            output_var=f"{step.output_var}_{idx}" if step.output_var else None,
+            env=_resolve_with_ctx(step.env, local_ctx, max_passes=resolve_max_passes),
+            resources=dict(step.resources or {}),
+            when=step.when,
+            parallel_with=step.parallel_with,
+            foreach=None,
+            foreach_glob=None,
+            foreach_kind=None,
+        )
+        expanded.append(new_step)
+    return expanded
+
+
 def _with_runtime_sys(
     base_ctx: Dict[str, Any],
     *,
@@ -285,7 +418,12 @@ def run_pipeline(
     ts = run_started or datetime.utcnow()
     date_dir = ts.strftime("%y%m%d")
     run_dir = f"{ts.strftime('%H%M%S')}-{run_id[:8]}"
-    base_workdir = workdir / date_dir / run_dir
+    # Idempotent run-directory stamping: if caller already provides a workdir
+    # ending in the current run stamp, reuse it directly instead of nesting.
+    if workdir.name == run_dir and workdir.parent.name == date_dir:
+        base_workdir = workdir
+    else:
+        base_workdir = workdir / date_dir / run_dir
     base_workdir.mkdir(parents=True, exist_ok=True)
 
     def log(msg: str, level: str = "INFO") -> None:
@@ -323,116 +461,104 @@ def run_pipeline(
                 break
     base_logdir.mkdir(parents=True, exist_ok=True)
 
-    expanded_steps: List[Step] = []
-    for step in pipeline.steps:
-        if step.foreach:
-            items = ctx_vars.get(step.foreach, [])
-            if not isinstance(items, (list, tuple)):
-                raise RunError(f"`foreach` expects a list; got {type(items)} for {step.foreach}")
-            for idx, item in enumerate(items):
-                local_ctx = _with_runtime_sys(
-                    dict(ctx_vars),
+    batches = _batch_steps(pipeline.steps)
+    failed = False
+    for orig_batch in batches:
+        expansion_ctx = dict(ctx_vars)
+        expanded_for_batch: List[Step] = []
+        for step in orig_batch:
+            expanded_for_batch.extend(
+                _expand_step(
+                    step,
+                    ctx_vars=expansion_ctx,
                     run_id=run_id,
                     run_started=ts,
                     job_name=str((pipeline.vars or {}).get("jobname") or ""),
-                    step_name=f"{step.name}_{idx}",
-                    step_index=idx,
+                    resolve_max_passes=resolve_max_passes,
                 )
-                local_ctx["item"] = item
-                new_step = Step(
-                    name=f"{step.name}_{idx}",
-                    script=str(_resolve_with_ctx(step.script, local_ctx, max_passes=resolve_max_passes)),
-                    output_var=f"{step.output_var}_{idx}" if step.output_var else None,
-                    env=_resolve_with_ctx(step.env, local_ctx, max_passes=resolve_max_passes),
-                    when=step.when,
-                    parallel_with=step.parallel_with,
-                    foreach=None,
-                )
-                expanded_steps.append(new_step)
-        else:
-            expanded_steps.append(step)
-
-    batches = _batch_steps(expanded_steps)
-    if resume_succeeded_steps:
-        filtered_batches: List[List[Step]] = []
-        for batch in batches:
-            kept: List[Step] = []
-            for step in batch:
-                if step.name in resume_succeeded_steps:
-                    log(f"[{run_id}] step {step.name} skipped (resume from prior success)")
-                    if step.output_var and step.name in prior_step_outputs:
-                        ctx_vars[step.output_var] = prior_step_outputs.get(step.name, {})
-                    step_results.append(
-                        StepResult(
-                            step=step,
-                            success=True,
-                            skipped=True,
-                            attempt_no=0,
-                            attempts=[],
-                        )
-                    )
-                else:
-                    kept.append(step)
-            if kept:
-                filtered_batches.append(kept)
-        batches = filtered_batches
-
-    for batch_idx, batch in enumerate(batches):
-        if len(batch) == 1:
-            step = batch[0]
-            res = _execute_step(
-                step,
-                run_id,
-                ts,
-                plugin_dir,
-                base_workdir,
-                base_logdir,
-                dry_run,
-                max_retries,
-                retry_delay_seconds,
-                log,
-                ctx_vars,
-                resolve_max_passes=resolve_max_passes,
-                step_index=len(step_results),
-                step_log_func=step_log_func,
             )
-            step_results.append(res)
-            if res.success and step.output_var:
-                ctx_vars[step.output_var] = res.outputs
-            if not res.success and not res.skipped:
-                break
-        else:
-            # parallel batch
-            futures = []
-            with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+        run_batches = _batch_steps(expanded_for_batch)
+        if resume_succeeded_steps:
+            filtered_batches: List[List[Step]] = []
+            for batch in run_batches:
+                kept: List[Step] = []
                 for step in batch:
-                    futures.append(
-                        pool.submit(
-                            _execute_step,
-                            step,
-                            run_id,
-                            ts,
-                            plugin_dir,
-                            base_workdir,
-                            base_logdir,
-                            dry_run,
-                            max_retries,
-                            retry_delay_seconds,
-                            log,
-                            dict(ctx_vars),  # snapshot
-                            resolve_max_passes,
-                            None,
-                            step_log_func,
+                    if step.name in resume_succeeded_steps:
+                        log(f"[{run_id}] step {step.name} skipped (resume from prior success)")
+                        if step.output_var and step.name in prior_step_outputs:
+                            ctx_vars[step.output_var] = prior_step_outputs.get(step.name, {})
+                        step_results.append(
+                            StepResult(
+                                step=step,
+                                success=True,
+                                skipped=True,
+                                attempt_no=0,
+                                attempts=[],
+                            )
                         )
-                    )
-                for fut in as_completed(futures):
-                    res = fut.result()
-                    step_results.append(res)
-                    if res.success and res.step.output_var:
-                        ctx_vars[res.step.output_var] = res.outputs
-                    if not res.success and not res.skipped:
-                        # stop remaining? let pool finish but don't break pipeline context
-                        pass
+                    else:
+                        kept.append(step)
+                if kept:
+                    filtered_batches.append(kept)
+            run_batches = filtered_batches
+
+        for batch in run_batches:
+            if len(batch) == 1:
+                step = batch[0]
+                res = _execute_step(
+                    step,
+                    run_id,
+                    ts,
+                    plugin_dir,
+                    base_workdir,
+                    base_logdir,
+                    dry_run,
+                    max_retries,
+                    retry_delay_seconds,
+                    log,
+                    ctx_vars,
+                    resolve_max_passes=resolve_max_passes,
+                    step_index=len(step_results),
+                    step_log_func=step_log_func,
+                )
+                step_results.append(res)
+                if res.success and step.output_var:
+                    ctx_vars[step.output_var] = res.outputs
+                if not res.success and not res.skipped:
+                    failed = True
+                    break
+            else:
+                futures = []
+                with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+                    for step in batch:
+                        futures.append(
+                            pool.submit(
+                                _execute_step,
+                                step,
+                                run_id,
+                                ts,
+                                plugin_dir,
+                                base_workdir,
+                                base_logdir,
+                                dry_run,
+                                max_retries,
+                                retry_delay_seconds,
+                                log,
+                                dict(ctx_vars),
+                                resolve_max_passes,
+                                None,
+                                step_log_func,
+                            )
+                        )
+                    for fut in as_completed(futures):
+                        res = fut.result()
+                        step_results.append(res)
+                        if res.success and res.step.output_var:
+                            ctx_vars[res.step.output_var] = res.outputs
+                        if not res.success and not res.skipped:
+                            pass
+        if failed:
+            break
 
     return RunResult(run_id=run_id, steps=step_results, artifact_dir=str(base_workdir))
 
@@ -480,9 +606,7 @@ def _execute_step(
     args["env"] = env_runtime
 
     step_workdir = base_workdir / step.name
-    step_workdir.mkdir(parents=True, exist_ok=True)
     step_logdir = base_logdir / step.name
-    step_logdir.mkdir(parents=True, exist_ok=True)
 
     sinks: List[Any] = [ConsoleLogSink(run_id, step.name), FileLogSink(step_logdir / "step.log")]
     if step_log_func is not None:
@@ -494,6 +618,8 @@ def _execute_step(
         log(f"dry-run -> {plugin_path} args={args}")
         started = datetime.utcnow().isoformat() + "Z"
         ended = datetime.utcnow().isoformat() + "Z"
+        plugin_name = str(getattr(plugin.meta, "name", "") or "")
+        plugin_version = str(getattr(plugin.meta, "version", "") or "")
         return StepResult(
             step=step,
             success=True,
@@ -508,21 +634,37 @@ def _execute_step(
                     "outputs": {},
                     "started_at": started,
                     "ended_at": ended,
+                    "plugin_name": plugin_name,
+                    "plugin_version": plugin_version,
+                    "failure_category": "success",
                 }
             ],
         )
 
     attempt_history: List[Dict[str, Any]] = []
     max_attempts = max(1, int(max_retries) + 1)
+    plugin_name = str(getattr(plugin.meta, "name", "") or "")
+    plugin_version = str(getattr(plugin.meta, "version", "") or "")
     for attempt_no in range(1, max_attempts + 1):
         original_env = os.environ.copy()
-        started = datetime.utcnow().isoformat() + "Z"
+        started_dt = datetime.utcnow()
+        started = started_dt.isoformat() + "Z"
         try:
             os.environ.update({str(k): str(v) for k, v in dict(env_runtime or {}).items()})
             outputs = plugin.run(args, ctx)
             if plugin.validate:
                 plugin.validate(args, outputs, ctx)
-            ended = datetime.utcnow().isoformat() + "Z"
+            ended_dt = datetime.utcnow()
+            ended = ended_dt.isoformat() + "Z"
+            runtime_seconds = max(0.0, (ended_dt - started_dt).total_seconds())
+            memory_gb = _extract_numeric_metric(
+                dict(outputs or {}),
+                ["peak_memory_gb", "memory_gb", "max_rss_gb", "rss_gb", "peak_mem_gb"],
+            )
+            cpu_cores = _extract_numeric_metric(
+                dict(outputs or {}),
+                ["cpu_cores", "peak_cpu_cores", "used_cpu_cores", "cpu_count"],
+            )
             attempt_history.append(
                 {
                     "attempt_no": attempt_no,
@@ -532,6 +674,12 @@ def _execute_step(
                     "outputs": outputs,
                     "started_at": started,
                     "ended_at": ended,
+                    "plugin_name": plugin_name,
+                    "plugin_version": plugin_version,
+                    "failure_category": "success",
+                    "runtime_seconds": runtime_seconds,
+                    "memory_gb": memory_gb,
+                    "cpu_cores": cpu_cores,
                 }
             )
             if attempt_no > 1:
@@ -544,8 +692,10 @@ def _execute_step(
                 attempts=attempt_history,
             )
         except Exception as exc:  # noqa: BLE001
-            ended = datetime.utcnow().isoformat() + "Z"
+            ended_dt = datetime.utcnow()
+            ended = ended_dt.isoformat() + "Z"
             err = str(exc)
+            runtime_seconds = max(0.0, (ended_dt - started_dt).total_seconds())
             attempt_history.append(
                 {
                     "attempt_no": attempt_no,
@@ -555,6 +705,12 @@ def _execute_step(
                     "outputs": {},
                     "started_at": started,
                     "ended_at": ended,
+                    "plugin_name": plugin_name,
+                    "plugin_version": plugin_version,
+                    "failure_category": _classify_attempt_failure(success=False, skipped=False, error=err),
+                    "runtime_seconds": runtime_seconds,
+                    "memory_gb": None,
+                    "cpu_cores": None,
                 }
             )
             if attempt_no < max_attempts:

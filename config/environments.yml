@@ -6,7 +6,7 @@ environments:
     basedir: "{global.basedir}"
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
-    datadir: "{basedir}/work"
+    datadir: "{basedir}/data"
     tmpdir: "{basedir}/tmp"
     artifactsdir: "{basedir}/artifacts"
 
@@ -29,9 +29,8 @@ environments:
     scp_timeout: 300
     ssh_host: dev-amd24.passwordless
     ssh_user: weave151
-    remote_repo: /mnt/gs21/scratch/weave151/jobs
-    workdir: /mnt/gs21/scratch/weave151/jobs/work
-    logdir: /mnt/gs21/scratch/weave151/jobs/logs
-    venv:    /mnt/gs21/scratch/weave151/jobs/etl/.venv   # optional
-    requirements: /mnt/gs21/scratch/weave151/jobs/etl/requirements.txt  # optional
+    basedir: /mnt/scratch/weave151
+    remote_repo: "{basedir}/etl"
+    workdir: "{basedir}/work"
+    logdir: "{workdir}/logs"
     sync: true

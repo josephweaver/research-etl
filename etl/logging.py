@@ -21,9 +21,9 @@ class ConsoleLogSink:
 class FileLogSink:
     def __init__(self, path: Path):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def emit(self, level: str, message: str) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(f"[{level}] {message}\n")
 

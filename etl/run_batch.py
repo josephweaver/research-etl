@@ -20,6 +20,7 @@ from etl.config import load_global_config, resolve_global_config_path, ConfigErr
 from etl.execution_config import (
     load_execution_config,
     apply_execution_env_overrides,
+    resolve_execution_env_templates,
     resolve_execution_config_path,
     validate_environment_executor,
     ExecutionConfigError,
@@ -122,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             validate_environment_executor(selected_env_name, exec_env, executor="slurm")
             exec_env = apply_execution_env_overrides(exec_env)
+            exec_env = resolve_execution_env_templates(exec_env, global_vars=global_vars)
         except ExecutionConfigError as exc:
             print(f"Environments config error: {exc}")
             return 1
@@ -213,6 +215,12 @@ def main(argv: list[str] | None = None) -> int:
                     skipped=bool(att.get("skipped", step_res.skipped)),
                     error=att.get("error", step_res.error),
                     outputs=att.get("outputs", step_res.outputs),
+                    plugin_name=att.get("plugin_name"),
+                    plugin_version=att.get("plugin_version"),
+                    failure_category=att.get("failure_category"),
+                    runtime_seconds=att.get("runtime_seconds"),
+                    memory_gb=att.get("memory_gb"),
+                    cpu_cores=att.get("cpu_cores"),
                     started_at=att.get("started_at", batch_started_at),
                     ended_at=att.get("ended_at", batch_ended_at),
                     pipeline=args.pipeline,

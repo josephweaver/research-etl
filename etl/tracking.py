@@ -8,6 +8,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+import shlex
+import statistics
 from typing import Any, Dict, List, Optional
 
 import psycopg
@@ -169,9 +171,10 @@ def _upsert_run_db(
                         cur.execute(
                             """
                             INSERT INTO etl_run_step_attempts (
-                                run_id, step_name, attempt_no, script, success, skipped, error, outputs_json, started_at, ended_at, updated_at
+                                run_id, step_name, attempt_no, script, success, skipped, error, outputs_json, started_at, ended_at,
+                                plugin_name, plugin_version, failure_category, runtime_seconds, memory_gb, cpu_cores, updated_at
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                             ON CONFLICT (run_id, step_name, attempt_no)
                             DO UPDATE SET
                                 script = EXCLUDED.script,
@@ -181,6 +184,12 @@ def _upsert_run_db(
                                 outputs_json = EXCLUDED.outputs_json,
                                 started_at = EXCLUDED.started_at,
                                 ended_at = EXCLUDED.ended_at,
+                                plugin_name = COALESCE(EXCLUDED.plugin_name, etl_run_step_attempts.plugin_name),
+                                plugin_version = COALESCE(EXCLUDED.plugin_version, etl_run_step_attempts.plugin_version),
+                                failure_category = COALESCE(EXCLUDED.failure_category, etl_run_step_attempts.failure_category),
+                                runtime_seconds = COALESCE(EXCLUDED.runtime_seconds, etl_run_step_attempts.runtime_seconds),
+                                memory_gb = COALESCE(EXCLUDED.memory_gb, etl_run_step_attempts.memory_gb),
+                                cpu_cores = COALESCE(EXCLUDED.cpu_cores, etl_run_step_attempts.cpu_cores),
                                 updated_at = NOW()
                             """,
                             (
@@ -194,6 +203,12 @@ def _upsert_run_db(
                                 att_outputs_json,
                                 att.get("started_at", rec.started_at),
                                 att.get("ended_at", rec.ended_at),
+                                att.get("plugin_name"),
+                                att.get("plugin_version"),
+                                att.get("failure_category"),
+                                att.get("runtime_seconds"),
+                                att.get("memory_gb"),
+                                att.get("cpu_cores"),
                             ),
                         )
                 elif int(step.get("attempt_no", 0) or 0) > 0:
@@ -201,9 +216,10 @@ def _upsert_run_db(
                     cur.execute(
                         """
                         INSERT INTO etl_run_step_attempts (
-                            run_id, step_name, attempt_no, script, success, skipped, error, outputs_json, started_at, ended_at, updated_at
+                            run_id, step_name, attempt_no, script, success, skipped, error, outputs_json, started_at, ended_at,
+                            plugin_name, plugin_version, failure_category, runtime_seconds, memory_gb, cpu_cores, updated_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                         ON CONFLICT (run_id, step_name, attempt_no)
                         DO UPDATE SET
                             script = EXCLUDED.script,
@@ -213,6 +229,12 @@ def _upsert_run_db(
                             outputs_json = EXCLUDED.outputs_json,
                             started_at = EXCLUDED.started_at,
                             ended_at = EXCLUDED.ended_at,
+                            plugin_name = COALESCE(EXCLUDED.plugin_name, etl_run_step_attempts.plugin_name),
+                            plugin_version = COALESCE(EXCLUDED.plugin_version, etl_run_step_attempts.plugin_version),
+                            failure_category = COALESCE(EXCLUDED.failure_category, etl_run_step_attempts.failure_category),
+                            runtime_seconds = COALESCE(EXCLUDED.runtime_seconds, etl_run_step_attempts.runtime_seconds),
+                            memory_gb = COALESCE(EXCLUDED.memory_gb, etl_run_step_attempts.memory_gb),
+                            cpu_cores = COALESCE(EXCLUDED.cpu_cores, etl_run_step_attempts.cpu_cores),
                             updated_at = NOW()
                         """,
                         (
@@ -226,6 +248,12 @@ def _upsert_run_db(
                             outputs_json,
                             rec.started_at,
                             rec.ended_at,
+                            step.get("plugin_name"),
+                            step.get("plugin_version"),
+                            step.get("failure_category"),
+                            step.get("runtime_seconds"),
+                            step.get("memory_gb"),
+                            step.get("cpu_cores"),
                         ),
                     )
 
@@ -354,6 +382,12 @@ def upsert_step_attempt(
     skipped: bool = False,
     error: Optional[str] = None,
     outputs: Optional[Dict[str, Any]] = None,
+    plugin_name: Optional[str] = None,
+    plugin_version: Optional[str] = None,
+    failure_category: Optional[str] = None,
+    runtime_seconds: Optional[float] = None,
+    memory_gb: Optional[float] = None,
+    cpu_cores: Optional[float] = None,
     started_at: Optional[str] = None,
     ended_at: Optional[str] = None,
     pipeline: Optional[str] = None,
@@ -399,9 +433,10 @@ def upsert_step_attempt(
             cur.execute(
                 """
                 INSERT INTO etl_run_step_attempts (
-                    run_id, step_name, attempt_no, script, success, skipped, error, outputs_json, started_at, ended_at, updated_at
+                    run_id, step_name, attempt_no, script, success, skipped, error, outputs_json, started_at, ended_at,
+                    plugin_name, plugin_version, failure_category, runtime_seconds, memory_gb, cpu_cores, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (run_id, step_name, attempt_no)
                 DO UPDATE SET
                     script = EXCLUDED.script,
@@ -411,6 +446,12 @@ def upsert_step_attempt(
                     outputs_json = EXCLUDED.outputs_json,
                     started_at = EXCLUDED.started_at,
                     ended_at = EXCLUDED.ended_at,
+                    plugin_name = COALESCE(EXCLUDED.plugin_name, etl_run_step_attempts.plugin_name),
+                    plugin_version = COALESCE(EXCLUDED.plugin_version, etl_run_step_attempts.plugin_version),
+                    failure_category = COALESCE(EXCLUDED.failure_category, etl_run_step_attempts.failure_category),
+                    runtime_seconds = COALESCE(EXCLUDED.runtime_seconds, etl_run_step_attempts.runtime_seconds),
+                    memory_gb = COALESCE(EXCLUDED.memory_gb, etl_run_step_attempts.memory_gb),
+                    cpu_cores = COALESCE(EXCLUDED.cpu_cores, etl_run_step_attempts.cpu_cores),
                     updated_at = NOW()
                 """,
                 (
@@ -424,6 +465,12 @@ def upsert_step_attempt(
                     outputs_json,
                     started,
                     ended,
+                    plugin_name,
+                    plugin_version,
+                    failure_category,
+                    runtime_seconds,
+                    memory_gb,
+                    cpu_cores,
                 ),
             )
         conn.commit()
@@ -538,6 +585,171 @@ def load_run_step_states(run_id: str) -> Dict[str, RunStepState]:
     return states
 
 
+def _script_head(script: str) -> str:
+    text = str(script or "").strip()
+    if not text:
+        return ""
+    try:
+        tokens = shlex.split(text)
+    except Exception:
+        tokens = text.split()
+    return str(tokens[0]).strip() if tokens else ""
+
+
+def _stats(values: List[float]) -> tuple[Optional[float], Optional[float], int]:
+    clean = [float(v) for v in values if v is not None]
+    if not clean:
+        return None, None, 0
+    mean = float(statistics.fmean(clean))
+    std = float(statistics.pstdev(clean)) if len(clean) > 1 else 0.0
+    return mean, std, len(clean)
+
+
+def fetch_plugin_resource_stats(
+    *,
+    plugin_name: str,
+    plugin_version: str,
+    plugin_refs: Optional[List[str]] = None,
+    executor: str = "slurm",
+    limit: int = 200,
+) -> Dict[str, Any]:
+    """
+    Fetch resource usage statistics for a plugin/version from successful attempts.
+    Returns {} when DB is unavailable or no eligible samples are found.
+    """
+    db_url = get_database_url()
+    if not db_url:
+        return {}
+
+    p_name = str(plugin_name or "").strip()
+    p_ver = str(plugin_version or "").strip()
+    refs = [str(r or "").strip() for r in (plugin_refs or []) if str(r or "").strip()]
+    max_rows = max(1, int(limit))
+
+    rows: List[Any] = []
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                if p_name and p_ver:
+                    cur.execute(
+                        """
+                        SELECT
+                            a.script, a.success, a.skipped, a.error,
+                            a.outputs_json, a.started_at, a.ended_at,
+                            a.failure_category, a.runtime_seconds, a.memory_gb, a.cpu_cores
+                        FROM etl_run_step_attempts a
+                        JOIN etl_runs r ON r.run_id = a.run_id
+                        WHERE r.executor = %s
+                          AND a.plugin_name = %s
+                          AND a.plugin_version = %s
+                        ORDER BY a.started_at DESC
+                        LIMIT %s
+                        """,
+                        (str(executor or "").strip(), p_name, p_ver, max_rows),
+                    )
+                    rows = cur.fetchall()
+                if not rows and refs:
+                    cur.execute(
+                        """
+                        SELECT
+                            a.script, a.success, a.skipped, a.error,
+                            a.outputs_json, a.started_at, a.ended_at,
+                            a.failure_category, a.runtime_seconds, a.memory_gb, a.cpu_cores
+                        FROM etl_run_step_attempts a
+                        JOIN etl_runs r ON r.run_id = a.run_id
+                        WHERE r.executor = %s
+                        ORDER BY a.started_at DESC
+                        LIMIT %s
+                        """,
+                        (str(executor or "").strip(), max_rows * 5),
+                    )
+                    all_rows = cur.fetchall()
+                    rows = [r for r in all_rows if _script_head(str(r[0] or "")) in set(refs)]
+    except Exception:
+        return {}
+
+    wall_minutes_values: List[float] = []
+    memory_gb_values: List[float] = []
+    cpu_cores_values: List[float] = []
+
+    for row in rows:
+        success = bool(row[1])
+        skipped = bool(row[2])
+        if skipped or not success:
+            continue
+        outputs = row[4]
+        if isinstance(outputs, str):
+            try:
+                outputs = json.loads(outputs or "{}")
+            except Exception:
+                outputs = {}
+        runtime_seconds = row[8]
+        if runtime_seconds is None and row[5] is not None and row[6] is not None:
+            try:
+                runtime_seconds = float((row[6] - row[5]).total_seconds())
+            except Exception:
+                runtime_seconds = None
+        if runtime_seconds is not None:
+            try:
+                wall_minutes_values.append(max(0.0, float(runtime_seconds) / 60.0))
+            except (TypeError, ValueError):
+                pass
+
+        mem = row[9]
+        if mem is None and isinstance(outputs, dict):
+            for key in ("peak_memory_gb", "memory_gb", "max_rss_gb", "rss_gb"):
+                raw = outputs.get(key)
+                if raw in (None, ""):
+                    continue
+                try:
+                    mem = float(raw)
+                except (TypeError, ValueError):
+                    mem = None
+                if mem is not None:
+                    break
+        if mem is not None:
+            try:
+                memory_gb_values.append(float(mem))
+            except (TypeError, ValueError):
+                pass
+
+        cpu = row[10]
+        if cpu is None and isinstance(outputs, dict):
+            for key in ("cpu_cores", "peak_cpu_cores", "used_cpu_cores", "cpu_count"):
+                raw = outputs.get(key)
+                if raw in (None, ""):
+                    continue
+                try:
+                    cpu = float(raw)
+                except (TypeError, ValueError):
+                    cpu = None
+                if cpu is not None:
+                    break
+        if cpu is not None:
+            try:
+                cpu_cores_values.append(float(cpu))
+            except (TypeError, ValueError):
+                pass
+
+    wall_mean, wall_std, wall_n = _stats(wall_minutes_values)
+    mem_mean, mem_std, mem_n = _stats(memory_gb_values)
+    cpu_mean, cpu_std, cpu_n = _stats(cpu_cores_values)
+    if wall_n == 0 and mem_n == 0 and cpu_n == 0:
+        return {}
+    return {
+        "samples": max(wall_n, mem_n, cpu_n),
+        "wall_minutes_mean": wall_mean,
+        "wall_minutes_std": wall_std,
+        "wall_minutes_samples": wall_n,
+        "memory_gb_mean": mem_mean,
+        "memory_gb_std": mem_std,
+        "memory_gb_samples": mem_n,
+        "cpu_cores_mean": cpu_mean,
+        "cpu_cores_std": cpu_std,
+        "cpu_cores_samples": cpu_n,
+    }
+
+
 __all__ = [
     "RunRecord",
     "RunStepState",
@@ -545,6 +757,7 @@ __all__ = [
     "load_runs",
     "find_run",
     "load_run_step_states",
+    "fetch_plugin_resource_stats",
     "upsert_run_status",
     "upsert_step_attempt",
 ]

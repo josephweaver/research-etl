@@ -6,6 +6,7 @@ import pytest
 
 from etl.execution_config import (
     ExecutionConfigError,
+    resolve_execution_env_templates,
     resolve_execution_config_path,
     validate_environment_executor,
 )
@@ -32,3 +33,26 @@ def test_resolve_execution_config_returns_none_without_environments(tmp_path: Pa
 def test_validate_environment_executor_rejects_mismatch() -> None:
     with pytest.raises(ExecutionConfigError, match="not 'local'"):
         validate_environment_executor("hpcc", {"executor": "slurm"}, executor="local")
+
+
+def test_resolve_execution_env_templates_resolves_sibling_refs() -> None:
+    env = {
+        "basedir": "/scratch/user",
+        "workdir": "{basedir}/jobs/work",
+        "logdir": "{workdir}/logs",
+        "venv": "{basedir}/jobs/etl/.venv",
+    }
+    resolved = resolve_execution_env_templates(env)
+    assert resolved["workdir"] == "/scratch/user/jobs/work"
+    assert resolved["logdir"] == "/scratch/user/jobs/work/logs"
+    assert resolved["venv"] == "/scratch/user/jobs/etl/.venv"
+
+
+def test_resolve_execution_env_templates_resolves_global_refs() -> None:
+    env = {
+        "basedir": "{global.basedir}",
+        "workdir": "{basedir}/work",
+    }
+    resolved = resolve_execution_env_templates(env, global_vars={"basedir": "/mnt/gs21/scratch/weave151"})
+    assert resolved["basedir"] == "/mnt/gs21/scratch/weave151"
+    assert resolved["workdir"] == "/mnt/gs21/scratch/weave151/work"

@@ -15,7 +15,10 @@ steps:
       include_glob: "**/*field_segments*.hdr,**/*field_segments"
   - name: raster_facts
     plugin: raster_facts.py
+    foreach_glob: "{fieldsdir}/**/*field_segments"
+    foreach_kind: dirs
+    parallel_with: raster_facts_dirs
     args:
-      input_dir: "{fieldsdir}"
-      output_dir: "{workdir}"
+      input_dir: "{item}"
+      output_dir: "{workdir}/raster_facts/{item_name}_{item_index}"
       probe_unknown: true
