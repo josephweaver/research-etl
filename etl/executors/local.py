@@ -151,12 +151,14 @@ class LocalExecutor(Executor):
             pipeline,
             plugin_dir=plugin_dir,
             workdir=self.workdir,
+            run_id=str(context.get("run_id") or "").strip() or None,
             dry_run=self.dry_run,
             max_retries=self.max_retries,
             retry_delay_seconds=self.retry_delay_seconds,
             resume_succeeded_steps=resume_succeeded_steps,
             prior_step_outputs=prior_step_outputs,
             log_func=context.get("log"),
+            step_log_func=context.get("step_log"),
         )
         # attach timestamps
         run_result.started_at = context.get("started_at") or datetime.utcnow().isoformat() + "Z"  # type: ignore[attr-defined]

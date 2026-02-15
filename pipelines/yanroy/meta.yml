@@ -30,9 +30,10 @@ steps:
     output_var: raw_input
 
   - name: scan_raw_metadata
-    plugin: echo.py
+    plugin: yanroy/scan_raw_metadata.py
     args:
-      message: "TODO: scan raw files from {dirs.raw_cache} and write metadata to {dirs.meta_cache}"
+      input_dir: "{dirs.raw_cache}"
+      output_dir: "{dirs.meta_cache}"
     output_var: raw_meta
 
   - name: extract_field_meta

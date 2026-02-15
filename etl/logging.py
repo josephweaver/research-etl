@@ -37,6 +37,18 @@ class CompositeLogSink:
             sink.emit(level, message)
 
 
+class CallbackLogSink:
+    """
+    Adapter sink that forwards log records to a callback.
+    """
+
+    def __init__(self, callback):
+        self.callback = callback
+
+    def emit(self, level: str, message: str) -> None:
+        self.callback(str(level), str(message))
+
+
 class StepLogger:
     """
     Standard plugin-facing logger.
@@ -60,4 +72,3 @@ class StepLogger:
 
     def error(self, message: str) -> None:
         self.sink.emit("ERROR", str(message))
-

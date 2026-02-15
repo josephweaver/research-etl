@@ -1028,7 +1028,6 @@ def test_web_api_validate_requires_pipeline(monkeypatch):
 def test_web_api_run_action_local(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
-    from etl.executors.base import SubmissionResult, RunState, RunStatus
     from etl.pipeline import Pipeline, Step
     from fastapi.testclient import TestClient
 
@@ -1036,18 +1035,20 @@ def test_web_api_run_action_local(monkeypatch, tmp_path: Path):
     pipeline_path.write_text("steps: []", encoding="utf-8")
     monkeypatch.setattr(web_api, "parse_pipeline", lambda *a, **k: Pipeline(steps=[Step(name="s1", script="echo.py")]))
     monkeypatch.setattr(web_api, "collect_run_provenance", lambda **k: {"git_commit_sha": "abc"})
+    web_api._ACTIVE_LOCAL_RUN_KEYS.clear()
+    web_api._LOCAL_RUN_SNAPSHOT.clear()
+    called = {}
 
     class _FakeLocalExecutor:
         def __init__(self, *a, **k):
             pass
 
-        def submit(self, *a, **k):
-            return SubmissionResult(run_id="new_run_local")
-
-        def status(self, run_id):
-            return RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="ok")
-
     monkeypatch.setattr(web_api, "LocalExecutor", _FakeLocalExecutor)
+    monkeypatch.setattr(
+        web_api,
+        "_submit_local_run_async",
+        lambda **kwargs: called.update(kwargs),
+    )
 
     client = TestClient(web_api.app)
     r = client.post(
@@ -1062,15 +1063,15 @@ def test_web_api_run_action_local(monkeypatch, tmp_path: Path):
     )
     assert r.status_code == 200
     payload = r.json()
-    assert payload["run_id"] == "new_run_local"
     assert payload["executor"] == "local"
-    assert payload["state"] == "succeeded"
+    assert payload["state"] == "queued"
+    assert payload["message"].startswith("Run accepted")
+    assert called["run_id"] == payload["run_id"]
 
 
 def test_web_api_run_action_ignores_unresolved_workdir_payload(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
-    from etl.executors.base import SubmissionResult, RunState, RunStatus
     from etl.pipeline import Pipeline, Step
     from fastapi.testclient import TestClient
 
@@ -1083,6 +1084,8 @@ def test_web_api_run_action_ignores_unresolved_workdir_payload(monkeypatch, tmp_
         "_resolve_execution_env",
         lambda *a, **k: ({"workdir": ".out/work"}, None, "local"),
     )
+    web_api._ACTIVE_LOCAL_RUN_KEYS.clear()
+    web_api._LOCAL_RUN_SNAPSHOT.clear()
 
     seen = {}
 
@@ -1090,13 +1093,8 @@ def test_web_api_run_action_ignores_unresolved_workdir_payload(monkeypatch, tmp_
         def __init__(self, *a, **k):
             seen["workdir"] = str(k.get("workdir") or "")
 
-        def submit(self, *a, **k):
-            return SubmissionResult(run_id="new_run_local_2")
-
-        def status(self, run_id):
-            return RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="ok")
-
     monkeypatch.setattr(web_api, "LocalExecutor", _FakeLocalExecutor)
+    monkeypatch.setattr(web_api, "_submit_local_run_async", lambda **kwargs: None)
 
     client = TestClient(web_api.app)
     r = client.post(
@@ -1116,7 +1114,6 @@ def test_web_api_run_action_ignores_unresolved_workdir_payload(monkeypatch, tmp_
 def test_web_api_pipeline_scoped_actions(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
-    from etl.executors.base import SubmissionResult, RunState, RunStatus
     from etl.pipeline import Pipeline, Step
     from fastapi.testclient import TestClient
     from urllib.parse import quote
@@ -1125,18 +1122,15 @@ def test_web_api_pipeline_scoped_actions(monkeypatch, tmp_path: Path):
     pipeline_path.write_text("steps: []", encoding="utf-8")
     monkeypatch.setattr(web_api, "parse_pipeline", lambda *a, **k: Pipeline(steps=[Step(name="s1", script="echo.py")]))
     monkeypatch.setattr(web_api, "collect_run_provenance", lambda **k: {"git_commit_sha": "abc"})
+    web_api._ACTIVE_LOCAL_RUN_KEYS.clear()
+    web_api._LOCAL_RUN_SNAPSHOT.clear()
 
     class _FakeLocalExecutor:
         def __init__(self, *a, **k):
             pass
 
-        def submit(self, *a, **k):
-            return SubmissionResult(run_id="new_run_local")
-
-        def status(self, run_id):
-            return RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="ok")
-
     monkeypatch.setattr(web_api, "LocalExecutor", _FakeLocalExecutor)
+    monkeypatch.setattr(web_api, "_submit_local_run_async", lambda **kwargs: None)
 
     client = TestClient(web_api.app)
     pipeline_id = quote(pipeline_path.as_posix(), safe="")
@@ -1150,6 +1144,98 @@ def test_web_api_pipeline_scoped_actions(monkeypatch, tmp_path: Path):
     )
     assert r.status_code == 200
     assert Path(r.json()["pipeline"]).resolve() == pipeline_path.resolve()
+    assert r.json()["state"] == "queued"
+
+
+def test_web_api_run_action_local_dedupes_active_submission(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.pipeline import Pipeline, Step
+    from fastapi.testclient import TestClient
+
+    pipeline_path = tmp_path / "p.yml"
+    pipeline_path.write_text("steps: []", encoding="utf-8")
+    monkeypatch.setattr(web_api, "parse_pipeline", lambda *a, **k: Pipeline(steps=[Step(name="s1", script="echo.py")]))
+    monkeypatch.setattr(web_api, "collect_run_provenance", lambda **k: {"git_commit_sha": "abc"})
+    web_api._ACTIVE_LOCAL_RUN_KEYS.clear()
+    web_api._LOCAL_RUN_SNAPSHOT.clear()
+
+    class _FakeLocalExecutor:
+        def __init__(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(web_api, "LocalExecutor", _FakeLocalExecutor)
+    monkeypatch.setattr(web_api, "_submit_local_run_async", lambda **kwargs: None)
+
+    client = TestClient(web_api.app)
+    first = client.post("/api/actions/run", json={"pipeline": str(pipeline_path), "executor": "local", "dry_run": True})
+    assert first.status_code == 200
+    first_run_id = first.json()["run_id"]
+    second = client.post("/api/actions/run", json={"pipeline": str(pipeline_path), "executor": "local", "dry_run": True})
+    assert second.status_code == 409
+    detail = second.json()["detail"]
+    assert detail["run_id"] == first_run_id
+
+
+def test_web_api_stop_local_queued_run(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    web_api._ACTIVE_LOCAL_RUN_KEYS.clear()
+    web_api._LOCAL_RUN_SNAPSHOT.clear()
+    web_api._LOCAL_RUN_KEY_BY_RUN_ID.clear()
+    web_api._LOCAL_RUN_FUTURES.clear()
+    web_api._LOCAL_RUN_CANCEL_REQUESTED.clear()
+    web_api._LOCAL_RUN_SNAPSHOT["r_stop_q"] = {"state": "queued"}
+
+    class _FakeFuture:
+        def cancel(self):
+            return True
+
+    web_api._LOCAL_RUN_FUTURES["r_stop_q"] = _FakeFuture()
+    web_api._LOCAL_RUN_KEY_BY_RUN_ID["r_stop_q"] = "k1"
+    web_api._ACTIVE_LOCAL_RUN_KEYS["k1"] = "r_stop_q"
+    monkeypatch.setattr(
+        web_api,
+        "fetch_run_header",
+        lambda run_id: {"run_id": run_id, "pipeline": "pipelines/sample.yml", "executor": "local", "status": "queued"},
+    )
+    monkeypatch.setattr(web_api, "upsert_run_status", lambda **kwargs: None)
+
+    client = TestClient(web_api.app)
+    r = client.post("/api/runs/r_stop_q/stop")
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["state"] == "cancelled"
+    assert "r_stop_q" not in web_api._ACTIVE_LOCAL_RUN_KEYS.values()
+
+
+def test_web_api_stop_local_running_marks_cancel_requested(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    web_api._ACTIVE_LOCAL_RUN_KEYS.clear()
+    web_api._LOCAL_RUN_SNAPSHOT.clear()
+    web_api._LOCAL_RUN_KEY_BY_RUN_ID.clear()
+    web_api._LOCAL_RUN_FUTURES.clear()
+    web_api._LOCAL_RUN_CANCEL_REQUESTED.clear()
+    web_api._LOCAL_RUN_SNAPSHOT["r_stop_r"] = {"state": "running"}
+
+    monkeypatch.setattr(
+        web_api,
+        "fetch_run_header",
+        lambda run_id: {"run_id": run_id, "pipeline": "pipelines/sample.yml", "executor": "local", "status": "running"},
+    )
+    monkeypatch.setattr(web_api, "upsert_run_status", lambda **kwargs: None)
+
+    client = TestClient(web_api.app)
+    r = client.post("/api/runs/r_stop_r/stop")
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["state"] == "cancel_requested"
+    assert "r_stop_r" in web_api._LOCAL_RUN_CANCEL_REQUESTED
 
 
 def test_web_api_resume_local(monkeypatch):
@@ -1273,3 +1359,40 @@ def test_web_api_run_live_payload(monkeypatch):
     assert payload["failed_step_count"] == 1
     assert payload["skipped_step_count"] == 1
     assert payload["latest_event"]["event_type"] == "batch_started"
+
+
+def test_web_api_live_log_from_local_snapshot(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    web_api._LOCAL_RUN_SNAPSHOT.clear()
+    web_api._LOCAL_RUN_LOG_RING.clear()
+    monkeypatch.setattr(web_api, "fetch_run_header", lambda run_id: None)
+    web_api._LOCAL_RUN_SNAPSHOT["r_live_local"] = {"state": "running", "project_id": "land_core"}
+    web_api._LOCAL_RUN_LOG_RING["r_live_local"] = ["line1", "line2"]
+
+    client = TestClient(web_api.app)
+    r = client.get("/api/runs/r_live_local/live-log")
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["run_id"] == "r_live_local"
+    assert payload["state"] == "running"
+    assert payload["lines"][-1] == "line2"
+
+
+def test_web_api_live_log_uses_header_scope(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(
+        web_api,
+        "fetch_run_header",
+        lambda run_id: {"run_id": run_id, "project_id": "land_core", "executor": "local", "pipeline": "pipelines/sample.yml"},
+    )
+    client = TestClient(web_api.app)
+    r = client.get("/api/runs/r_hdr/live-log", params={"as_user": "land-core"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["run_id"] == "r_hdr"

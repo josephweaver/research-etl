@@ -4,6 +4,9 @@ import tempfile
 import json
 import shlex
 import re
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +40,7 @@ from .provenance import collect_run_provenance
 from .projects import infer_project_id_from_pipeline_path, normalize_project_id, resolve_project_id
 from .plugins.base import PluginLoadError, load_plugin
 from .runner import run_pipeline
+from .tracking import upsert_run_status
 from .web_queries import (
     WebQueryError,
     fetch_pipeline_detail,
@@ -53,12 +57,205 @@ app = FastAPI(title="Research ETL UI", version="0.1.0")
 
 MAX_FILE_VIEW_BYTES = 256 * 1024
 _TPL_RE = re.compile(r"\{([^{}]+)\}")
+_LOCAL_RUN_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="etl-web-local")
+_LOCAL_RUN_LOCK = threading.Lock()
+_ACTIVE_LOCAL_RUN_KEYS: dict[str, str] = {}
+_LOCAL_RUN_SNAPSHOT: dict[str, dict[str, Any]] = {}
+_LOCAL_RUN_KEY_BY_RUN_ID: dict[str, str] = {}
+_LOCAL_RUN_FUTURES: dict[str, Any] = {}
+_LOCAL_RUN_CANCEL_REQUESTED: set[str] = set()
+_LOCAL_RUN_LOG_RING: dict[str, list[str]] = {}
+_LOCAL_RUN_LOG_RING_MAX = 2000
 
 
 @dataclass(frozen=True)
 class UserScope:
     user_id: str
     allowed_projects: set[str]
+
+
+def _local_submission_key(
+    *,
+    pipeline_path: Path,
+    project_id: Optional[str],
+    env_name: Optional[str],
+    execution_source: Optional[str],
+) -> str:
+    return "||".join(
+        [
+            str(pipeline_path.resolve()).lower(),
+            str(project_id or "").lower(),
+            str(env_name or "").lower(),
+            str(execution_source or "").lower(),
+            "local",
+        ]
+    )
+
+
+def _set_local_run_snapshot(run_id: str, **updates: Any) -> None:
+    with _LOCAL_RUN_LOCK:
+        base = dict(_LOCAL_RUN_SNAPSHOT.get(run_id) or {})
+        base.update(updates)
+        _LOCAL_RUN_SNAPSHOT[run_id] = base
+
+
+def _append_local_run_log(run_id: str, message: str, level: str = "INFO") -> None:
+    ts = datetime.utcnow().isoformat() + "Z"
+    line = f"[{ts}] [{str(level or 'INFO').upper()}] {str(message or '').rstrip()}"
+    with _LOCAL_RUN_LOCK:
+        ring = _LOCAL_RUN_LOG_RING.setdefault(run_id, [])
+        ring.append(line)
+        if len(ring) > _LOCAL_RUN_LOG_RING_MAX:
+            del ring[: len(ring) - _LOCAL_RUN_LOG_RING_MAX]
+        snap = dict(_LOCAL_RUN_SNAPSHOT.get(run_id) or {})
+        log_file = str(snap.get("log_file") or "").strip()
+    if log_file:
+        try:
+            p = Path(log_file)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a", encoding="utf-8", errors="replace") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+
+def _tail_text_lines(path: Path, limit: int = 200) -> list[str]:
+    if not path.exists() or not path.is_file():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    lines = text.splitlines()
+    if limit <= 0:
+        return lines
+    return lines[-limit:]
+
+
+def _release_local_run(run_id: str) -> None:
+    with _LOCAL_RUN_LOCK:
+        key = _LOCAL_RUN_KEY_BY_RUN_ID.pop(run_id, None)
+        if key:
+            _ACTIVE_LOCAL_RUN_KEYS.pop(key, None)
+        _LOCAL_RUN_FUTURES.pop(run_id, None)
+        _LOCAL_RUN_CANCEL_REQUESTED.discard(run_id)
+
+
+def _submit_local_run_async(
+    *,
+    run_id: str,
+    dedupe_key: str,
+    executor: LocalExecutor,
+    pipeline_path: Path,
+    context: dict[str, Any],
+    project_id: Optional[str],
+) -> None:
+    live_log_file = (executor.workdir / "_live" / f"{run_id}.log").resolve().as_posix()
+    _set_local_run_snapshot(
+        run_id,
+        state="queued",
+        pipeline=str(pipeline_path),
+        executor="local",
+        project_id=project_id,
+        log_file=live_log_file,
+    )
+    _append_local_run_log(run_id, "Run queued from web UI.", "INFO")
+    try:
+        upsert_run_status(
+            run_id=run_id,
+            pipeline=str(pipeline_path),
+            status="queued",
+            success=False,
+            message="queued from web UI",
+            executor="local",
+            project_id=project_id,
+            provenance=context.get("provenance"),
+            event_type="run_queued",
+            event_details={"source": "web"},
+        )
+    except Exception:
+        pass
+
+    def _worker() -> None:
+        with _LOCAL_RUN_LOCK:
+            if run_id in _LOCAL_RUN_CANCEL_REQUESTED:
+                _set_local_run_snapshot(run_id, state="cancelled", message="Cancelled before execution started.")
+                _append_local_run_log(run_id, "Run cancelled before execution started.", "WARN")
+                try:
+                    upsert_run_status(
+                        run_id=run_id,
+                        pipeline=str(pipeline_path),
+                        status="cancelled",
+                        success=False,
+                        message="cancelled before execution started",
+                        executor="local",
+                        project_id=project_id,
+                        provenance=context.get("provenance"),
+                        event_type="run_cancelled",
+                        event_details={"source": "web"},
+                    )
+                except Exception:
+                    pass
+                _release_local_run(run_id)
+                return
+        _set_local_run_snapshot(run_id, state="running")
+        _append_local_run_log(run_id, "Run started.", "INFO")
+        run_context = dict(context or {})
+        run_context["log"] = lambda msg, level="INFO": _append_local_run_log(run_id, str(msg), str(level or "INFO"))
+        run_context["step_log"] = (
+            lambda step_name, msg, level="INFO": _append_local_run_log(
+                run_id,
+                f"[{step_name}] {str(msg)}",
+                str(level or "INFO"),
+            )
+        )
+        try:
+            upsert_run_status(
+                run_id=run_id,
+                pipeline=str(pipeline_path),
+                status="running",
+                success=False,
+                message="running from web UI",
+                executor="local",
+                project_id=project_id,
+                provenance=context.get("provenance"),
+                event_type="run_started",
+                event_details={"source": "web"},
+            )
+        except Exception:
+            pass
+
+        try:
+            submit = executor.submit(str(pipeline_path), context=run_context)
+            status = executor.status(submit.run_id)
+            state = status.state.value if hasattr(status.state, "value") else str(status.state)
+            _set_local_run_snapshot(run_id, state=state, message=status.message or submit.message or "")
+            _append_local_run_log(run_id, f"Run finished with state={state}.", "INFO")
+        except Exception as exc:  # noqa: BLE001
+            _set_local_run_snapshot(run_id, state="failed", message=str(exc))
+            _append_local_run_log(run_id, f"Run failed: {exc}", "ERROR")
+            try:
+                upsert_run_status(
+                    run_id=run_id,
+                    pipeline=str(pipeline_path),
+                    status="failed",
+                    success=False,
+                    message=str(exc),
+                    executor="local",
+                    project_id=project_id,
+                    provenance=context.get("provenance"),
+                    event_type="run_failed",
+                    event_details={"source": "web", "error": str(exc)},
+                )
+            except Exception:
+                pass
+        finally:
+            _release_local_run(run_id)
+
+    future = _LOCAL_RUN_POOL.submit(_worker)
+    with _LOCAL_RUN_LOCK:
+        _LOCAL_RUN_KEY_BY_RUN_ID[run_id] = dedupe_key
+        _LOCAL_RUN_FUTURES[run_id] = future
 
 
 INDEX_HTML = """<!doctype html>
@@ -402,6 +599,7 @@ INDEX_HTML = """<!doctype html>
         </div>
         <div class="controls">
           <button id="btn_resume">Resume Selected</button>
+          <button id="btn_stop">Stop Selected</button>
           <span id="resume_msg" class="muted"></span>
         </div>
         <div class="controls">
@@ -634,6 +832,7 @@ INDEX_HTML = """<!doctype html>
       }
       return rows.map(r => {
         const resumeBtn = mode === "failed" ? `<button data-op="resume" data-id="${esc(r.run_id)}">Resume</button>` : "";
+        const stopBtn = mode === "running" ? `<button data-op="stop" data-id="${esc(r.run_id)}">Stop</button>` : "";
         return `
           <div class="node file" data-op="view" data-id="${esc(r.run_id)}">
             <div><b>${esc(r.run_id)}</b> <span class="${r.success ? "ok" : "bad"}">${esc(r.status)}</span></div>
@@ -641,6 +840,7 @@ INDEX_HTML = """<!doctype html>
             <div class="controls">
               <button data-op="view" data-id="${esc(r.run_id)}">View</button>
               ${resumeBtn}
+              ${stopBtn}
             </div>
           </div>
         `;
@@ -693,6 +893,14 @@ INDEX_HTML = """<!doctype html>
             await tick();
           };
         });
+        [...holder.querySelectorAll("button[data-op='stop']")].forEach(btn => {
+          btn.onclick = async (ev) => {
+            ev.stopPropagation();
+            const msg = await quickStop(btn.dataset.id);
+            document.getElementById("resume_msg").textContent = msg;
+            await tick();
+          };
+        });
         [...holder.querySelectorAll("div[data-op='view']")].forEach(card => {
           card.onclick = async () => {
             selected = card.dataset.id;
@@ -705,7 +913,11 @@ INDEX_HTML = """<!doctype html>
       const txt = await res.text();
       try {
         const payload = JSON.parse(txt);
-        return payload.detail || payload.message || txt;
+        const detail = payload.detail;
+        if(detail && typeof detail === "object"){
+          return detail.message || detail.error || JSON.stringify(detail);
+        }
+        return detail || payload.message || txt;
       } catch {
         return txt;
       }
@@ -2235,6 +2447,9 @@ INDEX_HTML = """<!doctype html>
         <pre>${esc(JSON.stringify(d.events, null, 2))}</pre>
         <h4>Provenance</h4>
         <pre>${esc(JSON.stringify(d.provenance, null, 2))}</pre>
+        <h4>Live Log</h4>
+        <div class="muted" id="live_log_path">Loading...</div>
+        <pre id="live_log">Loading...</pre>
       `;
       html += `
         <h4>Artifacts</h4>
@@ -2244,6 +2459,7 @@ INDEX_HTML = """<!doctype html>
         </div>
       `;
       document.getElementById("detail").innerHTML = html;
+      await loadLiveLog();
       await loadFileTree();
     }
     async function loadLive(){
@@ -2268,7 +2484,28 @@ INDEX_HTML = """<!doctype html>
         <pre>${esc(JSON.stringify(d.events || [], null, 2))}</pre>
         <h4>Provenance</h4>
         <pre>${esc(JSON.stringify(d.provenance || {}, null, 2))}</pre>
+        <h4>Live Log</h4>
+        <div class="muted" id="live_log_path">Loading...</div>
+        <pre id="live_log">Loading...</pre>
       `;
+      await loadLiveLog();
+    }
+    async function loadLiveLog(){
+      if(!selected) return;
+      const logEl = document.getElementById("live_log");
+      const pathEl = document.getElementById("live_log_path");
+      if(!logEl || !pathEl) return;
+      const res = await fetch(`/api/runs/${encodeURIComponent(selected)}/live-log?limit=300`);
+      if(!res.ok){
+        pathEl.textContent = "";
+        logEl.textContent = await readMessage(res);
+        return;
+      }
+      const payload = await res.json();
+      pathEl.textContent = payload.log_file ? `log file: ${payload.log_file}` : `state: ${payload.state || "unknown"}`;
+      const lines = Array.isArray(payload.lines) ? payload.lines : [];
+      logEl.textContent = lines.length ? lines.join("\n") : "No log lines yet.";
+      logEl.scrollTop = logEl.scrollHeight;
     }
     function renderTreeNode(node, depth){
       const indent = "&nbsp;".repeat(depth * 4);
@@ -2332,6 +2569,26 @@ INDEX_HTML = """<!doctype html>
       }
       await tick();
     }
+    async function quickStop(runId){
+      const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/stop`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: "{}",
+      });
+      if(!res.ok){
+        return await readMessage(res);
+      }
+      const payload = await res.json();
+      return payload.message || `Stop requested for ${payload.run_id}`;
+    }
+    async function stopSelected(){
+      if(!selected) return;
+      const el = document.getElementById("resume_msg");
+      el.textContent = "Stopping...";
+      const msg = await quickStop(selected);
+      el.textContent = msg;
+      await tick();
+    }
     async function validateAction(){
       const el = document.getElementById("action_msg");
       el.textContent = "Validating...";
@@ -2379,6 +2636,7 @@ INDEX_HTML = """<!doctype html>
       } else {
         await loadDetail();
       }
+      await loadLiveLog();
     }
     initViewMode();
     setActiveNav();
@@ -2389,6 +2647,7 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("btn_validate").onclick = validateAction;
     document.getElementById("btn_run").onclick = runAction;
     document.getElementById("btn_resume").onclick = resumeSelected;
+    document.getElementById("btn_stop").onclick = stopSelected;
     document.getElementById("btn_nav_live").onclick = () => {
       const runId = document.getElementById("nav_live_id").value.trim();
       if (!runId) return;
@@ -4139,6 +4398,35 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
             allow_workspace_source=allow_workspace_source,
         )
     else:
+        run_id = str(args.get("run_id") or "").strip() or uuid.uuid4().hex
+        pipeline_path_resolved = Path(args["pipeline_path"]).resolve()
+        dedupe_key = _local_submission_key(
+            pipeline_path=pipeline_path_resolved,
+            project_id=project_id,
+            env_name=env_name,
+            execution_source=execution_source,
+        )
+        with _LOCAL_RUN_LOCK:
+            existing = _ACTIVE_LOCAL_RUN_KEYS.get(dedupe_key)
+            if existing:
+                snap = dict(_LOCAL_RUN_SNAPSHOT.get(existing) or {})
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "A local run for this pipeline/environment is already active.",
+                        "run_id": existing,
+                        "state": str(snap.get("state") or "running"),
+                    },
+                )
+            _ACTIVE_LOCAL_RUN_KEYS[dedupe_key] = run_id
+            _LOCAL_RUN_SNAPSHOT[run_id] = {
+                "state": "queued",
+                "pipeline": str(args["pipeline_path"]),
+                "executor": "local",
+                "project_id": project_id,
+                "env_name": env_name,
+            }
+
         ex = LocalExecutor(
             plugin_dir=args["plugins_dir"],
             workdir=Path(resolved_workdir_text),
@@ -4152,6 +4440,36 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
             source_snapshot=source_snapshot,
             allow_workspace_source=allow_workspace_source,
         )
+        context = {
+            "run_id": run_id,
+            "pipeline": pipeline,
+            "execution_env": execution_env,
+            "provenance": provenance,
+            "repo_root": repo_root,
+            "global_vars": global_vars,
+            "execution_source": execution_source,
+            "source_bundle": source_bundle,
+            "source_snapshot": source_snapshot,
+            "allow_workspace_source": allow_workspace_source,
+            "project_id": project_id,
+        }
+        _submit_local_run_async(
+            run_id=run_id,
+            dedupe_key=dedupe_key,
+            executor=ex,
+            pipeline_path=Path(args["pipeline_path"]),
+            context=context,
+            project_id=project_id,
+        )
+        return {
+            "run_id": run_id,
+            "state": "queued",
+            "pipeline": str(args["pipeline_path"]),
+            "executor": args["executor"],
+            "project_id": project_id,
+            "job_ids": [],
+            "message": "Run accepted and queued for local execution.",
+        }
 
     try:
         submit = ex.submit(
@@ -4256,6 +4574,132 @@ def api_run_file(run_id: str, request: Request, path: str = Query(default="")) -
         if "invalid" in detail.lower():
             raise HTTPException(status_code=400, detail=detail) from exc
         raise HTTPException(status_code=500, detail=f"Failed to read file: {exc}") from exc
+
+
+@app.get("/api/runs/{run_id}/live-log")
+def api_run_live_log(run_id: str, request: Request, limit: int = Query(default=200, ge=1, le=2000)) -> dict:
+    hdr = None
+    try:
+        hdr = fetch_run_header(run_id)
+    except WebQueryError:
+        hdr = None
+
+    scope = _resolve_user_scope(request)
+    if hdr is not None:
+        _require_project_access(scope, hdr.get("project_id"))
+    else:
+        with _LOCAL_RUN_LOCK:
+            snap = dict(_LOCAL_RUN_SNAPSHOT.get(run_id) or {})
+        if not snap:
+            raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+        _require_project_access(scope, snap.get("project_id"))
+
+    with _LOCAL_RUN_LOCK:
+        snap = dict(_LOCAL_RUN_SNAPSHOT.get(run_id) or {})
+        ring_lines = list(_LOCAL_RUN_LOG_RING.get(run_id) or [])
+        state = str(snap.get("state") or "")
+        log_file = str(snap.get("log_file") or "").strip()
+    lines = ring_lines[-limit:] if ring_lines else []
+    if log_file:
+        file_lines = _tail_text_lines(Path(log_file), limit=limit)
+        if file_lines:
+            lines = file_lines
+
+    return {
+        "run_id": run_id,
+        "state": state,
+        "log_file": log_file or None,
+        "lines": lines,
+    }
+
+
+@app.post("/api/runs/{run_id}/stop")
+def api_stop_run(run_id: str, request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    scope = _resolve_user_scope(request)
+    payload = payload or {}
+    try:
+        hdr = fetch_run_header(run_id)
+    except WebQueryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if hdr is None:
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    _require_project_access(scope, hdr.get("project_id"))
+
+    executor_name = str(payload.get("executor") or hdr.get("executor") or "local").strip().lower()
+    if executor_name != "local":
+        raise HTTPException(
+            status_code=400,
+            detail="UI stop currently supports executor=local only.",
+        )
+
+    pipeline = str(hdr.get("pipeline") or "")
+    project_id = hdr.get("project_id")
+    with _LOCAL_RUN_LOCK:
+        snap = dict(_LOCAL_RUN_SNAPSHOT.get(run_id) or {})
+        future = _LOCAL_RUN_FUTURES.get(run_id)
+        state = str(snap.get("state") or "").strip().lower()
+
+    if not state:
+        raise HTTPException(
+            status_code=409,
+            detail="Run is not managed by this web process (or already finished); stop unavailable.",
+        )
+    if state in {"succeeded", "failed", "cancelled"}:
+        return {"run_id": run_id, "state": state, "message": f"Run already terminal: {state}."}
+
+    if state == "queued":
+        with _LOCAL_RUN_LOCK:
+            _LOCAL_RUN_CANCEL_REQUESTED.add(run_id)
+        cancelled_now = bool(future.cancel()) if future is not None else False
+        if cancelled_now:
+            _set_local_run_snapshot(run_id, state="cancelled", message="Cancelled before execution started.")
+            _append_local_run_log(run_id, "Run cancelled before execution started.", "WARN")
+            _release_local_run(run_id)
+            try:
+                upsert_run_status(
+                    run_id=run_id,
+                    pipeline=pipeline,
+                    project_id=project_id,
+                    status="cancelled",
+                    success=False,
+                    message="cancelled before execution started",
+                    executor="local",
+                    event_type="run_cancelled",
+                    event_details={"source": "web"},
+                )
+            except Exception:
+                pass
+            return {"run_id": run_id, "state": "cancelled", "message": "Run cancelled before execution started."}
+
+        # Future already started and will observe cancel flag at worker start.
+        _set_local_run_snapshot(run_id, state="cancel_requested", message="Cancel requested; waiting for worker handoff.")
+        _append_local_run_log(run_id, "Cancel requested while queued.", "WARN")
+        return {"run_id": run_id, "state": "cancel_requested", "message": "Cancel requested."}
+
+    # running/cancel_requested: cannot safely interrupt in-process execution yet.
+    with _LOCAL_RUN_LOCK:
+        _LOCAL_RUN_CANCEL_REQUESTED.add(run_id)
+    _set_local_run_snapshot(run_id, state="cancel_requested", message="Stop requested; local in-process run cannot be force-killed yet.")
+    _append_local_run_log(run_id, "Stop requested while running. Waiting for cooperative stop support.", "WARN")
+    try:
+        upsert_run_status(
+            run_id=run_id,
+            pipeline=pipeline,
+            project_id=project_id,
+            status="running",
+            success=False,
+            message="cancel requested from web UI",
+            executor="local",
+            event_type="run_cancel_requested",
+            event_details={"source": "web"},
+        )
+    except Exception:
+        pass
+    return {
+        "run_id": run_id,
+        "state": "cancel_requested",
+        "message": "Stop requested. Running local step cannot be force-stopped yet.",
+    }
 
 
 @app.post("/api/runs/{run_id}/resume")

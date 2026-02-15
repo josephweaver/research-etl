@@ -1,0 +1,36 @@
+project_id: land_core
+
+vars:
+  dataset_id: "raw.tiger_state_download_v1"
+  name: tiger_state
+
+dirs:
+  workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  logdir: "{workdir}/logs"
+  rawdir: "{env.basedir}/data/tiger/state/raw"
+  extractdir: "{env.basedir}/data/tiger/state/extract"
+
+steps:
+  - name: download_tiger_state
+    plugin: web_download_list.py
+    args:
+      urls_file: "pipelines/tiger/state_urls.txt"
+      out: "{rawdir}"
+      overwrite: false
+      timeout_seconds: 180
+    output_var: staged_raw
+
+  - name: extract_tiger_state
+    plugin: archive_extract.py
+    args:
+      archive_glob: "{rawdir}/*.zip"
+      out: "{extractdir}"
+      overwrite: true
+    output_var: extracted_state
+
+  - name: facts_tiger_state
+    plugin: vector_facts.py
+    args:
+      input_dir: "{extractdir}"
+      output_dir: "{workdir}"
+    output_var: vector_facts

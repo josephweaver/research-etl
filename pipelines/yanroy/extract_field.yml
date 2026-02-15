@@ -1,9 +1,9 @@
 requires_pipelines:
-  - pipelines/download.yml
+  - pipelines/yanroy/download.yml
 vars:
-  name: extract_fields
+  name: yanroy.extract_fields
 dirs:
-  workdir: "{env.workdir}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
   archivedir: "{env.basedir}\\data\\yanroy\\raw"
   logdir: "{workdir}\\logs"
   fieldsdir: "{env.basedir}\\data\\yanroy\\fields"
@@ -13,3 +13,9 @@ steps:
       archive_glob: "{archivedir}\\ReleaseData.7z"
       out: "{fieldsdir}"
       include_glob: "**/*field_segments*.hdr,**/*field_segments"
+  - name: raster_facts
+    plugin: raster_facts.py
+    args:
+      input_dir: "{fieldsdir}"
+      output_dir: "{workdir}"
+      probe_unknown: true

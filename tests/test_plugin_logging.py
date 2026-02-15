@@ -61,3 +61,36 @@ def test_plugin_logging_respects_pipeline_logdir(tmp_path: Path) -> None:
     log_file = tmp_path / "logs" / "s1" / "step.log"
     assert log_file.exists()
     assert "[INFO] plain" in log_file.read_text(encoding="utf-8")
+
+
+def test_plugin_logging_emits_step_log_callback(tmp_path: Path) -> None:
+    plugins = tmp_path / "plugins"
+    plugins.mkdir(parents=True, exist_ok=True)
+    (plugins / "loggy.py").write_text(
+        "\n".join(
+            [
+                "meta = {'name': 'loggy', 'version': '0.1.0', 'description': 'log test'}",
+                "def run(args, ctx):",
+                "    ctx.log('plain')",
+                "    ctx.warn('warnx')",
+                "    return {'ok': True}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    seen = []
+
+    def _step_log(step_name: str, message: str, level: str = "INFO") -> None:
+        seen.append((step_name, level, message))
+
+    pipeline = Pipeline(steps=[Step(name="s1", script="loggy.py")])
+    result = run_pipeline(
+        pipeline,
+        plugin_dir=plugins,
+        workdir=tmp_path / ".runs",
+        step_log_func=_step_log,
+    )
+    assert result.success is True
+    assert ("s1", "INFO", "plain") in seen
+    assert ("s1", "WARN", "warnx") in seen

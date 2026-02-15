@@ -244,6 +244,7 @@ steps:
 - http_download.py - list of HTTPS files
 - ftp_download.py - all files in an FTP folder
 - gdrive_download.py - Google Drive download via `rclone` (standalone; supports shared drive name/id)
+- web_download_list.py - download HTTP/HTTPS files from an inline/file URL list
 
 ### File identification scripts
 - is_zip.py - determine if a file is a zip file
@@ -288,6 +289,8 @@ steps:
 
 ### Aggregation
 - describe_raster.py - calculates descriptive statistics of a raster image
+- raster_facts.py - recursively inventories files and computes per-raster/per-band facts (dtype, CRS, width/height, min/max/range, zero/nodata counts, mean/stddev)
+- vector_facts.py - recursively inventories files and computes shapefile facts (geometry type, feature count from DBF header, bbox, sidecar presence, CRS WKT excerpt)
 
 ### Validation
 

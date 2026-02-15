@@ -1,0 +1,36 @@
+project_id: land_core
+
+vars:
+  dataset_id: "raw.tiger_county_download_v1"
+  name: tiger_county
+
+dirs:
+  workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  logdir: "{workdir}/logs"
+  rawdir: "{env.basedir}/data/tiger/county/raw"
+  extractdir: "{env.basedir}/data/tiger/county/extract"
+
+steps:
+  - name: download_tiger_county
+    plugin: web_download_list.py
+    args:
+      urls_file: "pipelines/tiger/county_urls.txt"
+      out: "{rawdir}"
+      overwrite: false
+      timeout_seconds: 180
+    output_var: staged_raw
+
+  - name: extract_tiger_county
+    plugin: archive_extract.py
+    args:
+      archive_glob: "{rawdir}/*.zip"
+      out: "{extractdir}"
+      overwrite: true
+    output_var: extracted_county
+
+  - name: facts_tiger_county
+    plugin: vector_facts.py
+    args:
+      input_dir: "{extractdir}"
+      output_dir: "{workdir}/vector_facts"
+    output_var: vector_facts

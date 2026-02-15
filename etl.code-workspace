@@ -1,0 +1,25 @@
+{
+	"folders": [
+		{
+			"name": "etl",
+			"path": "."
+		},
+		{
+			"path": "../RiskModel-etl"
+		},
+		{
+			"path": "../landcore-data-catalog"
+		}
+	],
+	"settings": {
+		"python.testing.pytestEnabled": true,
+		"python.testing.unittestEnabled": false,
+		"python.testing.pytestArgs": [
+			"-q",
+			"tests"
+		],
+		"python.testing.cwd": "${workspaceFolder}",
+		"python.envFile": "${workspaceFolder}/.env",
+		"testing.automaticallyOpenTestResults": "neverOpen"
+	}
+}

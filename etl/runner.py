@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .pipeline import Pipeline, Step
-from .logging import CompositeLogSink, ConsoleLogSink, FileLogSink, StepLogger
+from .logging import CallbackLogSink, CompositeLogSink, ConsoleLogSink, FileLogSink, StepLogger
 from .plugins.base import (
     PluginContext,
     PluginDefinition,
@@ -278,6 +278,7 @@ def run_pipeline(
     resume_succeeded_steps: Optional[set[str]] = None,
     prior_step_outputs: Optional[Dict[str, Dict[str, Any]]] = None,
     log_func=None,
+    step_log_func=None,
 ) -> RunResult:
     run_id = run_id or uuid.uuid4().hex
     ts = datetime.utcnow()
@@ -392,6 +393,7 @@ def run_pipeline(
                 ctx_vars,
                 resolve_max_passes=resolve_max_passes,
                 step_index=len(step_results),
+                step_log_func=step_log_func,
             )
             step_results.append(res)
             if res.success and step.output_var:
@@ -419,6 +421,7 @@ def run_pipeline(
                             dict(ctx_vars),  # snapshot
                             resolve_max_passes,
                             None,
+                            step_log_func,
                         )
                     )
                 for fut in as_completed(futures):
@@ -447,6 +450,7 @@ def _execute_step(
     ctx_vars: Dict[str, Any],
     resolve_max_passes: int = 20,
     step_index: Optional[int] = None,
+    step_log_func=None,
 ) -> StepResult:
     log(f"step {step.name}")
     runtime_ctx = _with_runtime_sys(
@@ -479,14 +483,10 @@ def _execute_step(
     step_logdir = base_logdir / step.name
     step_logdir.mkdir(parents=True, exist_ok=True)
 
-    step_logger = StepLogger(
-        CompositeLogSink(
-            [
-                ConsoleLogSink(run_id, step.name),
-                FileLogSink(step_logdir / "step.log"),
-            ]
-        )
-    )
+    sinks: List[Any] = [ConsoleLogSink(run_id, step.name), FileLogSink(step_logdir / "step.log")]
+    if step_log_func is not None:
+        sinks.append(CallbackLogSink(lambda level, message: step_log_func(step.name, message, level)))
+    step_logger = StepLogger(CompositeLogSink(sinks))
     ctx = PluginContext(run_id=run_id, workdir=step_workdir, log=step_logger)
 
     if dry_run:
