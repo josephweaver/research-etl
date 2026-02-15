@@ -1777,6 +1777,7 @@ INDEX_HTML = """<!doctype html>
         pipeline = await suggestNewPipelineName();
         document.getElementById("b_pipeline_path").value = pipeline;
         builderModel = ensureBuilderDefaultDirs({ vars: {}, dirs: {}, requires_pipelines: [], steps: [] });
+        builderRunSeed = null;
         await loadBuilderPlugins();
         renderBuilderModel();
         syncYamlPreview();
@@ -1790,9 +1791,11 @@ INDEX_HTML = """<!doctype html>
       if(!res.ok){
         document.getElementById("builder_msg").textContent = await readMessage(res);
         builderModel = ensureBuilderDefaultDirs({ vars: {}, dirs: {}, requires_pipelines: [], steps: [] });
+        builderRunSeed = null;
       } else {
         const payload = await res.json();
         builderModel = ensureBuilderDefaultDirs(payload.model || { vars: {}, dirs: {}, requires_pipelines: [], steps: [] });
+        builderRunSeed = null;
       }
       await loadBuilderPlugins();
       renderBuilderModel();
