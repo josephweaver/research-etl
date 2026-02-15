@@ -2636,19 +2636,19 @@ INDEX_HTML = """<!doctype html>
       const url = isPipelineDetailView
         ? `/api/pipelines/${encodeURIComponent(selectedPipeline || "")}/run`
         : `/api/actions/run`;
-      const payload = actionPayload();
+      const reqPayload = actionPayload();
       const seed = makeRunSeed();
-      payload.run_id = seed.run_id;
-      payload.run_started_at = seed.run_started_at;
+      reqPayload.run_id = seed.run_id;
+      reqPayload.run_started_at = seed.run_started_at;
       const res = await fetch(url, {
         method:"POST",
         headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(payload),
+        body: JSON.stringify(reqPayload),
       });
       if(!res.ok){ el.textContent = await readMessage(res); return; }
-      const payload = await res.json();
-      selected = payload.run_id;
-      el.textContent = `Run ${payload.run_id} (${payload.state})`;
+      const runResp = await res.json();
+      selected = runResp.run_id;
+      el.textContent = `Run ${runResp.run_id} (${runResp.state})`;
       await tick();
     }
     async function tick(){
