@@ -19,6 +19,7 @@ meta = {
         "catalog_repo": {"type": "str", "default": "../landcore-data-catalog"},
         "representation_kind": {"type": "str", "default": ""},
         "prefer_yaml": {"type": "bool", "default": True},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -184,9 +185,19 @@ def run(args, ctx):
 
     representation_kind = str(args.get("representation_kind") or "").strip()
     prefer_yaml = bool(args.get("prefer_yaml", True))
+    verbose = bool(args.get("verbose", False))
 
     catalog_json = _resolve_path(str(args.get("catalog_json") or ".runs/catalog/catalog.json"), ctx)
     catalog_repo = _resolve_path(str(args.get("catalog_repo") or "../landcore-data-catalog"), ctx)
+    ctx.log(
+        f"[catalog_resolve_uri] start dataset_id={dataset_id} prefer_yaml={prefer_yaml} "
+        f"representation_kind={representation_kind or '*'}"
+    )
+    if verbose:
+        ctx.log(
+            f"[catalog_resolve_uri] sources catalog_json={catalog_json.resolve().as_posix()} "
+            f"catalog_repo={catalog_repo.resolve().as_posix()}"
+        )
 
     result: Optional[Dict[str, Any]] = None
     if prefer_yaml:
@@ -215,6 +226,9 @@ def run(args, ctx):
             "Could not resolve dataset URI from catalog sources. "
             f"dataset_id={dataset_id} catalog_json={catalog_json} catalog_repo={catalog_repo}"
         )
+    ctx.log(
+        f"[catalog_resolve_uri] resolved source={result['source']} uri={result['input_uri']}"
+    )
 
     return {
         "dataset_id": result["dataset_id"],

@@ -31,6 +31,7 @@ meta = {
         "output_file": {"type": "str", "default": ""},
         "overwrite": {"type": "bool", "default": True},
         "specs_file": {"type": "str", "default": ""},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -110,11 +111,13 @@ def _read_urls_file(path_text: str) -> list[str]:
 
 
 def run(args, ctx):
+    verbose = bool(args.get("verbose", False))
     specs = _load_specs(str(args.get("specs_file") or ""))
 
     dataset_id = str(args.get("dataset_id") or "").strip()
     if not dataset_id:
         raise ValueError("dataset_id is required")
+    ctx.log(f"[ai_dataset_research] start dataset_id={dataset_id}")
 
     spec = specs.get(dataset_id, {})
     if specs and not spec:
@@ -157,6 +160,12 @@ def run(args, ctx):
         raise FileExistsError(f"output file already exists and overwrite=false: {out_path}")
 
     ctx.log(f"[ai_dataset_research] generating research for {dataset_id}")
+    if verbose:
+        ctx.log(
+            f"[ai_dataset_research] sources sample_file={sample_file or '-'} "
+            f"schema_file={schema_file or '-'} notes_file={notes_file or '-'} "
+            f"urls_file={supplemental_urls_file or '-'}"
+        )
     research = generate_dataset_research(
         dataset_id=dataset_id,
         data_class=data_class,
@@ -170,6 +179,7 @@ def run(args, ctx):
     )
     out_path.write_text(json.dumps(research, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
     uri = out_path.resolve().as_posix()
+    ctx.log(f"[ai_dataset_research] done output={uri}")
     return {
         "dataset_id": dataset_id,
         "output_file": uri,

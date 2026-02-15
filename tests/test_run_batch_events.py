@@ -159,3 +159,44 @@ def test_run_batch_emits_failed_event_with_attempt_summary(monkeypatch, tmp_path
             "final_error": "boom-2",
         }
     ]
+
+
+def test_run_batch_verbose_prints_progress(monkeypatch, tmp_path: Path, capsys) -> None:
+    pipeline_path = tmp_path / "pipeline.yml"
+    _write_min_pipeline(pipeline_path)
+
+    monkeypatch.setattr(run_batch, "upsert_run_status", lambda **_: None)
+    monkeypatch.setattr(run_batch, "upsert_step_attempt", lambda **_: None)
+    monkeypatch.setattr(run_batch, "collect_run_provenance", lambda **_: {})
+
+    result = RunResult(
+        run_id="runv1",
+        steps=[
+            StepResult(
+                step=Step(name="s0", script="echo.py"),
+                success=True,
+                attempt_no=1,
+                attempts=[{"attempt_no": 1, "success": True, "skipped": False, "error": None, "outputs": {}}],
+            )
+        ],
+        artifact_dir=str(tmp_path / ".runs"),
+    )
+    monkeypatch.setattr(run_batch, "run_pipeline", lambda *args, **kwargs: result)
+
+    rc = run_batch.main(
+        [
+            str(pipeline_path),
+            "--steps",
+            "0",
+            "--run-id",
+            "runv1",
+            "--workdir",
+            str(tmp_path / ".runs"),
+            "--verbose",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[run_batch] starting run_id=runv1" in out
+    assert "[run_batch] parsed pipeline with 3 step(s)" in out
+    assert "[run_batch] recorded batch_completed tracking event" in out

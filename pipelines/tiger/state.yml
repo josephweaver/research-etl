@@ -11,7 +11,7 @@ dirs:
   extractdir: "{env.basedir}/data/tiger/state/extract"
 
 steps:
-  - name: download_tiger_state
+  - name: 01_download_tiger_state
     plugin: web_download_list.py
     args:
       urls_file: "pipelines/tiger/state_urls.txt"
@@ -20,7 +20,7 @@ steps:
       timeout_seconds: 180
     output_var: staged_raw
 
-  - name: extract_tiger_state
+  - name: 02_extract_tiger_state
     plugin: archive_extract.py
     args:
       archive_glob: "{rawdir}/*.zip"
@@ -28,7 +28,7 @@ steps:
       overwrite: true
     output_var: extracted_state
 
-  - name: facts_tiger_state
+  - name: 03_facts_tiger_state
     plugin: vector_facts.py
     args:
       input_dir: "{extractdir}"

@@ -27,6 +27,7 @@ meta = {
         "shared_drive_id": {"type": "str", "default": ""},
         "dry_run": {"type": "bool", "default": False},
         "no_clobber": {"type": "bool", "default": False},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -70,6 +71,7 @@ def run(args, ctx):
 
     shared_drive = str(args.get("shared_drive") or "").strip()
     shared_drive_id = str(args.get("shared_drive_id") or "").strip()
+    verbose = bool(args.get("verbose", False))
     remote_spec = _build_remote_spec(
         remote=remote,
         src=src,
@@ -97,6 +99,10 @@ def run(args, ctx):
         cmd.extend(["--drive-team-drive", shared_drive_id])
 
     out.mkdir(parents=True, exist_ok=True)
+    ctx.log(
+        f"[gdrive_download] start remote_spec={remote_spec} out={out.as_posix()} "
+        f"recursive={bool(args.get('recursive', False))} dry_run={bool(args.get('dry_run', False))}"
+    )
     ctx.log(f"[gdrive_download] running: {shlex.join(cmd)}")
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
@@ -104,8 +110,11 @@ def run(args, ctx):
         stdout = (proc.stdout or "").strip()
         detail = stderr or stdout or "unknown error"
         raise RuntimeError(f"gdrive download failed: {detail}")
+    if verbose and (proc.stdout or "").strip():
+        ctx.log(f"[gdrive_download] rclone stdout: {(proc.stdout or '').strip()[:2000]}")
 
     files = sorted(str(p.as_posix()) for p in out.rglob("*") if p.is_file())
+    ctx.log(f"[gdrive_download] done downloaded_count={len(files)}")
     return {
         "output_dir": str(out.as_posix()),
         "downloaded_files": files,

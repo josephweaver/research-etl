@@ -51,6 +51,7 @@ meta = {
         "sample_rows": {"type": "int", "default": 20},
         "schema_rows_scan": {"type": "int", "default": 2000},
         "max_text_chars_per_file": {"type": "int", "default": 4000},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -471,6 +472,7 @@ def run(args, ctx):
     sample_rows = int(args.get("sample_rows", 20))
     scan_rows = int(args.get("schema_rows_scan", 2000))
     max_text_chars = int(args.get("max_text_chars_per_file", 4000))
+    verbose = bool(args.get("verbose", False))
 
     roots: List[Path] = []
     if input_path:
@@ -487,6 +489,12 @@ def run(args, ctx):
     if bundle_dir.exists() and not bool(args.get("overwrite", True)):
         raise FileExistsError(f"bundle already exists and overwrite=false: {bundle_dir}")
     bundle_dir.mkdir(parents=True, exist_ok=True)
+    ctx.log(
+        f"[ai_dataset_evidence_bundle] start dataset_id={dataset_id} "
+        f"roots={len(roots)} output_dir={bundle_dir.resolve().as_posix()}"
+    )
+    if verbose:
+        ctx.log(f"[ai_dataset_evidence_bundle] roots={[p.resolve().as_posix() for p in roots]}")
 
     regular_files: List[Dict[str, str]] = []
     archive_records_all: List[Dict[str, Any]] = []
@@ -758,6 +766,10 @@ def run(args, ctx):
     specs_fragment_file.write_text(yaml.safe_dump(specs_fragment, sort_keys=False), encoding="utf-8")
 
     bundle_uri = bundle_dir.resolve().as_posix()
+    ctx.log(
+        f"[ai_dataset_evidence_bundle] done files={manifest['counts']['file_records']} "
+        f"schema_candidates={len(schema_candidates)} bundle={bundle_uri}"
+    )
     return {
         "dataset_id": dataset_id,
         "bundle_dir": bundle_uri,

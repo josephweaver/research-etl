@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import List
 from urllib import parse, request
@@ -27,6 +28,7 @@ meta = {
         "overwrite": {"type": "bool", "default": False},
         "timeout_seconds": {"type": "int", "default": 120},
         "fail_on_error": {"type": "bool", "default": True},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -78,10 +80,17 @@ def _filename_from_url(url: str, index: int) -> str:
 
 def _download(url: str, target: Path, timeout_seconds: int) -> int:
     req = request.Request(url, headers={"User-Agent": "research-etl/0.1"})
+    total = 0
+    chunk_size = 1024 * 1024
     with request.urlopen(req, timeout=timeout_seconds) as resp:  # noqa: S310
-        data = resp.read()
-    target.write_bytes(data)
-    return len(data)
+        with target.open("wb") as out:
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                out.write(chunk)
+                total += len(chunk)
+    return total
 
 
 def run(args, ctx):
@@ -102,6 +111,14 @@ def run(args, ctx):
     overwrite = bool(args.get("overwrite", False))
     timeout_seconds = max(1, int(args.get("timeout_seconds", 120)))
     fail_on_error = bool(args.get("fail_on_error", True))
+    verbose = bool(args.get("verbose", False))
+    ctx.log(
+        f"[web_download_list] start urls={len(urls)} out={out_dir.resolve().as_posix()} "
+        f"overwrite={overwrite} timeout_seconds={timeout_seconds}"
+    )
+    if verbose:
+        for idx, url in enumerate(urls, start=1):
+            ctx.log(f"[web_download_list] url[{idx}]={url}")
 
     downloaded_files: List[str] = []
     failed_urls: List[str] = []
@@ -116,14 +133,20 @@ def run(args, ctx):
         target = out_dir / filename
         if target.exists() and not overwrite:
             skipped_count += 1
+            ctx.log(f"[web_download_list] {idx}/{len(urls)} skipped existing: {target.name}")
             manifest.append({"url": url, "path": target.resolve().as_posix(), "status": "skipped_existing"})
             continue
         try:
+            started = time.time()
+            ctx.log(f"[web_download_list] {idx}/{len(urls)} downloading: {url}")
             size = _download(url, target, timeout_seconds=timeout_seconds)
+            elapsed = round(time.time() - started, 2)
             downloaded_files.append(target.resolve().as_posix())
+            ctx.log(f"[web_download_list] {idx}/{len(urls)} downloaded: {target.name} ({size} bytes in {elapsed}s)")
             manifest.append({"url": url, "path": target.resolve().as_posix(), "status": "downloaded", "size_bytes": size})
         except Exception as exc:  # noqa: BLE001
             failed_urls.append(url)
+            ctx.log(f"[web_download_list] {idx}/{len(urls)} failed: {url} ({exc})", "ERROR")
             manifest.append({"url": url, "path": target.resolve().as_posix(), "status": "failed", "error": str(exc)})
             if fail_on_error:
                 raise RuntimeError(f"download failed for {url}: {exc}") from exc
@@ -134,6 +157,8 @@ def run(args, ctx):
         f"[web_download_list] urls={len(urls)} downloaded={len(downloaded_files)} "
         f"skipped={skipped_count} failed={len(failed_urls)}"
     )
+    if verbose:
+        ctx.log(f"[web_download_list] manifest={manifest_file.resolve().as_posix()}")
     return {
         "output_dir": out_dir.resolve().as_posix(),
         "manifest_file": manifest_file.resolve().as_posix(),
@@ -143,4 +168,3 @@ def run(args, ctx):
         "failed_count": len(failed_urls),
         "failed_urls": failed_urls,
     }
-

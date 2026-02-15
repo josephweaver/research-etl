@@ -37,4 +37,5 @@ environments:
     logdir: "{workdir}/logs"
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
     propagate_db_secret: false
+    load_secrets_file: false
     sync: true

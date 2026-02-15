@@ -16,7 +16,7 @@ dirs:
   extractdir: "{env.basedir}/data/tiger/county/extract"
 
 steps:
-  - name: download_tiger_county
+  - name: 01_download_tiger_county
     plugin: web_download_list.py
     args:
       urls_file: "pipelines/tiger/county_urls.txt"
@@ -25,7 +25,7 @@ steps:
       timeout_seconds: 180
     output_var: staged_raw
 
-  - name: extract_tiger_county
+  - name: 02_extract_tiger_county
     plugin: archive_extract.py
     args:
       archive_glob: "{rawdir}/*.zip"
@@ -33,14 +33,14 @@ steps:
       overwrite: true
     output_var: extracted_county
 
-  - name: facts_tiger_county
+  - name: 03_facts_tiger_county
     plugin: vector_facts.py
     args:
       input_dir: "{extractdir}"
       output_dir: "{workdir}/vector_facts"
     output_var: vector_facts
 
-  - name: ai_evidence_tiger_county
+  - name: 04_ai_evidence_tiger_county
     plugin: ai_dataset_evidence_bundle.py
     args:
       dataset_id: "{dataset_id}"
@@ -51,7 +51,7 @@ steps:
       notes: "{dataset_notes}"
     output_var: evidence
 
-  - name: ai_research_tiger_county
+  - name: 05_ai_research_tiger_county
     plugin: ai_dataset_research.py
     args:
       dataset_id: "{dataset_id}"
@@ -65,7 +65,7 @@ steps:
       output_dir: "{workdir}/catalog_ai"
     output_var: catalog_ai
 
-  - name: catalog_json_upsert_tiger_county
+  - name: 06_catalog_json_upsert_tiger_county
     plugin: catalog_json_upsert.py
     args:
       research_file: "{catalog_ai.output_file}"
@@ -74,7 +74,7 @@ steps:
       source_step: ai_research_tiger_county
     output_var: catalog_json_out
 
-  - name: catalog_yaml_sync_tiger_county
+  - name: 07_catalog_yaml_sync_tiger_county
     plugin: catalog_yaml_sync.py
     args:
       dataset_id: "{dataset_id}"

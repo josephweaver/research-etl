@@ -27,6 +27,7 @@ meta = {
         "input_dir": {"type": "str", "default": ""},
         "output_dir": {"type": "str", "default": ".runs/yanroy/meta"},
         "tile_regex": {"type": "str", "default": r"(?i)h\d{2}v\d{2}"},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -84,6 +85,11 @@ def run(args, ctx):
 
     tile_regex = str(args.get("tile_regex") or r"(?i)h\d{2}v\d{2}").strip()
     tile_re = re.compile(tile_regex)
+    verbose = bool(args.get("verbose", False))
+    ctx.log(
+        f"[yanroy_scan_raw_metadata] start input={input_dir.resolve().as_posix()} "
+        f"output={output_dir.resolve().as_posix()} tile_regex={tile_regex}"
+    )
 
     metadata_rows: List[Dict[str, str]] = []
     tile_agg: Dict[str, Dict[str, int | Set[str]]] = {}
@@ -191,6 +197,8 @@ def run(args, ctx):
         f"[yanroy_scan_raw_metadata] scanned_files={summary['file_count']} "
         f"tiles={summary['tile_count']} output={output_dir.as_posix()}"
     )
+    if verbose and summary["tiles"]:
+        ctx.log(f"[yanroy_scan_raw_metadata] tile_preview={summary['tiles'][:20]}")
     return {
         "input_dir": input_dir.resolve().as_posix(),
         "output_dir": output_dir.resolve().as_posix(),
@@ -201,4 +209,3 @@ def run(args, ctx):
         "tile_count": summary["tile_count"],
         "tiles": summary["tiles"],
     }
-

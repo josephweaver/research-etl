@@ -30,6 +30,7 @@ meta = {
         "match_on": {"type": "str", "default": "relative_path"},
         "overwrite": {"type": "bool", "default": False},
         "dry_run": {"type": "bool", "default": False},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -111,7 +112,12 @@ def run(args, ctx):
     regex = re.compile(pattern, flags=flags)
     overwrite = bool(args.get("overwrite", False))
     dry_run = bool(args.get("dry_run", False))
+    verbose = bool(args.get("verbose", False))
     match_on = str(args.get("match_on") or "relative_path")
+    ctx.log(
+        f"[file_move_regex] start src={src_root.resolve().as_posix()} dst={dst_root.resolve().as_posix()} "
+        f"pattern={pattern!r} dry_run={dry_run} overwrite={overwrite}"
+    )
 
     matched_files: List[str] = []
     moved_files: List[str] = []
@@ -140,6 +146,8 @@ def run(args, ctx):
         f"[file_move_regex] matched={len(matched_files)} moved={len(moved_files)} "
         f"skipped_existing={len(skipped_existing)} pattern={pattern!r}"
     )
+    if verbose and moved_files:
+        ctx.log(f"[file_move_regex] moved_preview={moved_files[:10]}")
     return {
         "source_dir": src_root.resolve().as_posix(),
         "dest_dir": dst_root.resolve().as_posix(),
@@ -151,4 +159,3 @@ def run(args, ctx):
         "moved_files": moved_files,
         "skipped_existing": skipped_existing,
     }
-

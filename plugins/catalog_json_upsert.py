@@ -20,6 +20,7 @@ meta = {
         "source_run_id": {"type": "str", "default": ""},
         "source_step": {"type": "str", "default": ""},
         "overwrite_auto": {"type": "bool", "default": True},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -86,6 +87,11 @@ def _coerce_str_list(value: Any) -> List[str]:
 
 def run(args, ctx):
     inputs = _collect_research_files(args, ctx)
+    verbose = bool(args.get("verbose", False))
+    ctx.log(f"[catalog_json_upsert] start inputs={len(inputs)}")
+    if verbose:
+        for p in inputs:
+            ctx.log(f"[catalog_json_upsert] input={p.resolve().as_posix()}")
 
     catalog_path = Path(str(args.get("catalog_json") or "catalog.json")).expanduser()
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +170,9 @@ def run(args, ctx):
         f.write("\n")
 
     catalog_uri = catalog_path.resolve().as_posix()
+    ctx.log(
+        f"[catalog_json_upsert] done updated={len(updated_ids)} catalog={catalog_uri}"
+    )
     return {
         "catalog_json": catalog_uri,
         "updated_count": len(updated_ids),

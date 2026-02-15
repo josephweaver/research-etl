@@ -27,6 +27,7 @@ meta = {
         "input_dir": {"type": "str", "default": ""},
         "output_dir": {"type": "str", "default": ".runs/vector_facts"},
         "shape_glob": {"type": "str", "default": "**/*.shp"},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -122,6 +123,11 @@ def run(args, ctx):
     output_dir = _resolve_path(str(args.get("output_dir") or ".runs/vector_facts"), ctx)
     output_dir.mkdir(parents=True, exist_ok=True)
     shape_glob = str(args.get("shape_glob") or "**/*.shp").strip() or "**/*.shp"
+    verbose = bool(args.get("verbose", False))
+    ctx.log(
+        f"[vector_facts] start input={input_dir.resolve().as_posix()} output={output_dir.resolve().as_posix()} "
+        f"shape_glob={shape_glob}"
+    )
 
     file_rows: List[Dict[str, Any]] = []
     for path in sorted(p for p in input_dir.rglob("*") if p.is_file()):
@@ -226,6 +232,8 @@ def run(args, ctx):
         f"[vector_facts] files={len(file_rows)} vectors={len(vector_rows)} "
         f"output={output_dir.as_posix()}"
     )
+    if verbose and vector_rows:
+        ctx.log(f"[vector_facts] vector_preview={vector_rows[:3]}")
     return {
         "input_dir": input_dir.resolve().as_posix(),
         "output_dir": output_dir.resolve().as_posix(),
@@ -236,4 +244,3 @@ def run(args, ctx):
         "file_count": len(file_rows),
         "vector_file_count": len(vector_rows),
     }
-

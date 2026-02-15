@@ -25,6 +25,7 @@ meta = {
         "match_on": {"type": "str", "default": "relative_path"},
         "dry_run": {"type": "bool", "default": False},
         "remove_empty_dirs": {"type": "bool", "default": True},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -92,7 +93,12 @@ def run(args, ctx):
     regex = re.compile(pattern, flags=flags)
     dry_run = bool(args.get("dry_run", False))
     remove_empty_dirs = bool(args.get("remove_empty_dirs", True))
+    verbose = bool(args.get("verbose", False))
     match_on = str(args.get("match_on") or "relative_path")
+    ctx.log(
+        f"[file_delete_regex] start src={src_root.resolve().as_posix()} pattern={pattern!r} "
+        f"dry_run={dry_run} remove_empty_dirs={remove_empty_dirs}"
+    )
 
     matched_files: List[str] = []
     deleted_files: List[str] = []
@@ -114,6 +120,8 @@ def run(args, ctx):
     ctx.log(
         f"[file_delete_regex] matched={len(matched_files)} deleted={len(deleted_files)} pattern={pattern!r}"
     )
+    if verbose and deleted_files:
+        ctx.log(f"[file_delete_regex] deleted_preview={deleted_files[:10]}")
     return {
         "source_dir": src_root.resolve().as_posix(),
         "pattern": pattern,
@@ -122,4 +130,3 @@ def run(args, ctx):
         "matched_files": matched_files,
         "deleted_files": deleted_files,
     }
-

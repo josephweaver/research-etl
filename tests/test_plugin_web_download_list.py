@@ -12,6 +12,7 @@ def _ctx(tmp_path: Path) -> PluginContext:
 class _FakeResponse:
     def __init__(self, payload: bytes):
         self._payload = payload
+        self._offset = 0
 
     def __enter__(self):
         return self
@@ -19,8 +20,17 @@ class _FakeResponse:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def read(self):
-        return self._payload
+    def read(self, size: int = -1):
+        if self._offset >= len(self._payload):
+            return b""
+        if size is None or int(size) < 0:
+            chunk = self._payload[self._offset :]
+            self._offset = len(self._payload)
+            return chunk
+        end = min(len(self._payload), self._offset + int(size))
+        chunk = self._payload[self._offset : end]
+        self._offset = end
+        return chunk
 
 
 def test_web_download_list_downloads_from_urls_file(tmp_path: Path, monkeypatch) -> None:

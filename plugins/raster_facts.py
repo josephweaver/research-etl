@@ -34,6 +34,7 @@ meta = {
         "output_dir": {"type": "str", "default": ".runs/raster_facts"},
         "raster_extensions": {"type": "str", "default": ".tif,.tiff,.img,.vrt,.asc,.bil,.jp2,"},
         "probe_unknown": {"type": "bool", "default": True},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -194,6 +195,11 @@ def run(args, ctx):
 
     ext_set = _parse_extensions(str(args.get("raster_extensions") or ""))
     probe_unknown = bool(args.get("probe_unknown", True))
+    verbose = bool(args.get("verbose", False))
+    ctx.log(
+        f"[raster_facts] start input={input_dir.resolve().as_posix()} output={output_dir.resolve().as_posix()} "
+        f"probe_unknown={probe_unknown}"
+    )
 
     file_rows: List[Dict[str, Any]] = []
     raster_rows: List[Dict[str, Any]] = []
@@ -350,6 +356,8 @@ def run(args, ctx):
         f"[raster_facts] files={len(file_rows)} raster_files={len(raster_files)} "
         f"band_rows={len(raster_rows)} output={output_dir.as_posix()}"
     )
+    if verbose and raster_rows:
+        ctx.log(f"[raster_facts] band_preview={raster_rows[:3]}")
     return {
         "input_dir": input_dir.resolve().as_posix(),
         "output_dir": output_dir.resolve().as_posix(),
@@ -361,4 +369,3 @@ def run(args, ctx):
         "raster_file_count": len(raster_files),
         "band_fact_count": len(raster_rows),
     }
-

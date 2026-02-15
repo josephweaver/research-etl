@@ -21,6 +21,7 @@ meta = {
         "default_status": {"type": "str", "default": "draft"},
         "overwrite_managed_fields": {"type": "bool", "default": True},
         "dry_run": {"type": "bool", "default": False},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -160,6 +161,7 @@ def _yaml_path_for(repo_root: Path, dataset_id: str, data_class: str) -> Path:
 
 
 def run(args, ctx):
+    verbose = bool(args.get("verbose", False))
     catalog_path = Path(str(args.get("catalog_json") or "catalog.json")).expanduser()
     if not catalog_path.is_absolute() and not catalog_path.exists():
         p2 = ctx.workdir / catalog_path
@@ -186,6 +188,10 @@ def run(args, ctx):
     default_owner = str(args.get("default_owner") or "LandCore").strip() or "LandCore"
     default_status = str(args.get("default_status") or "draft").strip() or "draft"
     dry_run = bool(args.get("dry_run", False))
+    ctx.log(
+        f"[catalog_yaml_sync] start dataset_id={one_dataset_id or '*'} "
+        f"overwrite={overwrite} dry_run={dry_run}"
+    )
 
     updated_files: List[str] = []
     for dataset_id, entry in sorted(datasets.items()):
@@ -220,7 +226,12 @@ def run(args, ctx):
             text = yaml.safe_dump(doc, sort_keys=False, allow_unicode=False)
             yml_path.write_text(text, encoding="utf-8")
         updated_files.append(yml_path.resolve().as_posix())
+        if verbose:
+            ctx.log(f"[catalog_yaml_sync] synced {yml_path.resolve().as_posix()}")
 
+    ctx.log(
+        f"[catalog_yaml_sync] done updated={len(updated_files)} repo={repo_root.resolve().as_posix()}"
+    )
     return {
         "catalog_repo": repo_root.resolve().as_posix(),
         "updated_count": len(updated_files),

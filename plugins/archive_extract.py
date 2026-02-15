@@ -30,6 +30,7 @@ meta = {
         "include_glob": {"type": "str", "default": ""},
         "overwrite": {"type": "bool", "default": True},
         "seven_zip_bin": {"type": "str", "default": "7z"},
+        "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
 }
@@ -220,6 +221,13 @@ def run(args, ctx):
     include_globs = _parse_include_globs(args.get("include_glob"))
     overwrite = bool(args.get("overwrite", True))
     seven_zip_bin = str(args.get("seven_zip_bin") or "7z").strip()
+    verbose = bool(args.get("verbose", False))
+    ctx.log(
+        f"[archive_extract] start archives={len(archive_paths)} out={out_dir.resolve().as_posix()} "
+        f"overwrite={overwrite} format={fmt}"
+    )
+    if include_globs:
+        ctx.log(f"[archive_extract] include_glob={include_globs}")
 
     extracted_all: List[str] = []
     archive_list: List[str] = []
@@ -229,6 +237,8 @@ def run(args, ctx):
         if chosen not in {"zip", "7z"}:
             raise ValueError(f"Unsupported archive format for {archive}: use .zip/.7z or set format=zip|7z")
         archive_list.append(archive.resolve().as_posix())
+        if verbose:
+            ctx.log(f"[archive_extract] processing archive={archive.resolve().as_posix()} as={chosen}")
         if chosen == "zip":
             members = _extract_zip(archive, out_dir, overwrite=overwrite, include_globs=include_globs)
         else:
@@ -243,6 +253,10 @@ def run(args, ctx):
         extracted_all.extend((out_dir / rel).resolve().as_posix() for rel in members)
 
     extracted_files = sorted(set(extracted_all))
+    ctx.log(f"[archive_extract] done extracted_count={len(extracted_files)}")
+    if verbose and extracted_files:
+        preview = extracted_files[:5]
+        ctx.log(f"[archive_extract] extracted_preview={preview}")
     return {
         "output_dir": out_dir.resolve().as_posix(),
         "archives": archive_list,

@@ -162,6 +162,7 @@ class SlurmEnv:
     allow_workspace_source: Optional[bool] = False
     git_remote_url: Optional[str] = None
     propagate_db_secret: Optional[bool] = True
+    load_secrets_file: Optional[bool] = True
 
 
 class SlurmExecutor(Executor):
@@ -194,7 +195,7 @@ class SlurmExecutor(Executor):
             "venv", "requirements", "python", "step_max_retries", "step_retry_delay_seconds",
             "max_time", "max_cpus_per_task", "max_mem", "setup_time",
             "execution_source", "source_bundle", "source_snapshot", "allow_workspace_source",
-            "git_remote_url", "propagate_db_secret",
+            "git_remote_url", "propagate_db_secret", "load_secrets_file",
         }}
         self.env = SlurmEnv(**env_kwargs)
         # Limits/concurrency hints; used by future array/dependency planner.
@@ -224,6 +225,7 @@ class SlurmExecutor(Executor):
         self.source_bundle = source_bundle or env_config.get("source_bundle")
         self.source_snapshot = source_snapshot or env_config.get("source_snapshot")
         self.propagate_db_secret = bool(env_config.get("propagate_db_secret", True))
+        self.load_secrets_file = bool(env_config.get("load_secrets_file", True))
         if allow_workspace_source is None:
             self.allow_workspace_source = bool(env_config.get("allow_workspace_source", False))
         else:
@@ -939,9 +941,10 @@ class SlurmExecutor(Executor):
             lines.append("log_step 'activating runtime environment'")
         lines.append(f"PYTHON={python_bin}")
         lines.append(f"VENV={venv_path}")
-        if self.verbose:
-            lines.append("log_step 'loading optional secrets file (values hidden)'")
-        lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
+        if self.load_secrets_file:
+            if self.verbose:
+                lines.append("log_step 'loading optional secrets file (values hidden)'")
+            lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
         lines.append("source \"$VENV/bin/activate\"")
         lines.append(f"export PYTHONPATH={checkout_root}:$PYTHONPATH")
 
@@ -993,6 +996,8 @@ class SlurmExecutor(Executor):
             cmd += ["--global-config", global_config_path]
         if environments_config_path and self.env_name:
             cmd += ["--environments-config", environments_config_path, "--env", self.env_name]
+        if self.verbose:
+            cmd += ["--verbose"]
 
         if self.verbose:
             lines.append("log_step 'running etl.run_batch'")
@@ -1121,9 +1126,10 @@ class SlurmExecutor(Executor):
             lines.append("log_step 'bootstrapping venv'")
         lines.append(f"PYTHON={python_bin}")
         lines.append(f"VENV={venv_path}")
-        if self.verbose:
-            lines.append("log_step 'loading optional secrets file (values hidden)'")
-        lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
+        if self.load_secrets_file:
+            if self.verbose:
+                lines.append("log_step 'loading optional secrets file (values hidden)'")
+            lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
         lines.append("if [ ! -f \"$VENV/bin/activate\" ]; then")
         lines.append("  $PYTHON -m venv \"$VENV\"")
         lines.append("fi")
