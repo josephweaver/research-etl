@@ -61,6 +61,17 @@ def _resolve_text_with_ctx(value: str, ctx: Dict[str, Any]) -> str:
     return _TPL_RE.sub(_repl, text)
 
 
+def _resolve_text_with_ctx_iterative(value: str, ctx: Dict[str, Any], *, max_passes: int = 20) -> str:
+    cur = str(value or "")
+    passes = max(1, int(max_passes or 20))
+    for _ in range(passes):
+        nxt = _resolve_text_with_ctx(cur, ctx)
+        if nxt == cur:
+            return cur
+        cur = nxt
+    return cur
+
+
 def _parse_slurm_time_to_minutes(value: str) -> Optional[float]:
     text = str(value or "").strip()
     if not text:
@@ -477,8 +488,45 @@ class SlurmExecutor(Executor):
         submission_records = []
         prev_jobid = None
         jobname = str(pipeline.vars.get("jobname") or pipeline.vars.get("name") or "run")
-        remote_workdir_root = Path(self.env.workdir or self.workdir) / jobname / run_date / run_fs_id
-        remote_workdir = remote_workdir_root.as_posix()
+        default_remote_workdir = (Path(self.env.workdir or self.workdir) / jobname / run_date / run_fs_id).as_posix()
+        pipeline_workdir_template = str((getattr(pipeline, "dirs", {}) or {}).get("workdir") or "").strip()
+        resolve_max_passes = max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20))
+        remote_workdir = default_remote_workdir
+        if pipeline_workdir_template:
+            workdir_ctx: Dict[str, Any] = {
+                "sys": {
+                    "now": {"yymmdd": run_date, "hhmmss": run_stamp},
+                    "run": {"id": run_id, "short_id": run_id[:8]},
+                    "job": {"id": run_id, "name": jobname},
+                },
+                "vars": dict(getattr(pipeline, "vars", {}) or {}),
+                "env": dict(context.get("execution_env") or {}),
+                "global": dict(context.get("global_vars") or {}),
+                "globals": dict(context.get("global_vars") or {}),
+                "dirs": dict(getattr(pipeline, "dirs", {}) or {}),
+                "workdir": default_remote_workdir,
+                "jobname": jobname,
+                "run_id": run_id,
+            }
+            current = pipeline_workdir_template
+            for _ in range(resolve_max_passes):
+                workdir_ctx["workdir"] = current
+                dirs_ns = dict(workdir_ctx.get("dirs") or {})
+                dirs_ns["workdir"] = current
+                workdir_ctx["dirs"] = dirs_ns
+                nxt = _resolve_text_with_ctx_iterative(current, workdir_ctx, max_passes=resolve_max_passes)
+                if nxt == current:
+                    break
+                current = nxt
+            candidate = str(current or "").strip()
+            if "{" in candidate or "}" in candidate:
+                raise SlurmSubmitError(
+                    "Could not fully resolve pipeline dirs.workdir for SLURM submit: "
+                    f"{pipeline_workdir_template}"
+                )
+            if candidate:
+                remote_workdir = candidate
+        remote_workdir_root = Path(remote_workdir)
         context_file = f"{remote_workdir}/context.json"
         checkout_root = (self.remote_base / self.local_repo_name).as_posix()
         source_mode = str(context.get("execution_source") or self.execution_source or "auto").strip().lower()
@@ -619,14 +667,19 @@ class SlurmExecutor(Executor):
         if pipeline_logdir_template:
             resolve_ctx = {
                 "workdir": remote_workdir,
-                "dirs": {"workdir": remote_workdir},
+                "dirs": dict(getattr(pipeline, "dirs", {}) or {}),
                 "sys": {
                     "now": {"yymmdd": run_date, "hhmmss": run_stamp},
                     "run": {"id": run_id, "short_id": run_id[:8]},
                 },
                 "vars": dict(getattr(pipeline, "vars", {}) or {}),
             }
-            pipeline_logdir_resolved = _resolve_text_with_ctx(pipeline_logdir_template, resolve_ctx)
+            resolve_ctx["dirs"]["workdir"] = remote_workdir
+            pipeline_logdir_resolved = _resolve_text_with_ctx_iterative(
+                pipeline_logdir_template,
+                resolve_ctx,
+                max_passes=resolve_max_passes,
+            )
             if "{" in pipeline_logdir_resolved or "}" in pipeline_logdir_resolved:
                 pipeline_logdir_resolved = ""
         use_pipeline_logdir = bool(pipeline_logdir_resolved)

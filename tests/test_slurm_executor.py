@@ -576,3 +576,50 @@ def test_slurm_can_disable_loading_remote_secrets_file(monkeypatch, tmp_path: Pa
     batch_script = calls[1]["script_text"]
     assert "$HOME/.secrets/etl" not in setup_script
     assert "$HOME/.secrets/etl" not in batch_script
+
+
+def test_slurm_workdir_prefers_pipeline_dirs_workdir_over_env_defaults(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(
+        vars={"name": "yanroy.extract_fields"},
+        dirs={"workdir": "{env.workdir}/yanroy/fields/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"},
+        steps=[Step(name="s1", script="echo.py")],
+    )
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "remote_dest_dir": remote_dest_dir, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/env_work", "logdir": "/tmp/logs"},
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+    ex.submit(
+        "pipelines/yanroy/extract_fields.yml",
+        {
+            "run_id": "runabc1234",
+            "execution_env": {"workdir": "/hpcc/work"},
+            "global_vars": {"workdir": "/global/work"},
+        },
+    )
+
+    setup_call = calls[0]
+    # submit destination should be rooted in resolved pipeline dirs.workdir (env.workdir + pipeline suffix),
+    # not in executor default /tmp/env_work.
+    assert str(setup_call["remote_dest_dir"]).startswith("/hpcc/work/yanroy/fields/")
+    assert "/tmp/env_work/" not in str(setup_call["remote_dest_dir"])

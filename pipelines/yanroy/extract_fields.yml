@@ -5,7 +5,7 @@ vars:
 dirs:
   workdir: "{env.workdir}/yanroy/fields/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
   archivedir: "{env.basedir}\\data\\yanroy\\raw"
-  logdir: "{workdir}\\logs"
+  logdir: "{workdir}/logs"
   fieldsdir: "{env.basedir}\\data\\yanroy\\fields"
 steps:
   - plugin: archive_extract.py
