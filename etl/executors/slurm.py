@@ -128,6 +128,7 @@ class SlurmEnv:
     max_time: Optional[str] = None
     max_cpus_per_task: Optional[int] = None
     max_mem: Optional[str] = None
+    setup_time: Optional[str] = None
     execution_source: Optional[str] = None
     source_bundle: Optional[str] = None
     source_snapshot: Optional[str] = None
@@ -163,7 +164,7 @@ class SlurmExecutor(Executor):
             "logdir", "workdir", "modules", "conda_env", "sbatch_extra",
             "ssh_host", "ssh_user", "ssh_jump", "remote_repo", "sync",
             "venv", "requirements", "python", "step_max_retries", "step_retry_delay_seconds",
-            "max_time", "max_cpus_per_task", "max_mem",
+            "max_time", "max_cpus_per_task", "max_mem", "setup_time",
             "execution_source", "source_bundle", "source_snapshot", "allow_workspace_source",
             "git_remote_url",
         }}
@@ -866,21 +867,37 @@ class SlurmExecutor(Executor):
                 lines.append(f"#SBATCH {extra}")
 
         lines.append("set -euo pipefail")
+        if self.verbose:
+            lines.append("ETL_VERBOSE=1")
+            lines.append("log_step(){ [ \"$ETL_VERBOSE\" = \"1\" ] && echo \"[etl][$(date -u +%Y-%m-%dT%H:%M:%SZ)] $1\"; }")
+            lines.append("log_step 'batch bootstrap started'")
+        if self.verbose:
+            lines.append("log_step 'creating log and work directories'")
         lines.append(f"mkdir -p {logdir}")
         lines.append(f"cd {checkout_root}")
+        if self.verbose:
+            lines.append("log_step 'activating runtime environment'")
         lines.append(f"PYTHON={python_bin}")
         lines.append(f"VENV={venv_path}")
+        if self.verbose:
+            lines.append("log_step 'loading optional secrets file (values hidden)'")
         lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
         lines.append("source \"$VENV/bin/activate\"")
         lines.append(f"export PYTHONPATH={checkout_root}:$PYTHONPATH")
 
         if self.env.modules:
             for mod in self.env.modules:
+                if self.verbose:
+                    lines.append(f"log_step {shlex.quote(f'loading module: {mod}')}")
                 lines.append(f"module load {mod}")
         if self.env.conda_env:
+            if self.verbose:
+                lines.append("log_step 'activating conda environment'")
             lines.append(f"source activate {self.env.conda_env}")
 
         env_workdir = Path(workdir).as_posix()
+        if self.verbose:
+            lines.append("log_step 'switching to step workdir'")
         lines.append(f"cd {env_workdir}")
         if array_index:
             indices_str = " ".join(str(i) for i in step_indices)
@@ -914,6 +931,8 @@ class SlurmExecutor(Executor):
         if environments_config_path and self.env_name:
             cmd += ["--environments-config", environments_config_path, "--env", self.env_name]
 
+        if self.verbose:
+            lines.append("log_step 'running etl.run_batch'")
         lines.append(" ".join(cmd))
 
         return "\n".join(lines)
@@ -938,7 +957,7 @@ class SlurmExecutor(Executor):
     ) -> str:
         logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
         lines = ["#!/bin/bash --login"]
-        setup_time = str(self.env.time or "").strip() or None
+        setup_time = str(self.env.setup_time or self.env.time or "00:10:00").strip() or "00:10:00"
         setup_cpus = int(self.env.cpus_per_task or 0) or None
         setup_mem = str(self.env.mem or "").strip() or None
         max_time_min = _parse_slurm_time_to_minutes(str(self.env.max_time or ""))
@@ -971,12 +990,20 @@ class SlurmExecutor(Executor):
                 lines.append(f"#SBATCH {extra}")
 
         lines.append("set -euo pipefail")
+        if self.verbose:
+            lines.append("ETL_VERBOSE=1")
+            lines.append("log_step(){ [ \"$ETL_VERBOSE\" = \"1\" ] && echo \"[etl][$(date -u +%Y-%m-%dT%H:%M:%SZ)] $1\"; }")
+            lines.append("log_step 'setup bootstrap started'")
+        if self.verbose:
+            lines.append("log_step 'creating setup directories'")
         lines.append(f"mkdir -p {logdir}")
         lines.append(f"mkdir -p {workdir}")
         for d in workdirs_to_create:
             lines.append(f"mkdir -p {d}")
         for d in logdirs_to_create:
             lines.append(f"mkdir -p {d}")
+        if self.verbose:
+            lines.append("log_step 'preparing execution source'")
         lines.append(f"CHECKOUT_ROOT={shlex.quote(checkout_root)}")
         lines.append(f"SOURCE_MODE={shlex.quote(execution_source)}")
         lines.append(f"ALLOW_WORKSPACE={'1' if allow_workspace_source else '0'}")
@@ -1027,16 +1054,24 @@ class SlurmExecutor(Executor):
         lines.append("  auto) prepare_git_remote || prepare_git_bundle || prepare_snapshot || prepare_workspace ;;")
         lines.append("  *) echo \"Unsupported execution_source: $SOURCE_MODE\" >&2; exit 1 ;;")
         lines.append("esac")
+        if self.verbose:
+            lines.append("log_step 'bootstrapping venv'")
         lines.append(f"PYTHON={python_bin}")
         lines.append(f"VENV={venv_path}")
+        if self.verbose:
+            lines.append("log_step 'loading optional secrets file (values hidden)'")
         lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
         lines.append("if [ ! -f \"$VENV/bin/activate\" ]; then")
         lines.append("  $PYTHON -m venv \"$VENV\"")
         lines.append("fi")
         lines.append("source \"$VENV/bin/activate\"")
+        if self.verbose:
+            lines.append("log_step 'installing requirements if present'")
         lines.append(f"if [ -f \"{req_path}\" ]; then pip install -r \"{req_path}\"; fi")
         lines.append(f"export PYTHONPATH={checkout_root}:$PYTHONPATH")
         lines.append(f"mkdir -p {workdir}")
+        if self.verbose:
+            lines.append("log_step 'setup complete'")
         lines.append("echo setup complete")
         return "\n".join(lines)
 
