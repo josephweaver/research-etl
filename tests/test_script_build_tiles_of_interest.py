@@ -13,7 +13,7 @@ def _load_module(path: Path):
 
 
 def test_read_state_codes_parses_fips_and_abbr(tmp_path: Path) -> None:
-    mod = _load_module(Path("scripts/tiger/build_tiles_of_interest.py"))
+    mod = _load_module(Path("scripts/yanroy/build_tiles_of_interest.py"))
     csv_path = tmp_path / "states.of.interest.csv"
     csv_path.write_text(
         "\n".join(
