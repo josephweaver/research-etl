@@ -64,6 +64,14 @@ def _build_step_attempt_summary(result: RunResult) -> list[dict]:
     return summary
 
 
+def _safe_tracking_write(action_name: str, fn, **kwargs) -> None:
+    try:
+        fn(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        # Do not block batch execution when DB tracking is unavailable.
+        print(f"Tracking warning ({action_name}): {exc}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a batch of pipeline steps")
     parser.add_argument("pipeline", help="Pipeline YAML path")
@@ -173,7 +181,9 @@ def main(argv: list[str] | None = None) -> int:
         if step.output_var and step.name in prior_step_outputs:
             ctx[step.output_var] = prior_step_outputs.get(step.name, {})
     batch_started_at = datetime.utcnow().isoformat() + "Z"
-    upsert_run_status(
+    _safe_tracking_write(
+        "batch_started",
+        upsert_run_status,
         run_id=run_id,
         pipeline=args.pipeline,
         project_id=project_id,
@@ -206,7 +216,9 @@ def main(argv: list[str] | None = None) -> int:
         attempts = step_res.attempts or []
         if attempts:
             for att in attempts:
-                upsert_step_attempt(
+                _safe_tracking_write(
+                    "step_attempt",
+                    upsert_step_attempt,
                     run_id=run_id,
                     step_name=step_res.step.name,
                     attempt_no=int(att.get("attempt_no", step_res.attempt_no)),
@@ -229,7 +241,9 @@ def main(argv: list[str] | None = None) -> int:
                     executor="slurm",
                 )
         elif step_res.attempt_no > 0:
-            upsert_step_attempt(
+            _safe_tracking_write(
+                "step_attempt",
+                upsert_step_attempt,
                 run_id=run_id,
                 step_name=step_res.step.name,
                 attempt_no=step_res.attempt_no,
@@ -258,7 +272,9 @@ def main(argv: list[str] | None = None) -> int:
     # If a batch fails, mark the full run failed immediately.
     if not result.success:
         step_attempts = _build_step_attempt_summary(result)
-        upsert_run_status(
+        _safe_tracking_write(
+            "batch_failed",
+            upsert_run_status,
             run_id=run_id,
             pipeline=args.pipeline,
             project_id=project_id,
@@ -278,7 +294,9 @@ def main(argv: list[str] | None = None) -> int:
     # Batch succeeded event.
     step_attempts = _build_step_attempt_summary(result)
     all_skipped = bool(step_attempts) and all(bool(s.get("skipped")) for s in step_attempts)
-    upsert_run_status(
+    _safe_tracking_write(
+        "batch_completed",
+        upsert_run_status,
         run_id=run_id,
         pipeline=args.pipeline,
         project_id=project_id,
@@ -296,7 +314,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # No polling: mark run complete when the last planned step index completes.
     if max(indices) == total_steps - 1:
-        upsert_run_status(
+        _safe_tracking_write(
+            "run_completed",
+            upsert_run_status,
             run_id=run_id,
             pipeline=args.pipeline,
             project_id=project_id,
