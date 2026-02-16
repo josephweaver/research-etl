@@ -212,6 +212,9 @@ class SlurmExecutor(Executor):
         self.step_max_retries = int(env_config.get("step_max_retries", 0))
         self.step_retry_delay_seconds = float(env_config.get("step_retry_delay_seconds", 0.0))
         self.resource_low_sample_multiplier = float(env_config.get("resource_low_sample_multiplier", 1.5))
+        self.enable_controller_job = bool(env_config.get("enable_controller_job", False))
+        self.controller_wait_children = bool(env_config.get("controller_wait_children", True))
+        self.controller_poll_seconds = max(2, int(env_config.get("controller_poll_seconds", 10) or 10))
         self.local_repo_name = Path(repo_root).name
         self.remote_base = Path(env_config.get("remote_repo") or repo_root)
         self.repo_root = self.remote_base / self.local_repo_name
@@ -546,6 +549,7 @@ class SlurmExecutor(Executor):
                 remote_workdir = solver.get_path("_candidate_workdir", candidate, resolve=True, path_style=style_norm)
         solver.update({"workdir": remote_workdir})
         remote_workdir_root = Path(remote_workdir)
+        child_jobs_file = f"{remote_workdir}/child_jobs.txt"
         context_file = f"{remote_workdir}/context.json"
         checkout_root = (self.remote_base / self.local_repo_name).as_posix()
         source_mode = str(context.get("execution_source") or self.execution_source or "auto").strip().lower()
@@ -786,6 +790,7 @@ class SlurmExecutor(Executor):
                     global_config_path=global_config_remote,
                     environments_config_path=environments_config_remote,
                     commandline_vars=commandline_ns,
+                    child_jobs_file=child_jobs_file,
                     sbatch_time=batch_resources.get("time"),
                     sbatch_cpus_per_task=batch_resources.get("cpus_per_task"),
                     sbatch_mem=batch_resources.get("mem"),
@@ -829,6 +834,7 @@ class SlurmExecutor(Executor):
                         global_config_path=global_config_remote,
                         environments_config_path=environments_config_remote,
                         commandline_vars=commandline_ns,
+                        child_jobs_file=child_jobs_file,
                         sbatch_time=batch_resources.get("time"),
                         sbatch_cpus_per_task=batch_resources.get("cpus_per_task"),
                         sbatch_mem=batch_resources.get("mem"),
@@ -838,6 +844,25 @@ class SlurmExecutor(Executor):
                     prev_jobid = jobid
                     submission_records.append(jobid)
                     start += chunk_size
+
+        if self.enable_controller_job:
+            controller_script = self._render_controller_script(
+                run_id=run_id,
+                workdir=remote_workdir,
+                logdir=setup_logdir,
+                child_jobs_file=child_jobs_file,
+                wait_children=self.controller_wait_children,
+                poll_seconds=self.controller_poll_seconds,
+            )
+            controller_jobid = self._submit_script(
+                controller_script,
+                run_id,
+                label="controller",
+                prev_dependency=prev_jobid,
+                remote_dest_dir=remote_workdir,
+            )
+            prev_jobid = controller_jobid
+            submission_records.append(controller_jobid)
 
         status = RunStatus(run_id=run_id, state=RunState.QUEUED, message=f"submitted {len(submission_records)} jobs")
         self._statuses[run_id] = status
@@ -1009,6 +1034,7 @@ class SlurmExecutor(Executor):
         global_config_path: Optional[str] = None,
         environments_config_path: Optional[str] = None,
         commandline_vars: Optional[Dict[str, Any]] = None,
+        child_jobs_file: Optional[str] = None,
         sbatch_time: Optional[str] = None,
         sbatch_cpus_per_task: Optional[int] = None,
         sbatch_mem: Optional[str] = None,
@@ -1051,6 +1077,8 @@ class SlurmExecutor(Executor):
         lines.append(f"PYTHON={python_bin}")
         lines.append(f"VENV={venv_path}")
         lines.append(f"export ETL_REPO_ROOT={checkout_root}")
+        if child_jobs_file:
+            lines.append(f"export ETL_CHILD_JOBS_FILE={child_jobs_file}")
         if self.load_secrets_file:
             if self.verbose:
                 lines.append("log_step 'loading optional secrets file (values hidden)'")
@@ -1128,6 +1156,73 @@ class SlurmExecutor(Executor):
             lines.append("log_step 'running etl.run_batch'")
         lines.append(" ".join(cmd))
 
+        return "\n".join(lines)
+
+    def _render_controller_script(
+        self,
+        *,
+        run_id: str,
+        workdir: str,
+        logdir: str,
+        child_jobs_file: str,
+        wait_children: bool,
+        poll_seconds: int,
+    ) -> str:
+        lines = ["#!/bin/bash --login"]
+        if self.env.partition:
+            lines.append(f"#SBATCH -p {self.env.partition}")
+        if self.env.account:
+            lines.append(f"#SBATCH -A {self.env.account}")
+        lines.append("#SBATCH -t 00:20:00")
+        lines.append("#SBATCH -c 1")
+        lines.append("#SBATCH --mem=512M")
+        lines.append(f"#SBATCH -J etl-ctl-{run_id[:8]}")
+        lines.append(f"#SBATCH -o {logdir}/etl-controller-{run_id}-%j.out")
+        if self.env.sbatch_extra:
+            for extra in self.env.sbatch_extra:
+                lines.append(f"#SBATCH {extra}")
+        lines.append("set -euo pipefail")
+        lines.append(f"mkdir -p {logdir}")
+        lines.append(f"mkdir -p {workdir}")
+        lines.append(f"CHILD_FILE={shlex.quote(child_jobs_file)}")
+        lines.append(f"POLL={int(poll_seconds)}")
+        lines.append(f"WAIT_CHILDREN={'1' if wait_children else '0'}")
+        lines.append("echo '[controller] started'")
+        lines.append("if [ \"$WAIT_CHILDREN\" != \"1\" ]; then")
+        lines.append("  echo '[controller] wait_children disabled; exiting'")
+        lines.append("  exit 0")
+        lines.append("fi")
+        lines.append("if [ ! -f \"$CHILD_FILE\" ]; then")
+        lines.append("  echo '[controller] no child job file found; exiting'")
+        lines.append("  exit 0")
+        lines.append("fi")
+        lines.append("mapfile -t RAW_IDS < <(grep -Eo '[0-9]+(_[0-9]+)?' \"$CHILD_FILE\" | awk '!seen[$0]++')")
+        lines.append("if [ ${#RAW_IDS[@]} -eq 0 ]; then")
+        lines.append("  echo '[controller] no child ids registered; exiting'")
+        lines.append("  exit 0")
+        lines.append("fi")
+        lines.append("echo \"[controller] waiting on ${#RAW_IDS[@]} child job ids\"")
+        lines.append("for jid in \"${RAW_IDS[@]}\"; do")
+        lines.append("  while squeue -h -j \"$jid\" >/dev/null 2>&1 && [ -n \"$(squeue -h -j \"$jid\")\" ]; do")
+        lines.append("    sleep \"$POLL\"")
+        lines.append("  done")
+        lines.append("done")
+        lines.append("FAILED=0")
+        lines.append("for jid in \"${RAW_IDS[@]}\"; do")
+        lines.append("  if command -v sacct >/dev/null 2>&1; then")
+        lines.append("    state=$(sacct -n -P -j \"$jid\" --format=State 2>/dev/null | head -n 1 | cut -d'|' -f1 | tr -d '[:space:]')")
+        lines.append("    if [ -n \"$state\" ] && [[ \"$state\" != COMPLETED* ]]; then")
+        lines.append("      echo \"[controller] child job $jid state=$state\"")
+        lines.append("      FAILED=1")
+        lines.append("    fi")
+        lines.append("  fi")
+        lines.append("done")
+        lines.append("if [ \"$FAILED\" = \"1\" ]; then")
+        lines.append("  echo '[controller] child job failures detected'")
+        lines.append("  exit 1")
+        lines.append("fi")
+        lines.append("echo '[controller] all child jobs complete'")
+        lines.append("exit 0")
         return "\n".join(lines)
 
     def _render_setup_script(

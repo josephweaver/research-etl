@@ -752,3 +752,44 @@ def test_slurm_workdir_prefers_commandline_vars_override(monkeypatch, tmp_path: 
 
     setup_call = calls[0]
     assert str(setup_call["remote_dest_dir"]).startswith("/cli/work/yanroy/fields/")
+
+
+def test_slurm_controller_job_submitted_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(
+        vars={"name": "sample"},
+        steps=[Step(name="s1", script="echo.py")],
+    )
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "prev_dependency": prev_dependency, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/work", "logdir": "/tmp/logs", "enable_controller_job": True},
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+    res = ex.submit("pipelines/sample.yml", {"run_id": "runabc1234"})
+
+    assert len(calls) == 3  # setup + step + controller
+    assert calls[2]["label"] == "controller"
+    assert calls[2]["prev_dependency"] == "job2"
+    assert "CHILD_FILE=" in calls[2]["script_text"]
+    assert "squeue -h -j" in calls[2]["script_text"]
+    assert res.job_ids[-1] == "job3"
+    assert "ETL_CHILD_JOBS_FILE=" in calls[1]["script_text"]

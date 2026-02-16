@@ -159,3 +159,6 @@ I noticed that twe provide both a executor and an enviroment,  I belive the envi
 - [ ] `P0` CI is green for unit + integration test lanes.
 - [ ] `P0` Offline mode: run_batch continues when DB is unavailable, then backfills missing tracking/events later.
 - [ ] `P0` Runs should check code into github, deploy code to working location, then run with explicit github version always. This will enable rerunning code at a specific version.
+
+# things to fix later
+- [ ] Stat collection on plugin run times is not complete.  We need runtime by pipeline-step, not plugin to right size steps.  case. unzip 250mb file, or 1mb file.  they take significantly different runtimes/hardware.
