@@ -9,12 +9,12 @@ dirs:
   logdir: "{workdir}/logs"
   fieldsdir: "{env.basedir}/data/yanroy/fields"
 steps:
-  - name: 01_unzip
-    plugin: archive_extract.py
-    args:
-      archive_glob: "{archivedir}/ReleaseData.7z"
-      out: "{fieldsdir}"
-      include_glob: "**/*field_segments*.hdr,**/*field_segments"
+  # - name: 01_unzip
+  #   plugin: archive_extract.py
+  #   args:
+  #     archive_glob: "{archivedir}/ReleaseData.7z"
+  #     out: "{fieldsdir}"
+  #     include_glob: "**/*field_segments*.hdr,**/*field_segments"
   - name: 02_facts
     plugin: exec_script.py
     args:
@@ -22,34 +22,34 @@ steps:
       script_args: "--input-root \"{fieldsdir}\" --tiles \"{tiles}\" --item-kind dirs --output-root \"{workdir}/raster_facts\" --workdir \"{workdir}/raster_facts_submit\" --plugins-dir \"plugins\" --job-name raster-facts --wait --poll-seconds 10 --run-id \"{sys.run.id}\""
       verbose: true
 
-  - name: 03a_combine_raster_facts_csv
-    plugin: combine_files.py
-    parallel_with: step03
-    args:
-      input_glob: "{workdir}/raster_facts/*/raster_facts.csv"
-      output_file: "{workdir}/raster_facts/raster_facts.csv"
-      format: csv
+  # - name: 03a_combine_raster_facts_csv
+  #   plugin: combine_files.py
+  #   parallel_with: step03
+  #   args:
+  #     input_glob: "{workdir}/raster_facts/*/raster_facts.csv"
+  #     output_file: "{workdir}/raster_facts/raster_facts.csv"
+  #     format: csv
 
-  - name: 03b_combine_raster_facts_json
-    plugin: combine_files.py
-    parallel_with: step03
-    args:
-      input_glob: "{workdir}/raster_facts/*/raster_facts.json"
-      output_file: "{workdir}/raster_facts/raster_facts.json"
-      format: json
+  # - name: 03b_combine_raster_facts_json
+  #   plugin: combine_files.py
+  #   parallel_with: step03
+  #   args:
+  #     input_glob: "{workdir}/raster_facts/*/raster_facts.json"
+  #     output_file: "{workdir}/raster_facts/raster_facts.json"
+  #     format: json
 
-  - name: 03c_combine_file_manifest_csv
-    plugin: combine_files.py
-    parallel_with: step03
-    args:
-      input_glob: "{workdir}/raster_facts/*/file_manifest.csv"
-      output_file: "{workdir}/raster_facts/file_manifest.csv"
-      format: csv
+  # - name: 03c_combine_file_manifest_csv
+  #   plugin: combine_files.py
+  #   parallel_with: step03
+  #   args:
+  #     input_glob: "{workdir}/raster_facts/*/file_manifest.csv"
+  #     output_file: "{workdir}/raster_facts/file_manifest.csv"
+  #     format: csv
 
-  - name: 03d_combine_file_manifest_json
-    plugin: combine_files.py
-    parallel_with: step03
-    args:
-      input_glob: "{workdir}/raster_facts/*/file_manifest.json"
-      output_file: "{workdir}/raster_facts/file_manifest.json"
-      format: json
+  # - name: 03d_combine_file_manifest_json
+  #   plugin: combine_files.py
+  #   parallel_with: step03
+  #   args:
+  #     input_glob: "{workdir}/raster_facts/*/file_manifest.json"
+  #     output_file: "{workdir}/raster_facts/file_manifest.json"
+  #     format: json
