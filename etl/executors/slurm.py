@@ -88,6 +88,16 @@ def _flatten_vars_for_cli(values: Dict[str, Any], prefix: str = "") -> list[tupl
     return items
 
 
+def _lookup_ctx_path(ctx: Dict[str, Any], dotted: str) -> tuple[Any, bool]:
+    cur: Any = ctx
+    for part in str(dotted or "").split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+            continue
+        return None, False
+    return cur, True
+
+
 def _parse_mem_to_mb(value: str) -> Optional[int]:
     text = str(value or "").strip().upper()
     if not text:
@@ -325,6 +335,22 @@ class SlurmExecutor(Executor):
                 i += 1
             batches.append(group)
         return batches
+
+    @staticmethod
+    def _foreach_count_from_pipeline(step: Any, pipeline: Pipeline) -> Optional[int]:
+        foreach_key = str(getattr(step, "foreach", "") or "").strip()
+        if not foreach_key:
+            return None
+        local_ctx: Dict[str, Any] = {}
+        try:
+            local_ctx.update(dict(getattr(pipeline, "vars", {}) or {}))
+            local_ctx.update(dict(getattr(pipeline, "dirs", {}) or {}))
+        except Exception:  # noqa: BLE001
+            local_ctx = {}
+        value, ok = _lookup_ctx_path(local_ctx, foreach_key)
+        if not ok or not isinstance(value, (list, tuple)):
+            return None
+        return len(value)
 
     @staticmethod
     def _parse_script_plugin_ref(script: str) -> Optional[str]:
@@ -764,6 +790,59 @@ class SlurmExecutor(Executor):
                 step_indices = [batch[0][0]]
                 steps = [batch[0][1]]
                 step_name = getattr(steps[0], "name", f"step{step_indices[0]}")
+                foreach_count = self._foreach_count_from_pipeline(steps[0], pipeline)
+                if foreach_count and foreach_count > 1:
+                    chunk_size = min(self.array_task_limit, int(foreach_count))
+                    start = 0
+                    while start < int(foreach_count):
+                        chunk_n = min(chunk_size, int(foreach_count) - start)
+                        label = f"{step_name}_foreach_chunk{start}"
+                        step_workdir = (remote_workdir_root / step_name).as_posix()
+                        if use_pipeline_logdir:
+                            step_logdir = (base_logdir / step_name).as_posix()
+                        else:
+                            step_logdir = (base_logdir / jobname / step_name / run_date / run_fs_id).as_posix()
+                        batch_resources = self._resolve_batch_resources(steps)
+                        script_text = self._render_batch_script(
+                            run_id,
+                            checkout_root,
+                            pipeline_remote,
+                            steps,
+                            step_indices,
+                            context_file,
+                            remote_workdir,
+                            plugins_remote,
+                            step_logdir,
+                            venv_path,
+                            req_path,
+                            python_bin,
+                            project_id=context.get("project_id"),
+                            resume_run_id=resume_run_id,
+                            run_started_at=run_started_at,
+                            global_config_path=global_config_remote,
+                            environments_config_path=environments_config_remote,
+                            commandline_vars=commandline_ns,
+                            child_jobs_file=child_jobs_file,
+                            sbatch_time=batch_resources.get("time"),
+                            sbatch_cpus_per_task=batch_resources.get("cpus_per_task"),
+                            sbatch_mem=batch_resources.get("mem"),
+                            array_index=True,
+                            array_count=chunk_n,
+                            foreach_from_array=True,
+                            foreach_item_offset=start,
+                        )
+                        jobid = self._submit_script(
+                            script_text,
+                            run_id,
+                            label=label,
+                            prev_dependency=prev_jobid,
+                            array_bounds=(0, chunk_n - 1),
+                            remote_dest_dir=step_workdir,
+                        )
+                        prev_jobid = jobid
+                        submission_records.append(jobid)
+                        start += chunk_size
+                    continue
                 label = step_name
                 step_workdir = (remote_workdir_root / step_name).as_posix()
                 if use_pipeline_logdir:
@@ -1039,6 +1118,9 @@ class SlurmExecutor(Executor):
         sbatch_cpus_per_task: Optional[int] = None,
         sbatch_mem: Optional[str] = None,
         array_index: bool = False,
+        array_count: Optional[int] = None,
+        foreach_from_array: bool = False,
+        foreach_item_offset: int = 0,
     ) -> str:
         logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
         lines = ["#!/bin/bash --login"]
@@ -1058,7 +1140,8 @@ class SlurmExecutor(Executor):
         lines.append(f"#SBATCH -J etl-{run_id[:8]}")
         lines.append(f"#SBATCH -o {logdir}/etl-{run_id}-%j.%a.out" if array_index else f"#SBATCH -o {logdir}/etl-{run_id}-%j.out")
         if array_index:
-            lines.append(f"#SBATCH --array=0-{len(steps)-1}")
+            array_n = int(array_count or len(steps))
+            lines.append(f"#SBATCH --array=0-{max(0, array_n-1)}")
         if self.env.sbatch_extra:
             for extra in self.env.sbatch_extra:
                 lines.append(f"#SBATCH {extra}")
@@ -1103,7 +1186,14 @@ class SlurmExecutor(Executor):
         if self.verbose:
             lines.append("log_step 'switching to step workdir'")
         lines.append(f"cd {env_workdir}")
-        if array_index:
+        foreach_arg: Optional[str] = None
+        if array_index and foreach_from_array:
+            step_arg = ",".join(str(i) for i in step_indices)
+            if int(foreach_item_offset or 0) > 0:
+                foreach_arg = f"$((SLURM_ARRAY_TASK_ID+{int(foreach_item_offset)}))"
+            else:
+                foreach_arg = "${SLURM_ARRAY_TASK_ID}"
+        elif array_index:
             indices_str = " ".join(str(i) for i in step_indices)
             lines.append(f"step_indices=({indices_str})")
             step_arg = "${step_indices[$SLURM_ARRAY_TASK_ID]}"
@@ -1147,6 +1237,8 @@ class SlurmExecutor(Executor):
             cmd += ["--global-config", global_config_path]
         if environments_config_path and self.env_name:
             cmd += ["--environments-config", environments_config_path, "--env", self.env_name]
+        if foreach_arg:
+            cmd += ["--foreach-item-index", foreach_arg]
         for key, value in _flatten_vars_for_cli(dict(commandline_vars or {})):
             cmd += ["--var", f"{key}={value}"]
         if self.verbose:

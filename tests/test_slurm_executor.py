@@ -89,8 +89,11 @@ def test_slurm_submit_uses_array_batches_and_passes_resume_retry(monkeypatch, tm
         assert "--max-retries 2" in script
         assert "--retry-delay-seconds 1.5" in script
 
-    # foreach remains a single pipeline step index here; fan-out happens in run_batch.
-    assert "--steps 3" in calls[3]["script_text"]
+    # foreach uses SLURM array and passes item index into run_batch.
+    foreach_call = calls[3]
+    assert "#SBATCH --array=0-1" in foreach_call["script_text"]
+    assert "--steps 3" in foreach_call["script_text"]
+    assert "--foreach-item-index ${SLURM_ARRAY_TASK_ID}" in foreach_call["script_text"]
 
 
 def test_slurm_submit_applies_step_resource_hints_and_env_caps(monkeypatch, tmp_path: Path) -> None:

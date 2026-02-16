@@ -410,6 +410,7 @@ def _expand_step(
     run_started: datetime,
     job_name: str,
     resolve_max_passes: int,
+    foreach_item_index: Optional[int] = None,
 ) -> List[Step]:
     if not step.foreach and not step.foreach_glob:
         return [step]
@@ -424,7 +425,17 @@ def _expand_step(
             max_passes=resolve_max_passes,
         )
     expanded: List[Step] = []
-    for idx, item in enumerate(items):
+    item_pairs: List[Tuple[int, Any]]
+    if foreach_item_index is not None:
+        if foreach_item_index < 0 or foreach_item_index >= len(items):
+            raise RunError(
+                f"`foreach` item index {foreach_item_index} out of range for step {step.name} (len={len(items)})"
+            )
+        item_pairs = [(foreach_item_index, items[foreach_item_index])]
+    else:
+        item_pairs = [(idx, item) for idx, item in enumerate(items)]
+
+    for idx, item in item_pairs:
         item_text = str(item)
         item_path = Path(item_text)
         local_ctx = _with_runtime_sys(
@@ -515,6 +526,7 @@ def run_pipeline(
     prior_step_outputs: Optional[Dict[str, Dict[str, Any]]] = None,
     log_func=None,
     step_log_func=None,
+    foreach_selection: Optional[Dict[str, int]] = None,
 ) -> RunResult:
     run_id = run_id or uuid.uuid4().hex
     ts = run_started or datetime.utcnow()
@@ -553,6 +565,7 @@ def run_pipeline(
         job_name=str((pipeline.vars or {}).get("jobname") or ""),
     )
     prior_step_outputs = prior_step_outputs or {}
+    foreach_selection = foreach_selection or {}
     resolve_max_passes = max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20))
     base_logdir: Path = base_workdir
     if logdir is not None:
@@ -583,6 +596,7 @@ def run_pipeline(
                     run_started=ts,
                     job_name=str((pipeline.vars or {}).get("jobname") or ""),
                     resolve_max_passes=resolve_max_passes,
+                    foreach_item_index=foreach_selection.get(step.name),
                 )
             )
         run_batches = _batch_steps(expanded_for_batch)

@@ -128,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume-run-id", default=None, help="Prior run_id to resume from (skip successful steps)")
     parser.add_argument("--max-retries", type=int, default=0, help="Max step retries after first failure")
     parser.add_argument("--retry-delay-seconds", type=float, default=0.0, help="Delay between retries")
+    parser.add_argument("--foreach-item-index", type=int, default=None, help="Run only one foreach item index for selected step(s)")
     parser.add_argument("--global-config", help="Path to global config YAML", default=None)
     parser.add_argument(
         "--environments-config",
@@ -306,6 +307,15 @@ def main(argv: list[str] | None = None) -> int:
         resume_succeeded_steps=resume_succeeded_steps,
         prior_step_outputs=prior_step_outputs,
         log_func=None,
+        foreach_selection=(
+            {
+                step.name: int(args.foreach_item_index)
+                for step in pipeline.steps
+                if (step.foreach or step.foreach_glob) and args.foreach_item_index is not None
+            }
+            if args.foreach_item_index is not None
+            else None
+        ),
     )
     _vprint(args.verbose, f"batch execution finished: success={result.success}")
     batch_ended_at = datetime.utcnow().isoformat() + "Z"
