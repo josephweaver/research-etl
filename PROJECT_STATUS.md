@@ -1,4 +1,4 @@
-# Project Status (2026-02-13)
+# Project Status (2026-02-16)
 
 ## Current state
 - CLI/package baseline is in place (`pyproject.toml`, `etl` entrypoint, editable install flow, GitHub Actions tests).
@@ -33,6 +33,23 @@
 - New filesystem transform plugins:
   - `plugins/file_move_regex.py`
   - `plugins/file_delete_regex.py`
+- New orchestration/util plugins:
+  - `plugins/combine_files.py` (csv/json/yaml/xml/text merge)
+  - `plugins/exec_script.py`
+  - `plugins/gdrive_upload.py`
+- Yanroy pipeline updates:
+  - Added `pipelines/yanroy/tiles_of_interest.yml` as a separate stage pipeline.
+  - Moved tile builder script to `scripts/yanroy/build_tiles_of_interest.py`.
+  - `pipelines/yanroy/extract_fields.yml` now runs `raster_facts.py` via `foreach: tiles` and supports parallel combine steps.
+- Runner telemetry update:
+  - per-attempt fallback resource metrics now capture CPU/memory usage even when plugins do not emit them.
+- SLURM/web execution updates:
+  - setup job default walltime is `00:10:00` (new `setup_time` override),
+  - verbose SLURM scripts now emit safe stage logs without exposing secrets,
+  - `run_batch.py` gained `--verbose` and is wired from SLURM verbose mode,
+  - SLURM log path precedence now honors pipeline `dirs.logdir` over env `logdir`.
+- Web UI updates:
+  - Added Plugins page/navigation and plugin stats route integration.
 - SLURM batch execution uses `etl/run_batch.py` and emits event-driven status transitions (`batch_started`, `batch_completed`, `batch_failed`, `run_completed`).
 - DB migration bootstrap is active (`etl/db.py`, `db/ddl/*.sql`) with checksum/version enforcement.
 - Artifact policy/registry baseline is active:

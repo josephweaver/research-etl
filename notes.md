@@ -1,22 +1,30 @@
 # 3-Week Product Plan (ResearchETL v0)
 
-Last updated: 2026-02-13
+Last updated: 2026-02-16
 
-## End-of-day handoff (2026-02-13)
+## End-of-day handoff (2026-02-16)
 
 Done today:
-- Unified variable resolution pass limits across parser, builder, and runtime (`resolve_max_passes`).
-- Fixed recursive `workdir` expansion and improved `dirs` precedence behavior.
-- Fixed step log placement to honor configured `logdir`.
-- Builder now handles prior step `output_var` references during resolve/validate.
-- Hardened `archive_extract` (better archive matching + clearer `7z` diagnostics + `include_glob` support).
-- Added `file_move_regex.py` and `file_delete_regex.py` plugins.
+- Added new reusable plugins:
+  - `combine_files.py` (csv/json/yaml/xml/text merge),
+  - `exec_script.py`,
+  - `gdrive_upload.py`.
+- Added `pipelines/yanroy/tiles_of_interest.yml` and moved script to `scripts/yanroy/build_tiles_of_interest.py`.
+- Updated `pipelines/yanroy/extract_fields.yml`:
+  - switched step 2 to native `foreach: tiles` with `raster_facts.py`,
+  - parallel combine support for consolidated outputs.
+- Added runner fallback resource telemetry (CPU/memory) when plugins do not emit metrics.
+- Added Plugins page/nav in web UI and stabilized `/api/plugins/stats`.
+- SLURM/runtime UX updates:
+  - setup job default time `00:10:00` (`setup_time` override),
+  - safe verbose logs in generated SLURM scripts,
+  - `run_batch.py --verbose` and SLURM pass-through,
+  - SLURM now honors pipeline `dirs.logdir` over env logdir.
 
 Carry-over for tomorrow:
-- Recheck YanRoy extract filters (`.hdr` and extensionless companion files) in pipeline YAML patterns.
-- Continue path/glob normalization refactor so plugins do less custom path resolution.
-- Validate full YanRoy pipeline end-to-end after filter tuning.
-- Keep using `.venv` Python for runs to avoid system/anaconda dependency conflicts.
+- Run full Yanroy `download -> extract_fields -> tiles_of_interest` chain on HPCC and verify artifact locations.
+- Add fast-path tiles-of-interest mode using precomputed state/tile lookup + combined Yanroy facts.
+- Decide policy for dirty-worktree fallback to clean parallel checkout when strict mode is enabled.
 
 ask;
 

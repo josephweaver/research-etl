@@ -4,7 +4,26 @@
 
 A lightweight ETL tool to construct new pipelines from modular Python "plugin" scripts and to track runs and validation. In the future this may also call ChatGPT to write data dictionary entries.
 
-## Latest updates (2026-02-13)
+## Latest updates (2026-02-16)
+
+- Added `plugins/combine_files.py` to merge `csv`, `json`, `yaml/yml`, `xml`, or `text` outputs from fan-out steps.
+- Added generic script/plugin utilities:
+  - `plugins/exec_script.py` (run Python scripts as pipeline steps),
+  - `plugins/gdrive_upload.py` (upload artifacts to Google Drive via `rclone`).
+- Added Yanroy stage pipeline `pipelines/yanroy/tiles_of_interest.yml` and moved tile script to `scripts/yanroy/build_tiles_of_interest.py`.
+- Updated `pipelines/yanroy/extract_fields.yml`:
+  - step `02_facts` now uses native `foreach: tiles` with `raster_facts.py` directly,
+  - post-facts combine steps can run in parallel (`parallel_with: step03`).
+- Added engine-side step resource telemetry fallback in runner:
+  - captures CPU time/estimated cores and memory RSS when plugin outputs do not provide metrics.
+- Added plugins UI route and navigation:
+  - `/plugins` page,
+  - `/api/plugins/stats` integration in UI.
+- SLURM execution improvements:
+  - setup job default time is now `00:10:00` (override with `setup_time`),
+  - generated scripts emit safe verbose stage logs (no secret values),
+  - `run_batch` supports `--verbose` and SLURM verbose mode passes it through,
+  - pipeline `dirs.logdir` now overrides env `logdir` for SLURM log paths.
 
 - Variable resolution now has a configurable recursion/pass guard via `resolve_max_passes` (default `20`, clamped `1..100`).
   - Configure in `config/global.yml` (or environment config override).
