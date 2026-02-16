@@ -67,3 +67,14 @@ def test_cmd_run_rejects_invalid_var_syntax(capsys) -> None:
     captured = capsys.readouterr()
     assert rc == 1
     assert "expected KEY=VALUE" in captured.err
+
+
+def test_cli_main_warns_and_ignores_unknown_args(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli, "ensure_database_schema", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "_auto_apply_local_db_queue", lambda *_a, **_k: None)
+
+    rc = cli.main(["plugins", "list", "--future-flag", "x"])
+    captured = capsys.readouterr()
+    assert rc in (0, 1)
+    assert "[etl][WARN] ignoring unknown arguments:" in captured.out
+    assert "--future-flag x" in captured.out

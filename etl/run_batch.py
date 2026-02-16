@@ -142,7 +142,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Runtime variable override in KEY=VALUE form (repeatable; highest precedence).",
     )
     parser.add_argument("--verbose", action="store_true", help="Print batch progress details")
-    args = parser.parse_args(argv)
+    args, unknown_args = parser.parse_known_args(argv)
+    if unknown_args:
+        print(f"[run_batch][WARN] ignoring unknown arguments: {' '.join(str(x) for x in unknown_args)}")
     try:
         commandline_vars = _parse_cli_var_overrides(args.var)
     except ValueError as exc:

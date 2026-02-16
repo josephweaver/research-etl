@@ -159,7 +159,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--extract-dir", default="", help="Directory containing state shapefile(s)")
     ap.add_argument("--output-csv", required=True, help="Output CSV path")
     ap.add_argument("--verbose", action="store_true")
-    args = ap.parse_args(argv)
+    args, unknown_args = ap.parse_known_args(argv)
+    if unknown_args:
+        print(f"[build_tiles_of_interest][WARN] ignoring unknown arguments: {' '.join(str(x) for x in unknown_args)}")
 
     states_csv = Path(args.states_csv).expanduser().resolve()
     if not states_csv.exists():

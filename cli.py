@@ -984,7 +984,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args, unknown_args = parser.parse_known_args(argv)
+    if unknown_args:
+        print(f"[etl][WARN] ignoring unknown arguments: {' '.join(str(x) for x in unknown_args)}")
     args._raw_argv = argv if argv is not None else sys.argv[1:]
     try:
         ensure_database_schema(Path("db/ddl"))

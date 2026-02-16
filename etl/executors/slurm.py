@@ -1081,6 +1081,17 @@ class SlurmExecutor(Executor):
             step_arg = "${step_indices[$SLURM_ARRAY_TASK_ID]}"
         else:
             step_arg = ",".join(str(i) for i in step_indices)
+        run_started_expr = ""
+        if run_started_at:
+            # Backward-compatible runtime feature detection:
+            # older checkouts may not yet expose --run-started-at on run_batch.py.
+            lines.append("RUN_STARTED_OPT=''")
+            lines.append("RUN_STARTED_VAL=''")
+            lines.append("if \"$VENV/bin/python\" -m etl.run_batch -h 2>&1 | grep -q -- '--run-started-at'; then")
+            lines.append("  RUN_STARTED_OPT='--run-started-at'")
+            lines.append(f"  RUN_STARTED_VAL={shlex.quote(str(run_started_at))}")
+            lines.append("fi")
+            run_started_expr = "${RUN_STARTED_OPT:+$RUN_STARTED_OPT $RUN_STARTED_VAL}"
 
         cmd = [
             "$VENV/bin/python",
@@ -1100,8 +1111,8 @@ class SlurmExecutor(Executor):
             cmd += ["--project-id", str(project_id)]
         if resume_run_id:
             cmd += ["--resume-run-id", str(resume_run_id)]
-        if run_started_at:
-            cmd += ["--run-started-at", str(run_started_at)]
+        if run_started_expr:
+            cmd += [run_started_expr]
         cmd += ["--max-retries", str(self.step_max_retries)]
         cmd += ["--retry-delay-seconds", str(self.step_retry_delay_seconds)]
         if global_config_path:

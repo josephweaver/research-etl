@@ -245,3 +245,44 @@ def test_run_batch_passes_run_started_at_to_runner(monkeypatch, tmp_path: Path) 
     assert rc == 0
     assert captured["run_started"] is not None
     assert captured["run_started"].strftime("%H%M%S") == "232242"
+
+
+def test_run_batch_warns_and_ignores_unknown_args(monkeypatch, tmp_path: Path, capsys) -> None:
+    pipeline_path = tmp_path / "pipeline.yml"
+    _write_min_pipeline(pipeline_path)
+
+    monkeypatch.setattr(run_batch, "upsert_run_status", lambda **_: None)
+    monkeypatch.setattr(run_batch, "upsert_step_attempt", lambda **_: None)
+    monkeypatch.setattr(run_batch, "collect_run_provenance", lambda **_: {})
+
+    result = RunResult(
+        run_id="rununk",
+        steps=[
+            StepResult(
+                step=Step(name="s0", script="echo.py"),
+                success=True,
+                attempt_no=1,
+                attempts=[{"attempt_no": 1, "success": True, "skipped": False, "error": None, "outputs": {}}],
+            )
+        ],
+        artifact_dir=str(tmp_path / ".runs"),
+    )
+    monkeypatch.setattr(run_batch, "run_pipeline", lambda *args, **kwargs: result)
+
+    rc = run_batch.main(
+        [
+            str(pipeline_path),
+            "--steps",
+            "0",
+            "--run-id",
+            "rununk",
+            "--workdir",
+            str(tmp_path / ".runs"),
+            "--future-flag",
+            "x",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "[run_batch][WARN] ignoring unknown arguments:" in out
+    assert "--future-flag x" in out

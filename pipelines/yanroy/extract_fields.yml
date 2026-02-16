@@ -8,12 +8,13 @@ dirs:
   logdir: "{workdir}/logs"
   fieldsdir: "{env.basedir}\\data\\yanroy\\fields"
 steps:
-  - plugin: archive_extract.py
+  - name: 01_unzip
+    plugin: archive_extract.py
     args:
       archive_glob: "{archivedir}\\ReleaseData.7z"
       out: "{fieldsdir}"
       include_glob: "**/*field_segments*.hdr,**/*field_segments"
-  - name: raster_facts
+  - name: 02_facts
     plugin: raster_facts.py
     foreach_glob: "{fieldsdir}/**/*field_segments"
     foreach_kind: dirs
@@ -23,29 +24,33 @@ steps:
       output_dir: "{workdir}/raster_facts/{item_name}_{item_index}"
       probe_unknown: true
 
-  - name: combine_raster_facts_csv
+  - name: 03a_combine_raster_facts_csv
     plugin: combine_files.py
+    parallel_with: step03
     args:
       input_glob: "{workdir}/raster_facts/*/raster_facts.csv"
       output_file: "{workdir}/raster_facts/raster_facts.csv"
       format: csv
 
-  - name: combine_raster_facts_json
+  - name: 03b_combine_raster_facts_json
     plugin: combine_files.py
+    parallel_with: step03
     args:
       input_glob: "{workdir}/raster_facts/*/raster_facts.json"
       output_file: "{workdir}/raster_facts/raster_facts.json"
       format: json
 
-  - name: combine_file_manifest_csv
+  - name: 03c_combine_file_manifest_csv
     plugin: combine_files.py
+    parallel_with: step03
     args:
       input_glob: "{workdir}/raster_facts/*/file_manifest.csv"
       output_file: "{workdir}/raster_facts/file_manifest.csv"
       format: csv
 
-  - name: combine_file_manifest_json
+  - name: 03d_combine_file_manifest_json
     plugin: combine_files.py
+    parallel_with: step03
     args:
       input_glob: "{workdir}/raster_facts/*/file_manifest.json"
       output_file: "{workdir}/raster_facts/file_manifest.json"
