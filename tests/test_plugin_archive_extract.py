@@ -81,6 +81,46 @@ def test_archive_extract_7z_falls_back_to_binary_when_py7zr_missing(tmp_path: Pa
     assert outputs["extracted_files"][0].endswith("/x.txt")
 
 
+def test_archive_extract_7z_retries_without_include_filters_on_fail(tmp_path: Path, monkeypatch) -> None:
+    plugin = load_plugin(Path("plugins/archive_extract.py"))
+    assert plugin.module is not None
+
+    archive = tmp_path / "sample.7z"
+    archive.write_bytes(b"fake")
+    outdir = tmp_path / "out7z_retry"
+    calls = []
+
+    def _fake_run(cmd, capture_output, text, check):
+        calls.append(list(cmd))
+        if len(calls) == 1:
+            return types.SimpleNamespace(returncode=2, stdout="Archives with Errors: 1", stderr="ERROR: E_FAIL")
+        (outdir / "x.txt").parent.mkdir(parents=True, exist_ok=True)
+        (outdir / "x.txt").write_text("ok", encoding="utf-8")
+        (outdir / "drop.bin").write_text("nope", encoding="utf-8")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(plugin.module, "py7zr", None)
+    monkeypatch.setattr("subprocess.run", _fake_run)
+
+    outputs = plugin.run(
+        {
+            "archive": str(archive),
+            "out": str(outdir),
+            "seven_zip_bin": "bin/7z",
+            "include_glob": "*.txt",
+        },
+        _ctx(tmp_path),
+    )
+
+    assert len(calls) == 2
+    assert any(str(c).startswith("-ir!") for c in calls[0])
+    assert not any(str(c).startswith("-ir!") for c in calls[1])
+    assert outputs["extracted_count"] == 1
+    assert outputs["extracted_files"][0].endswith("/x.txt")
+    assert (outdir / "x.txt").exists()
+    assert not (outdir / "drop.bin").exists()
+
+
 def test_archive_extract_requires_archive_or_glob(tmp_path: Path) -> None:
     plugin = load_plugin(Path("plugins/archive_extract.py"))
     try:

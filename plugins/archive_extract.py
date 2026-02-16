@@ -59,6 +59,22 @@ def _all_files(root: Path) -> List[Path]:
     return sorted(p for p in root.rglob("*") if p.is_file())
 
 
+def _prune_empty_parent_dirs(path: Path, *, stop_at: Path) -> None:
+    cur = path.parent
+    limit = stop_at.resolve()
+    while True:
+        try:
+            if cur.resolve() == limit:
+                return
+        except Exception:
+            return
+        try:
+            cur.rmdir()
+        except Exception:
+            return
+        cur = cur.parent
+
+
 def _expand_archive_glob(pattern: str, ctx) -> List[Path]:
     text = str(pattern or "").strip()
     if not text:
@@ -193,6 +209,41 @@ def _extract_7z(
             ctx.log(f"[archive_extract] 7z stdout: {stdout[:2000]}", "WARN")
         if stderr:
             ctx.log(f"[archive_extract] 7z stderr: {stderr[:2000]}", "WARN")
+        if include_globs:
+            # Some p7zip builds fail on include filters (e.g., E_FAIL) even
+            # though full extraction succeeds. Retry without -ir filters and
+            # post-filter newly extracted files in Python.
+            retry_cmd = [seven_zip, "x", str(archive), f"-o{out_dir}", "-y"]
+            if not overwrite:
+                retry_cmd.append("-aos")
+            ctx.log(
+                "[archive_extract] 7z include-filter extraction failed; retrying without include filters",
+                "WARN",
+            )
+            ctx.log(f"[archive_extract] retry running: {shlex.join(retry_cmd)}", "WARN")
+            retry = subprocess.run(retry_cmd, capture_output=True, text=True, check=False)
+            if retry.returncode != 0:
+                retry_stderr = (retry.stderr or "").strip()
+                retry_stdout = (retry.stdout or "").strip()
+                if retry_stdout:
+                    ctx.log(f"[archive_extract] retry 7z stdout: {retry_stdout[:2000]}", "WARN")
+                if retry_stderr:
+                    ctx.log(f"[archive_extract] retry 7z stderr: {retry_stderr[:2000]}", "WARN")
+                detail = retry_stderr or retry_stdout or stderr or stdout or "unknown error"
+                raise RuntimeError(f"7z extraction failed (exit {retry.returncode}): {detail}")
+            after_retry = [p for p in _all_files(out_dir) if p.resolve().as_posix() not in before]
+            kept: List[str] = []
+            for p in after_retry:
+                rel = str(p.relative_to(out_dir)).replace("\\", "/")
+                if _match_member(rel, include_globs):
+                    kept.append(rel)
+                    continue
+                try:
+                    p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                _prune_empty_parent_dirs(p, stop_at=out_dir)
+            return sorted(set(kept))
         detail = stderr or stdout or "unknown error"
         raise RuntimeError(f"7z extraction failed (exit {proc.returncode}): {detail}")
     after = [p for p in _all_files(out_dir) if p.resolve().as_posix() not in before]
