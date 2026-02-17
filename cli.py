@@ -287,6 +287,7 @@ def _submit_pipeline_run(
                 "source_bundle": source_bundle,
                 "source_snapshot": source_snapshot,
                 "allow_workspace_source": allow_workspace_source,
+                "allow_dirty_git": bool(args.allow_dirty_git),
                 "project_id": project_id,
             },
         )
@@ -296,6 +297,9 @@ def _submit_pipeline_run(
     status = executor.status(result.run_id)
     job_info = f" (jobs: {result.job_ids})" if getattr(result, "job_ids", None) else ""
     print(f"Run {result.run_id} -> {status.state}{job_info} [{pipeline_path}]")
+    status_msg = str(getattr(status, "message", "") or "").strip()
+    if status_msg and status.state not in ("succeeded", "queued", "running"):
+        print(status_msg, file=sys.stderr)
     if status.state in ("succeeded", "queued", "running"):
         return 0
     return 1

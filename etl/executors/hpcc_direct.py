@@ -7,6 +7,7 @@ Intended for fast development iteration only.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import shlex
 import subprocess
 import uuid
@@ -15,8 +16,28 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .base import Executor, RunState, RunStatus, SubmissionResult
-from ..git_checkout import GitCheckoutError, repo_relative_path
+from ..git_checkout import (
+    GitCheckoutError,
+    infer_repo_name,
+    repo_relative_path,
+    resolve_execution_spec,
+)
 from ..pipeline import parse_pipeline, PipelineError
+
+
+def _flatten_scalar_vars(prefix: str, obj: Dict[str, Any]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for key, value in (obj or {}).items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            out.update(_flatten_scalar_vars(path, value))
+        elif isinstance(value, (list, tuple)):
+            # Keep commandline vars simple/scalar; complex structures are not used
+            # by current hpcc_direct runtime templating needs.
+            continue
+        else:
+            out[path] = str(value)
+    return out
 
 
 class HpccDirectExecutor(Executor):
@@ -48,7 +69,7 @@ class HpccDirectExecutor(Executor):
         self.ssh_user = str(self.env_config.get("ssh_user") or "").strip()
         self.ssh_jump = str(self.env_config.get("ssh_jump") or "").strip()
         self.remote_repo = str(self.env_config.get("remote_repo") or "").strip()
-        self.remote_python = str(self.env_config.get("python") or "python").strip() or "python"
+        self.remote_python = str(self.env_config.get("python") or "python3").strip() or "python3"
         self.remote_venv = str(self.env_config.get("venv") or "").strip()
         self.remote_conda_env = str(self.env_config.get("conda_env") or "").strip()
         self.remote_modules = list(self.env_config.get("modules") or [])
@@ -74,14 +95,12 @@ class HpccDirectExecutor(Executor):
         ]
         return args
 
-    def _map_repo_path(self, path: Path) -> str:
-        if not self.remote_repo:
-            return path.as_posix()
+    def _map_repo_path_for_root(self, path: Path, remote_root: str, label: str = "path") -> str:
         try:
-            rel = repo_relative_path(path, self.repo_root, "path")
+            rel = repo_relative_path(path, self.repo_root, label)
+            return (Path(remote_root) / rel).as_posix()
         except GitCheckoutError:
             return path.as_posix()
-        return (Path(self.remote_repo) / rel).as_posix()
 
     def submit(self, pipeline_path: str, context: Dict[str, Any]) -> SubmissionResult:
         context = context or {}
@@ -90,6 +109,7 @@ class HpccDirectExecutor(Executor):
         cmdline_vars = dict(context.get("commandline_vars") or {})
         exec_env = dict(context.get("execution_env") or {})
         global_vars = dict(context.get("global_vars") or {})
+        provenance = dict(context.get("provenance") or {})
 
         try:
             pipeline = parse_pipeline(
@@ -105,11 +125,32 @@ class HpccDirectExecutor(Executor):
             self._statuses[run_id] = RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="No steps to run.")
             return SubmissionResult(run_id=run_id, message="No steps to run.")
 
-        repo_root_remote = self.remote_repo or self.repo_root.as_posix()
-        pipeline_remote = self._map_repo_path(Path(pipeline_path))
-        plugins_remote = self._map_repo_path(self.plugins_dir.resolve())
-        global_remote = self._map_repo_path(self.global_config.resolve()) if self.global_config else None
-        env_cfg_remote = self._map_repo_path(self.environments_config.resolve()) if self.environments_config else None
+        require_clean = not bool(context.get("allow_dirty_git", False))
+        try:
+            spec = resolve_execution_spec(
+                repo_root=self.repo_root,
+                provenance=provenance,
+                require_clean=require_clean,
+                require_origin=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Could not prepare git-pinned execution source: {exc}") from exc
+
+        git_remote_override = str(exec_env.get("git_remote_url") or "").strip()
+        if git_remote_override:
+            spec = replace(spec, origin_url=git_remote_override, repo_name=infer_repo_name(git_remote_override))
+        if not spec.origin_url:
+            raise RuntimeError("hpcc_direct requires git origin URL for remote checkout.")
+
+        remote_base = str(self.remote_repo or "").strip() or "~/.etl"
+        repo_root_remote = (Path(remote_base) / f"{spec.repo_name}-{spec.commit_sha[:12]}").as_posix()
+        pipeline_remote = self._map_repo_path_for_root(Path(pipeline_path), repo_root_remote, label="pipeline")
+        plugins_remote = self._map_repo_path_for_root(self.plugins_dir.resolve(), repo_root_remote, label="plugins_dir")
+        global_remote = (
+            self._map_repo_path_for_root(self.global_config.resolve(), repo_root_remote, label="global_config")
+            if self.global_config
+            else None
+        )
 
         batch_cmd = [
             self.remote_python,
@@ -126,17 +167,12 @@ class HpccDirectExecutor(Executor):
             shlex.quote(run_id),
             "--run-started-at",
             shlex.quote(started_at),
-            "--executor-type",
-            "hpcc_direct",
-            "--tracking-executor",
-            "hpcc_direct",
         ]
         if self.global_config and global_remote:
             batch_cmd += ["--global-config", shlex.quote(global_remote)]
-        if self.environments_config and env_cfg_remote:
-            batch_cmd += ["--environments-config", shlex.quote(env_cfg_remote)]
-        if self.env_name:
-            batch_cmd += ["--env", shlex.quote(str(self.env_name))]
+        # hpcc_direct may run against older remote checkouts where the local
+        # environment name does not exist. Pass resolved env values as --var
+        # overrides instead of requiring remote environments config parity.
         project_id = str(context.get("project_id") or "").strip()
         if project_id:
             batch_cmd += ["--project-id", shlex.quote(project_id)]
@@ -150,24 +186,65 @@ class HpccDirectExecutor(Executor):
 
         if self.verbose:
             batch_cmd.append("--verbose")
+        env_override_vars = _flatten_scalar_vars("env", exec_env)
+        for key, value in sorted(env_override_vars.items()):
+            batch_cmd += ["--var", shlex.quote(f"{key}={value}")]
         for key, value in sorted(cmdline_vars.items()):
             if isinstance(value, dict):
                 continue
             batch_cmd += ["--var", shlex.quote(f"{key}={value}")]
 
-        lines = ["set -euo pipefail", f"cd {shlex.quote(repo_root_remote)}"]
+        lines = [
+            "set -eo pipefail",
+            # Common site profile often initializes MODULEPATH/Lmod on clusters.
+            "set +u; [ -f /etc/profile ] && source /etc/profile || true; set -u",
+            # Ensure Lmod function is available in non-interactive SSH shells.
+            "if ! command -v module >/dev/null 2>&1; then "
+            "  [ -f /usr/lmod/lmod/init/bash ] && source /usr/lmod/lmod/init/bash || true; "
+            "fi",
+            f"CHECKOUT_ROOT={shlex.quote(repo_root_remote)}",
+            f"REPO_URL={shlex.quote(spec.origin_url)}",
+            f"REPO_SHA={shlex.quote(spec.commit_sha)}",
+            "mkdir -p \"$(dirname \\\"$CHECKOUT_ROOT\\\")\"",
+            "rm -rf \"$CHECKOUT_ROOT\"",
+            "git clone --no-checkout \"$REPO_URL\" \"$CHECKOUT_ROOT\"",
+            "cd \"$CHECKOUT_ROOT\"",
+            "git fetch --tags --prune origin",
+            "git checkout --detach \"$REPO_SHA\"",
+            "git reset --hard \"$REPO_SHA\"",
+        ]
         for module_name in self.remote_modules:
             mod = str(module_name or "").strip()
             if mod:
-                lines.append(f"module load {shlex.quote(mod)}")
+                lines.append(
+                    "if command -v module >/dev/null 2>&1; then "
+                    f"module load {shlex.quote(mod)}; "
+                    "else "
+                    f"echo '[hpcc_direct][WARN] module command not available; skipping {shlex.quote(mod)}' >&2; "
+                    "fi"
+                )
         if self.remote_conda_env:
             lines.append(f"source activate {shlex.quote(self.remote_conda_env)}")
         if self.remote_venv:
             lines.append(f"source {shlex.quote(self.remote_venv)}/bin/activate")
+        else:
+            lines.append(
+                "VENV=\"$CHECKOUT_ROOT/.venv\"; "
+                f"if [ ! -f \"$VENV/bin/activate\" ]; then {shlex.quote(self.remote_python)} -m venv \"$VENV\"; fi; "
+                "source \"$VENV/bin/activate\""
+            )
+        lines.append("if [ -f \"$CHECKOUT_ROOT/requirements.txt\" ]; then pip install -r \"$CHECKOUT_ROOT/requirements.txt\"; fi")
+        lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
+        lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
         lines.append(" ".join(batch_cmd))
         remote_script = "\n".join(lines)
 
-        ssh_cmd = ["ssh", *self._ssh_common_args(), self._ssh_target(), "bash", "-lc", remote_script]
+        ssh_cmd = [
+            "ssh",
+            *self._ssh_common_args(),
+            self._ssh_target(),
+            f"bash --login -lc {shlex.quote(remote_script)}",
+        ]
         if self.dry_run:
             self._statuses[run_id] = RunStatus(run_id=run_id, state=RunState.QUEUED, message="dry-run")
             return SubmissionResult(run_id=run_id, message="dry-run")

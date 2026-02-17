@@ -50,6 +50,7 @@ environments:
   hpcc_msu_direct:
     executor: hpcc_direct
     path_style: unix
+    git_remote_url: "git@github.com:josephweaver/research-etl.git"
     rclone_bin: "rclone"
     modules: [ "Python/3.11.3-GCCcore-12.3.0", "rclone/1.63.1-amd64"]
     ssh_timeout: 120

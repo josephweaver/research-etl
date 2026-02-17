@@ -171,6 +171,9 @@ I noticed that twe provide both a executor and an enviroment,  I belive the envi
 # things to fix later
 - [ ] Stat collection on plugin run times is not complete.  We need runtime by pipeline-step, not plugin to right size steps.  case. unzip 250mb file, or 1mb file.  they take significantly different runtimes/hardware.
 - [ ] Add GitHub data dictionary write workflow: auto-create branch, write/update dataset YAML, commit, push, open PR, require human review before merge.
+- [ ] Pipeline builder: add `hpcc_direct` as an executor option everywhere executor is selected.
+- [ ] Pipeline builder: allow overriding `sys.*` runtime values with static user-provided values for deterministic testing.
+- [ ] Evaluate single-step execution mode with persisted step state/outputs so users can resume and continue from current state into next steps.
 - [ ] Add optional step-scoped dependency environments to reduce `.venv` bloat and dependency collisions:
   - keep current shared environment mode as default;
   - add `env_mode: shared|per_step` (executor/pipeline setting);
