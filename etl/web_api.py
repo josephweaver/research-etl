@@ -44,6 +44,8 @@ from .runner import run_pipeline
 from .tracking import fetch_plugin_resource_stats, upsert_run_status
 from .web_queries import (
     WebQueryError,
+    fetch_dataset_detail,
+    fetch_datasets,
     fetch_pipeline_detail,
     fetch_pipeline_runs,
     fetch_pipeline_validations,
@@ -396,6 +398,7 @@ INDEX_HTML = """<!doctype html>
       <div class="links">
         <a id="nav_ops" href="/">Operations</a>
         <a id="nav_pipelines" href="/pipelines">Pipelines</a>
+        <a id="nav_datasets" href="/datasets">Datasets</a>
         <a id="nav_plugins" href="/plugins">Plugins</a>
         <a id="nav_new_pipeline" href="/pipelines/new">New Pipeline</a>
         <a id="nav_context_back" class="context" href="#" style="display:none;">Back</a>
@@ -645,7 +648,9 @@ INDEX_HTML = """<!doctype html>
   <script>
     let selected = null;
     let selectedPipeline = null;
+    let selectedDataset = null;
     const isPipelinesView = window.location.pathname.startsWith("/pipelines");
+    const isDatasetsView = window.location.pathname.startsWith("/datasets");
     const isPluginsView = window.location.pathname === "/plugins";
     const isOperationsView = window.location.pathname === "/";
     const liveMatch = window.location.pathname.match(/^\/runs\/(.+)\/live$/);
@@ -659,6 +664,10 @@ INDEX_HTML = """<!doctype html>
     const isPipelineDetailView = isPipelinesView && window.location.pathname.length > "/pipelines/".length;
     const pipelineFromPath = isPipelineDetailView
       ? decodeURIComponent(window.location.pathname.slice("/pipelines/".length))
+      : null;
+    const isDatasetDetailView = isDatasetsView && window.location.pathname.length > "/datasets/".length;
+    const datasetFromPath = isDatasetDetailView
+      ? decodeURIComponent(window.location.pathname.slice("/datasets/".length))
       : null;
     let builderLoaded = false;
     let builderModel = { vars: {}, dirs: {}, requires_pipelines: [], steps: [] };
@@ -798,15 +807,18 @@ INDEX_HTML = """<!doctype html>
       const path = window.location.pathname;
       const ops = document.getElementById("nav_ops");
       const pipes = document.getElementById("nav_pipelines");
+      const datasets = document.getElementById("nav_datasets");
       const plugins = document.getElementById("nav_plugins");
       const newp = document.getElementById("nav_new_pipeline");
       const back = document.getElementById("nav_context_back");
-      [ops, pipes, plugins, newp].forEach(el => el.classList.remove("active"));
+      [ops, pipes, datasets, plugins, newp].forEach(el => el.classList.remove("active"));
       back.style.display = "none";
       if (path === "/") {
         ops.classList.add("active");
       } else if (path === "/plugins") {
         plugins.classList.add("active");
+      } else if (path.startsWith("/datasets")) {
+        datasets.classList.add("active");
       } else if (path === "/pipelines/new") {
         newp.classList.add("active");
       } else if (path.startsWith("/pipelines")) {
@@ -844,6 +856,20 @@ INDEX_HTML = """<!doctype html>
       if(isPipelinesView){
         document.getElementById("page_title").textContent = "Research ETL Pipelines";
         document.getElementById("ops_panel").style.display = "none";
+      }
+      if(isDatasetsView){
+        document.getElementById("page_title").textContent = "Research ETL Datasets";
+        document.getElementById("left_title").textContent = "Datasets";
+        document.getElementById("right_title").textContent = "Dataset Detail";
+        document.getElementById("ops_panel").style.display = "none";
+        document.getElementById("pipelines_panel").style.display = "none";
+        document.getElementById("pipeline_summary").style.display = "none";
+        document.getElementById("pipeline_validations").style.display = "none";
+        document.getElementById("f_q").placeholder = "search datasets";
+        if(isDatasetDetailView){
+          selectedDataset = datasetFromPath;
+          document.getElementById("f_q").value = datasetFromPath || "";
+        }
       }
       if(isBuilderView){
         document.body.classList.add("builder-mode");
@@ -2676,6 +2702,7 @@ INDEX_HTML = """<!doctype html>
       }, true);
     }
     async function loadRuns(){
+      if(isDatasetsView) return;
       const res = isPipelineDetailView
         ? await fetch(`/api/pipelines/${encodeURIComponent(selectedPipeline || "")}/runs?${qp()}`)
         : await fetch(`/api/runs?${qp()}`);
@@ -2749,7 +2776,58 @@ INDEX_HTML = """<!doctype html>
         window.location.href = `/pipelines/${encodeURIComponent(selectedPipeline)}`;
       });
     }
+    async function loadDatasets(){
+      if(!isDatasetsView || isDatasetDetailView) return;
+      const p = new URLSearchParams();
+      const q = document.getElementById("f_q").value.trim();
+      if(q) p.set("q", q);
+      p.set("limit", "200");
+      const res = await fetch(`/api/datasets?${p.toString()}`);
+      const body = document.getElementById("runs");
+      if(!res.ok){
+        body.innerHTML = `<tr><td colspan="4">${esc(await readMessage(res))}</td></tr>`;
+        return;
+      }
+      const rows = await res.json();
+      body.innerHTML = rows.map(d => `
+        <tr data-dataset="${esc(d.dataset_id)}">
+          <td>${esc(d.dataset_id)}</td>
+          <td>${esc(d.latest_version || "-")}</td>
+          <td>${esc(d.status || "-")}</td>
+          <td>${esc(d.data_class || "-")}</td>
+        </tr>`).join("");
+      [...body.querySelectorAll("tr")].forEach(tr => tr.onclick = () => {
+        selectedDataset = tr.dataset.dataset;
+        window.location.href = `/datasets/${encodeURIComponent(selectedDataset)}`;
+      });
+    }
+    async function loadDatasetDetail(){
+      if(!isDatasetsView) return;
+      if(isDatasetDetailView){
+        selectedDataset = datasetFromPath;
+      }
+      if(!selectedDataset) return;
+      const res = await fetch(`/api/datasets/${encodeURIComponent(selectedDataset)}`);
+      const detailEl = document.getElementById("detail");
+      if(!res.ok){
+        detailEl.textContent = `Error loading dataset ${selectedDataset}: ${await readMessage(res)}`;
+        return;
+      }
+      const d = await res.json();
+      const dict = d.dictionary_entries || [];
+      detailEl.innerHTML = `
+        <div><b>${esc(d.dataset_id)}</b> <span class="muted">${esc(d.status || "-")}</span></div>
+        <div class="muted">class=${esc(d.data_class || "-")} owner=${esc(d.owner_user || "-")} versions=${esc((d.versions || []).length)}</div>
+        <h4>Dictionary Entries (${dict.length})</h4>
+        <pre>${esc(JSON.stringify(dict, null, 2))}</pre>
+        <h4>Versions</h4>
+        <pre>${esc(JSON.stringify(d.versions || [], null, 2))}</pre>
+        <h4>Locations</h4>
+        <pre>${esc(JSON.stringify(d.locations || [], null, 2))}</pre>
+      `;
+    }
     async function loadDetail(){
+      if(isDatasetsView) return;
       if(!selected) return;
       const res = await fetch(`/api/runs/${encodeURIComponent(selected)}`);
       if(!res.ok){ document.getElementById("detail").textContent = `Error loading ${selected}`; return; }
@@ -2952,6 +3030,11 @@ INDEX_HTML = """<!doctype html>
         await loadPluginsPage();
         return;
       }
+      if(isDatasetsView){
+        await loadDatasets();
+        await loadDatasetDetail();
+        return;
+      }
       await loadOps();
       await loadPipelines();
       await loadPipelineSummary();
@@ -3053,6 +3136,16 @@ def pipelines_index() -> str:
 
 @app.get("/plugins", response_class=HTMLResponse)
 def plugins_index() -> str:
+    return INDEX_HTML
+
+
+@app.get("/datasets", response_class=HTMLResponse)
+def datasets_index() -> str:
+    return INDEX_HTML
+
+
+@app.get("/datasets/{dataset_id:path}", response_class=HTMLResponse)
+def dataset_detail_index(dataset_id: str) -> str:
     return INDEX_HTML
 
 
@@ -3294,6 +3387,31 @@ def api_pipeline_detail(request: Request, pipeline_id: str, project_id: Optional
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if payload is None:
         raise HTTPException(status_code=404, detail=f"Pipeline not found: {pipeline_id}")
+    return payload
+
+
+@app.get("/api/datasets")
+def api_datasets(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    q: Optional[str] = Query(default=None),
+) -> list[dict]:
+    _ = _resolve_user_scope(request)
+    try:
+        return fetch_datasets(limit=limit, q=q)
+    except WebQueryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/datasets/{dataset_id:path}")
+def api_dataset_detail(request: Request, dataset_id: str) -> dict:
+    _ = _resolve_user_scope(request)
+    try:
+        payload = fetch_dataset_detail(dataset_id)
+    except WebQueryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"Dataset not found: {dataset_id}")
     return payload
 
 

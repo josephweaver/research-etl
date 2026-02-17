@@ -39,6 +39,16 @@ def test_web_api_endpoints(monkeypatch):
         "fetch_pipeline_validations",
         lambda pipeline_id, limit=50, project_id=None: [{"validation_id": 1, "pipeline": pipeline_id, "valid": True}],
     )
+    monkeypatch.setattr(
+        web_api,
+        "fetch_datasets",
+        lambda limit=100, q=None: [{"dataset_id": "serve.demo", "status": "active", "latest_version": "v2"}],
+    )
+    monkeypatch.setattr(
+        web_api,
+        "fetch_dataset_detail",
+        lambda dataset_id: {"dataset_id": dataset_id, "versions": [], "locations": [], "dictionary_entries": []},
+    )
     monkeypatch.setattr(web_api, "fetch_run_detail", lambda run_id: {"run_id": run_id, "status": "succeeded"})
 
     client = TestClient(web_api.app)
@@ -68,6 +78,9 @@ def test_web_api_endpoints(monkeypatch):
     r4c = client.get("/plugins")
     assert r4c.status_code == 200
 
+    r4d = client.get("/datasets")
+    assert r4d.status_code == 200
+
     r4b = client.get("/pipelines/new")
     assert r4b.status_code == 200
 
@@ -91,6 +104,14 @@ def test_web_api_endpoints(monkeypatch):
     r8 = client.get("/api/pipelines/pipelines%2Fsample.yml/validations")
     assert r8.status_code == 200
     assert r8.json()[0]["pipeline"] == "pipelines/sample.yml"
+
+    r9 = client.get("/api/datasets")
+    assert r9.status_code == 200
+    assert r9.json()[0]["dataset_id"] == "serve.demo"
+
+    r10 = client.get("/api/datasets/serve.demo")
+    assert r10.status_code == 200
+    assert r10.json()["dataset_id"] == "serve.demo"
 
 
 def test_web_api_project_filters(monkeypatch):

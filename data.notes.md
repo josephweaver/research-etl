@@ -232,3 +232,34 @@ Implement Phase 1 in one PR:
 - minimal dataset service (`list/show`)
 - CLI commands (`etl datasets list/show`)
 - tests for migration + basic queries
+
+## Post-First-Publish Checklist
+After first real dataset publish, complete these in order:
+
+1. Seed dictionary repo configuration
+- Insert production rows in `etl_dictionary_repos`.
+- Verify `local_path` exists and is writable on runner hosts.
+
+2. Run full end-to-end workflow
+- Execute a real pipeline path: `dataset_store` -> `dataset_get` -> `dataset_dictionary_pr`.
+- Verify DB rows in dataset/version/location/event and dictionary entry tables.
+- Verify boundary logs and failure traces are captured in step logs.
+
+3. Finalize GitHub auth and policy
+- Choose auth mode (`GITHUB_TOKEN` or GitHub App) for PR creation.
+- Confirm org SSO/approval and minimum permissions.
+- Finalize branch naming, PR template, and required reviewers/checks.
+
+4. UI/API operational completion
+- Add trigger path in UI/API for dictionary PR creation from dataset detail.
+- Show PR state (`open/merged/closed`) and repo/file mapping in datasets detail.
+
+5. Reliability hardening
+- Add retry/backoff for GitHub API calls.
+- Improve error classification for transfer/git/github failure types.
+- Add alerts/reporting for failed boundary transfers and failed PR creation.
+
+6. Governance and documentation
+- Lock versioning policy (`latest` semantics, immutability rules).
+- Lock multi-repo ownership and dataset-to-repo mapping conventions.
+- Update runbook/docs with recovery steps and operational examples.

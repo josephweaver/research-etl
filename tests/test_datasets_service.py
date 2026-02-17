@@ -182,7 +182,7 @@ def test_store_data_policy_violation_raises(monkeypatch, tmp_path):
         "classes": {"cache": {"allowed_location_types": ["hpcc_cache"]}},
         "locations": {"local_cache": {"kind": "filesystem", "root_path": str(tmp_path)}},
     })
-    with pytest.raises(ds.DatasetServiceError):
+    with pytest.raises(ds.DatasetServiceError) as ex:
         ds.store_data(
             dataset_id="serve.demo",
             source_path=str(src),
@@ -191,6 +191,7 @@ def test_store_data_policy_violation_raises(monkeypatch, tmp_path):
             location_type="local_cache",
             target_uri=str(tmp_path / "payload.txt"),
         )
+    assert len(ex.value.details.get("operation_log") or []) > 0
 
 
 def test_get_data_returns_direct_local_path(monkeypatch, tmp_path):
@@ -260,5 +261,6 @@ def test_get_data_missing_version_raises(monkeypatch):
             return _Cursor(self)
 
     monkeypatch.setattr(ds, "_connect", lambda: _Conn())
-    with pytest.raises(ds.DatasetServiceError):
+    with pytest.raises(ds.DatasetServiceError) as ex:
         ds.get_data(dataset_id="serve.demo", version="latest")
+    assert len(ex.value.details.get("operation_log") or []) > 0

@@ -100,6 +100,7 @@ def test_cmd_datasets_store_prints_receipt(monkeypatch, capsys, tmp_path):
             "dry_run": False,
             "checksum": "abc",
             "size_bytes": 1,
+            "operation_log": ["store_data:start", "store_data:done"],
         },
     )
     rc = cli.cmd_datasets_store(args)
@@ -107,6 +108,7 @@ def test_cmd_datasets_store_prints_receipt(monkeypatch, capsys, tmp_path):
     assert rc == 0
     assert "Stored dataset: serve.demo" in captured.out
     assert "Transport: local_fs" in captured.out
+    assert "[trace] store_data:start" in captured.out
 
 
 def test_cmd_datasets_get_prints_receipt(monkeypatch, capsys):
@@ -126,6 +128,7 @@ def test_cmd_datasets_get_prints_receipt(monkeypatch, capsys):
             "dry_run": False,
             "checksum": "abc",
             "size_bytes": 12,
+            "operation_log": ["get_data:start", "get_data:done"],
         },
     )
     rc = cli.cmd_datasets_get(args)
@@ -133,3 +136,41 @@ def test_cmd_datasets_get_prints_receipt(monkeypatch, capsys):
     assert rc == 0
     assert "Retrieved dataset: serve.demo" in captured.out
     assert "Version: v2" in captured.out
+
+
+def test_cmd_datasets_dictionary_pr(monkeypatch, capsys, tmp_path):
+    parser = cli.build_parser()
+    src = tmp_path / "entry.yml"
+    src.write_text("dataset_id: serve.demo\n", encoding="utf-8")
+    args = parser.parse_args(
+        [
+            "datasets",
+            "dictionary-pr",
+            "serve.demo",
+            "--repo-key",
+            "catalog",
+            "--source-file",
+            str(src),
+        ]
+    )
+    monkeypatch.setattr(
+        cli,
+        "create_dictionary_pr",
+        lambda **kwargs: {
+            "dataset_id": "serve.demo",
+            "repo_key": "catalog",
+            "file_path": "datasets/serve.demo.yml",
+            "branch_name": "bot/dict-serve.demo-1",
+            "base_branch": "main",
+            "has_changes": True,
+            "commit_sha": "abc123",
+            "pr_url": "https://github.com/org/repo/pull/1",
+            "operation_log": ["start", "done"],
+        },
+    )
+    rc = cli.cmd_datasets_dictionary_pr(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Dictionary workflow dataset=serve.demo repo=catalog" in captured.out
+    assert "PR: https://github.com/org/repo/pull/1" in captured.out
+    assert "[trace] start" in captured.out

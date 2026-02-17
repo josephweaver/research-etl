@@ -26,6 +26,10 @@ class _FakeCursor:
         self._conn.last_params = params
 
     def fetchall(self):
+        if "FROM etl_datasets d" in self._last_sql:
+            return [
+                ("serve.demo", "SERVE", "land-core", "active", datetime(2026, 2, 8, 1, 2, 3), datetime(2026, 2, 8, 1, 2, 4), 2, "v2", 2),
+            ]
         if "WITH grouped AS" in self._last_sql:
             return [
                 ("pipelines/sample.yml", "land_core", 3, 1, datetime(2026, 2, 8, 1, 2, 3), "failed", "local"),
@@ -48,9 +52,45 @@ class _FakeCursor:
             return [("s1", 1, True, False, None, {"ok": True}, datetime(2026, 2, 8, 1, 2, 3), datetime(2026, 2, 8, 1, 2, 4))]
         if "FROM etl_run_events" in self._last_sql:
             return [(1, "run_completed", datetime(2026, 2, 8, 1, 2, 4), {"status": "succeeded"})]
+        if "FROM etl_dataset_versions" in self._last_sql and "WHERE dataset_id = %s" in self._last_sql:
+            return [
+                (2, "v2", True, "sch2", "r2", datetime(2026, 2, 8, 1, 2, 5)),
+                (1, "v1", True, "sch1", "r1", datetime(2026, 2, 8, 1, 2, 3)),
+            ]
+        if "FROM etl_dataset_locations" in self._last_sql:
+            return [
+                (2, "v2", "local", "local_cache", "C:/tmp/demo", True, "abc", 123, datetime(2026, 2, 8, 1, 2, 6)),
+            ]
+        if "FROM etl_dataset_dictionary_entries" in self._last_sql:
+            return [
+                (
+                    "landcore-data-catalog",
+                    "github",
+                    "landcore",
+                    "landcore-data-catalog",
+                    "main",
+                    "C:/repos/landcore-data-catalog",
+                    "datasets/serve.demo.yml",
+                    "deadbeef",
+                    "https://github.com/landcore/landcore-data-catalog/pull/12",
+                    12,
+                    "approved",
+                    datetime(2026, 2, 8, 1, 2, 7),
+                    datetime(2026, 2, 8, 1, 2, 8),
+                ),
+            ]
         return []
 
     def fetchone(self):
+        if "FROM etl_datasets" in self._last_sql and "WHERE dataset_id = %s" in self._last_sql:
+            return (
+                "serve.demo",
+                "SERVE",
+                "land-core",
+                "active",
+                datetime(2026, 2, 8, 1, 2, 3),
+                datetime(2026, 2, 8, 1, 2, 4),
+            )
         if "WITH stats AS" in self._last_sql:
             return (
                 "pipelines/sample.yml",
@@ -218,6 +258,25 @@ def test_fetch_pipeline_validations(monkeypatch):
     assert rows[0]["valid"] is True
     assert rows[0]["step_names"] == ["s1", "s2"]
     assert rows[0]["source"] == "api_validate"
+
+
+def test_fetch_datasets(monkeypatch):
+    monkeypatch.setattr(wq, "get_database_url", lambda: "postgresql://u:p@h/db")
+    monkeypatch.setattr(wq.psycopg, "connect", lambda *_: _FakeConn())
+    rows = wq.fetch_datasets(limit=10)
+    assert len(rows) == 1
+    assert rows[0]["dataset_id"] == "serve.demo"
+    assert rows[0]["dictionary_repo_count"] == 2
+
+
+def test_fetch_dataset_detail(monkeypatch):
+    monkeypatch.setattr(wq, "get_database_url", lambda: "postgresql://u:p@h/db")
+    monkeypatch.setattr(wq.psycopg, "connect", lambda *_: _FakeConn())
+    payload = wq.fetch_dataset_detail("serve.demo")
+    assert payload is not None
+    assert payload["dataset_id"] == "serve.demo"
+    assert payload["versions"][0]["version_label"] == "v2"
+    assert payload["dictionary_entries"][0]["repo_key"] == "landcore-data-catalog"
 
 
 def test_fetch_runs_requires_db_url(monkeypatch):

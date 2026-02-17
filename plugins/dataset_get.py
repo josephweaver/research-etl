@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from etl.datasets import get_data
+from etl.datasets import DatasetServiceError, get_data
 
 
 meta = {
@@ -50,18 +50,27 @@ def run(args, ctx):
         f"[dataset_get] dataset_id={dataset_id} version={version} runtime={runtime_context} cache_dir={cache_dir}"
     )
 
-    return get_data(
-        dataset_id=dataset_id,
-        version=version,
-        environment=str(args.get("environment") or "").strip() or None,
-        runtime_context=runtime_context,
-        location_type=str(args.get("location_type") or "").strip() or None,
-        cache_dir=cache_dir,
-        transport=str(args.get("transport") or "").strip() or None,
-        dry_run=bool(args.get("dry_run", False)),
-        prefer_direct_local=not bool(args.get("no_direct_local", False)),
-        transport_options={
-            "rclone_bin": str(args.get("rclone_bin") or "rclone").strip() or "rclone",
-            "shared_drive_id": str(args.get("shared_drive_id") or "").strip(),
-        },
-    )
+    try:
+        receipt = get_data(
+            dataset_id=dataset_id,
+            version=version,
+            environment=str(args.get("environment") or "").strip() or None,
+            runtime_context=runtime_context,
+            location_type=str(args.get("location_type") or "").strip() or None,
+            cache_dir=cache_dir,
+            transport=str(args.get("transport") or "").strip() or None,
+            dry_run=bool(args.get("dry_run", False)),
+            prefer_direct_local=not bool(args.get("no_direct_local", False)),
+            transport_options={
+                "rclone_bin": str(args.get("rclone_bin") or "rclone").strip() or "rclone",
+                "shared_drive_id": str(args.get("shared_drive_id") or "").strip(),
+            },
+        )
+    except DatasetServiceError as exc:
+        for line in list(getattr(exc, "details", {}).get("operation_log") or []):
+            ctx.error(f"[dataset_get] {line}")
+        raise
+
+    for line in list(receipt.get("operation_log") or []):
+        ctx.log(f"[dataset_get] {line}")
+    return receipt
