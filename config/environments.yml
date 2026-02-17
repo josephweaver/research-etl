@@ -46,3 +46,17 @@ environments:
     propagate_db_secret: false
     load_secrets_file: false
     sync: true
+
+  hpcc_msu_direct:
+    executor: hpcc_direct
+    path_style: unix
+    rclone_bin: "rclone"
+    modules: [ "Python/3.11.3-GCCcore-12.3.0", "rclone/1.63.1-amd64"]
+    ssh_timeout: 120
+    ssh_host: dev-amd24.passwordless
+    ssh_user: weave151
+    basedir: /mnt/scratch/weave151
+    remote_repo: "{basedir}/etl"
+    workdir: "{basedir}/work"
+    logdir: "{workdir}/logs"
+    db_sync_queue_dir: "{workdir}/db_sync_queue/pending"

@@ -143,6 +143,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Runtime variable override in KEY=VALUE form (repeatable; highest precedence).",
     )
     parser.add_argument("--verbose", action="store_true", help="Print batch progress details")
+    parser.add_argument(
+        "--executor-type",
+        default="slurm",
+        help="Execution env type for validation (default: slurm)",
+    )
+    parser.add_argument(
+        "--tracking-executor",
+        default=None,
+        help="Tracking executor label override (default: executor-type)",
+    )
     args, unknown_args = parser.parse_known_args(argv)
     if unknown_args:
         print(f"[run_batch][WARN] ignoring unknown arguments: {' '.join(str(x) for x in unknown_args)}")
@@ -199,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
             if not exec_env:
                 print(f"Execution env '{selected_env_name}' not found in config")
                 return 1
-            validate_environment_executor(selected_env_name, exec_env, executor="slurm")
+            validate_environment_executor(selected_env_name, exec_env, executor=args.executor_type)
             exec_env = apply_execution_env_overrides(exec_env)
             exec_env = resolve_execution_env_templates(exec_env, global_vars=global_vars)
             _vprint(args.verbose, f"loaded execution env: {selected_env_name}")
@@ -268,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
             f"resume enabled from run_id={args.resume_run_id}; prior successful steps={len(resume_succeeded_steps)}",
         )
     queue_dir = Path(exec_env.get("db_sync_queue_dir") or (Path(args.workdir) / "db_sync_queue" / "pending"))
+    tracking_executor = str(args.tracking_executor or args.executor_type or "slurm").strip() or "slurm"
     scheduler_meta = {
         "slurm_job_id": str(os.environ.get("SLURM_JOB_ID", "") or ""),
         "slurm_array_task_id": str(os.environ.get("SLURM_ARRAY_TASK_ID", "") or ""),
@@ -288,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         started_at=batch_started_at,
         ended_at=batch_started_at,
         message=f"running steps {indices}",
-        executor="slurm",
+        executor=tracking_executor,
         artifact_dir=str(args.workdir),
         provenance=provenance,
         event_type="batch_started",
@@ -352,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
                     pipeline=args.pipeline,
                     project_id=project_id,
                     artifact_dir=step_artifact_dir,
-                    executor="slurm",
+                    executor=tracking_executor,
                 )
         elif step_res.attempt_no > 0:
             _safe_tracking_write(
@@ -372,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
                 pipeline=args.pipeline,
                 project_id=project_id,
                 artifact_dir=step_artifact_dir,
-                executor="slurm",
+                executor=tracking_executor,
             )
 
     # merge outputs into ctx (simple overwrite)
@@ -407,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
             started_at=batch_started_at,
             ended_at=batch_ended_at,
             message=f"batch failed for steps {indices}",
-            executor="slurm",
+            executor=tracking_executor,
             artifact_dir=str(args.workdir),
             provenance=provenance,
             event_type="batch_failed",
@@ -431,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
         started_at=batch_started_at,
         ended_at=batch_ended_at,
         message=f"batch completed for steps {indices}",
-        executor="slurm",
+        executor=tracking_executor,
         artifact_dir=str(args.workdir),
         provenance=provenance,
         event_type="batch_skipped" if all_skipped else "batch_completed",
@@ -453,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
             started_at=batch_started_at,
             ended_at=batch_ended_at,
             message="all batches completed",
-            executor="slurm",
+            executor=tracking_executor,
             artifact_dir=str(args.workdir),
             provenance=provenance,
             event_type="run_completed",

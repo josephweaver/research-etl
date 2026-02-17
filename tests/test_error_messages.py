@@ -78,3 +78,9 @@ def test_cli_main_warns_and_ignores_unknown_args(monkeypatch, capsys) -> None:
     assert rc in (0, 1)
     assert "[etl][WARN] ignoring unknown arguments:" in captured.out
     assert "--future-flag x" in captured.out
+
+
+def test_cli_parser_accepts_hpcc_direct_executor() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["run", "pipelines/sample.yml", "--executor", "hpcc_direct"])
+    assert args.executor == "hpcc_direct"

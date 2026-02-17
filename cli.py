@@ -34,7 +34,7 @@ from etl.db_sync_queue import apply_tracking_queue
 from etl.dictionary_pr import DictionaryPRError, create_dictionary_pr
 from etl.datasets import DatasetServiceError, get_data, get_dataset, list_datasets, store_data
 from etl.diagnostics import write_error_report, find_latest_error_report
-from etl.executors import LocalExecutor, SlurmExecutor
+from etl.executors import HpccDirectExecutor, LocalExecutor, SlurmExecutor
 from etl.executors.slurm import SlurmSubmitError
 from etl.pipeline import PipelineError, parse_pipeline
 from etl.provenance import collect_run_provenance
@@ -245,6 +245,18 @@ def _submit_pipeline_run(
             source_snapshot=source_snapshot,
             allow_workspace_source=allow_workspace_source,
         )
+    elif args.executor == "hpcc_direct":
+        executor = HpccDirectExecutor(
+            env_config=exec_env,
+            repo_root=repo_root,
+            plugins_dir=plugins_dir_path,
+            workdir=Path(resolved_workdir),
+            global_config=Path(args.global_config) if args.global_config else None,
+            environments_config=Path(args.environments_config) if args.environments_config else None,
+            env_name=args.env,
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+        )
     else:
         executor = LocalExecutor(
             plugin_dir=plugins_dir_path,
@@ -306,6 +318,11 @@ def _format_run_submission_error(exc: Exception, args: argparse.Namespace) -> st
         return (
             f"SLURM submission failed: {text} "
             "Check SSH connectivity, remote paths, and that sbatch is available on the login host."
+        )
+    if "hpcc_direct executor requires" in text:
+        return (
+            f"HPCC direct submission failed: {text} "
+            "Set execution env ssh_host (and optionally ssh_user/ssh_jump/remote_repo)."
         )
     if isinstance(exc, FileNotFoundError):
         missing = getattr(exc, "filename", None) or text
@@ -1031,7 +1048,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip requires_pipelines resolution/execution (useful for faster local iteration).",
     )
-    p_run.add_argument("--executor", choices=["local", "slurm"], default="local", help="Execution backend")
+    p_run.add_argument("--executor", choices=["local", "slurm", "hpcc_direct"], default="local", help="Execution backend")
     p_run.add_argument("--allow-dirty-git", action="store_true", help="Allow strict git checkout runs from a dirty local worktree")
     p_run.add_argument(
         "--execution-source",
