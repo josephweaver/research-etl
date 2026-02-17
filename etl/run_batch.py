@@ -250,6 +250,11 @@ def main(argv: list[str] | None = None) -> int:
     _vprint(args.verbose, f"resolved step indices: {indices}")
     total_steps = len(full_pipeline.steps)
     pipeline = full_pipeline
+    pipeline.vars = dict(getattr(full_pipeline, "vars", {}) or {})
+    if isinstance(ctx, dict) and ctx:
+        # Make prior step outputs from shared context available to runtime
+        # templating in later batch jobs (for example {states_interest.output_dir}).
+        pipeline.vars.update(ctx)
     pipeline.steps = [full_pipeline.steps[i] for i in indices]
     _vprint(args.verbose, f"batch will execute steps: {[s.name for s in pipeline.steps]}")
     resume_succeeded_steps: set[str] = set()

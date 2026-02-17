@@ -328,3 +328,52 @@ def test_run_batch_warns_and_ignores_unknown_args(monkeypatch, tmp_path: Path, c
     out = capsys.readouterr().out
     assert "[run_batch][WARN] ignoring unknown arguments:" in out
     assert "--future-flag x" in out
+
+
+def test_run_batch_merges_context_into_runtime_vars(monkeypatch, tmp_path: Path) -> None:
+    pipeline_path = tmp_path / "pipeline.yml"
+    _write_min_pipeline(pipeline_path)
+    context_path = tmp_path / "context.json"
+    context_path.write_text(
+        '{"states_interest":{"output_dir":"/tmp/meta"},"project_id":"land_core"}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(run_batch, "upsert_run_status", lambda **_: None)
+    monkeypatch.setattr(run_batch, "upsert_step_attempt", lambda **_: None)
+    monkeypatch.setattr(run_batch, "collect_run_provenance", lambda **_: {})
+
+    captured = {}
+
+    def _fake_run_pipeline(pipeline, *args, **kwargs):
+        captured["vars"] = dict(getattr(pipeline, "vars", {}) or {})
+        return RunResult(
+            run_id="runctx",
+            steps=[
+                StepResult(
+                    step=Step(name="s1", script="echo.py"),
+                    success=True,
+                    attempt_no=1,
+                    attempts=[{"attempt_no": 1, "success": True, "skipped": False, "error": None, "outputs": {}}],
+                )
+            ],
+            artifact_dir=str(tmp_path / ".runs"),
+        )
+
+    monkeypatch.setattr(run_batch, "run_pipeline", _fake_run_pipeline)
+
+    rc = run_batch.main(
+        [
+            str(pipeline_path),
+            "--steps",
+            "1",
+            "--run-id",
+            "runctx",
+            "--workdir",
+            str(tmp_path / ".runs"),
+            "--context-file",
+            str(context_path),
+        ]
+    )
+    assert rc == 0
+    assert captured["vars"]["states_interest"]["output_dir"] == "/tmp/meta"

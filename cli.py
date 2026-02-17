@@ -31,6 +31,7 @@ from etl.artifacts import (
 from etl.config import load_global_config, resolve_global_config_path, ConfigError
 from etl.db import ensure_database_schema, DatabaseError, get_database_url
 from etl.db_sync_queue import apply_tracking_queue
+from etl.dictionary_pr import DictionaryPRError, create_dictionary_pr
 from etl.datasets import DatasetServiceError, get_data, get_dataset, list_datasets, store_data
 from etl.diagnostics import write_error_report, find_latest_error_report
 from etl.executors import LocalExecutor, SlurmExecutor
@@ -668,6 +669,8 @@ def cmd_datasets_store(args: argparse.Namespace) -> int:
         )
     except DatasetServiceError as exc:
         print(f"Dataset store error: {exc}", file=sys.stderr)
+        for line in list(getattr(exc, "details", {}).get("operation_log") or []):
+            print(f"  [trace] {line}", file=sys.stderr)
         return 1
 
     print(f"Stored dataset: {receipt['dataset_id']}")
@@ -677,6 +680,8 @@ def cmd_datasets_store(args: argparse.Namespace) -> int:
     print(f"Transport: {receipt['transport']} (dry_run={receipt['dry_run']})")
     print(f"Checksum: {receipt['checksum'] or '-'}")
     print(f"Size bytes: {receipt['size_bytes'] if receipt['size_bytes'] is not None else '-'}")
+    for line in list(receipt.get("operation_log") or []):
+        print(f"  [trace] {line}")
     return 0
 
 
@@ -699,6 +704,8 @@ def cmd_datasets_get(args: argparse.Namespace) -> int:
         )
     except DatasetServiceError as exc:
         print(f"Dataset get error: {exc}", file=sys.stderr)
+        for line in list(getattr(exc, "details", {}).get("operation_log") or []):
+            print(f"  [trace] {line}", file=sys.stderr)
         return 1
 
     print(f"Retrieved dataset: {receipt['dataset_id']}")
@@ -708,6 +715,41 @@ def cmd_datasets_get(args: argparse.Namespace) -> int:
     print(f"Transport: {receipt['transport']} (fetched={receipt['fetched']}, dry_run={receipt['dry_run']})")
     print(f"Checksum: {receipt['checksum'] or '-'}")
     print(f"Size bytes: {receipt['size_bytes'] if receipt['size_bytes'] is not None else '-'}")
+    for line in list(receipt.get("operation_log") or []):
+        print(f"  [trace] {line}")
+    return 0
+
+
+def cmd_datasets_dictionary_pr(args: argparse.Namespace) -> int:
+    try:
+        receipt = create_dictionary_pr(
+            dataset_id=args.dataset_id,
+            repo_key=args.repo_key,
+            source_file=args.source_file,
+            file_path=args.file_path,
+            branch_name=args.branch_name,
+            base_branch=args.base_branch,
+            pr_title=args.pr_title,
+            pr_body=args.pr_body,
+            commit_message=args.commit_message,
+            create_pr=not bool(args.no_pr),
+            use_github_api=not bool(args.no_github_api),
+            dry_run=bool(args.dry_run),
+        )
+    except DictionaryPRError as exc:
+        print(f"Dictionary PR error: {exc}", file=sys.stderr)
+        for line in list(getattr(exc, "details", {}).get("operation_log") or []):
+            print(f"  [trace] {line}", file=sys.stderr)
+        return 1
+
+    print(f"Dictionary workflow dataset={receipt['dataset_id']} repo={receipt['repo_key']}")
+    print(f"Target file: {receipt['file_path']}")
+    print(f"Branch: {receipt['branch_name']} (base={receipt['base_branch']})")
+    print(f"Has changes: {receipt['has_changes']}")
+    print(f"Commit: {receipt['commit_sha'] or '-'}")
+    print(f"PR: {receipt['pr_url'] or '-'}")
+    for line in list(receipt.get("operation_log") or []):
+        print(f"  [trace] {line}")
     return 0
 
 
@@ -1062,6 +1104,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_datasets_get.add_argument("--rclone-bin", default="rclone", help="rclone binary for rclone transport")
     p_datasets_get.add_argument("--shared-drive-id", default="", help="Optional team drive id for rclone transport")
     p_datasets_get.set_defaults(func=cmd_datasets_get)
+
+    p_datasets_dict_pr = datasets_sub.add_parser(
+        "dictionary-pr",
+        help="Create/update dictionary entry in mapped repo and open PR",
+    )
+    p_datasets_dict_pr.add_argument("dataset_id", help="Dataset id to update in dictionary")
+    p_datasets_dict_pr.add_argument("--repo-key", required=True, help="Dictionary repo key from etl_dictionary_repos")
+    p_datasets_dict_pr.add_argument("--source-file", required=True, help="Local YAML source file to copy into repo")
+    p_datasets_dict_pr.add_argument("--file-path", default=None, help="Target file path in repo (default from mapping)")
+    p_datasets_dict_pr.add_argument("--branch-name", default=None, help="Branch name override")
+    p_datasets_dict_pr.add_argument("--base-branch", default=None, help="Base branch override")
+    p_datasets_dict_pr.add_argument("--pr-title", default=None, help="Pull request title override")
+    p_datasets_dict_pr.add_argument("--pr-body", default=None, help="Pull request body override")
+    p_datasets_dict_pr.add_argument("--commit-message", default=None, help="Git commit message override")
+    p_datasets_dict_pr.add_argument("--no-pr", action="store_true", help="Do not create a pull request")
+    p_datasets_dict_pr.add_argument(
+        "--no-github-api",
+        action="store_true",
+        help="Skip GitHub API and use `gh pr create` directly.",
+    )
+    p_datasets_dict_pr.add_argument("--dry-run", action="store_true", help="Show commands without writing/pushing")
+    p_datasets_dict_pr.set_defaults(func=cmd_datasets_dictionary_pr)
 
     p_diag = subparsers.add_parser("diagnostics", help="Inspect generated diagnostic reports")
     diag_sub = p_diag.add_subparsers(dest="diagnostics_command", required=True)
