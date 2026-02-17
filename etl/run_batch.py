@@ -120,6 +120,12 @@ def _merge_context_with_secrets(context_vars: dict, secret_vars: dict) -> dict:
     return merged
 
 
+def _apply_db_mode_from_exec_env(exec_env: dict) -> None:
+    mode = str(exec_env.get("db_mode") or "").strip()
+    if mode:
+        os.environ["ETL_DB_MODE"] = mode
+
+
 def load_context(path: Path) -> dict:
     if not path or not path.exists():
         return {}
@@ -272,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if resolved_exec_cfg:
         args.environments_config = str(resolved_exec_cfg)
+    _apply_db_mode_from_exec_env(exec_env)
     parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
 
     try:

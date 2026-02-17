@@ -31,6 +31,13 @@ class AppliedMigration:
     checksum: str
 
 
+def _db_mode_is_offline(raw: Optional[str]) -> bool:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return False
+    return text in {"offline", "off", "disabled", "none", "false", "0"}
+
+
 def _normalize_database_url(raw: Optional[str]) -> Optional[str]:
     if raw is None:
         return None
@@ -48,6 +55,10 @@ def _normalize_database_url(raw: Optional[str]) -> Optional[str]:
 
 
 def _load_database_url() -> Optional[str]:
+    if _db_mode_is_offline(os.environ.get("ETL_DB_MODE")) or _db_mode_is_offline(
+        os.environ.get("ETL_DATABASE_MODE")
+    ):
+        return None
     raw = os.environ.get("ETL_DATABASE_URL")
     if raw is None:
         # Windows fallback for values persisted by `setx`.

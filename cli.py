@@ -166,6 +166,12 @@ def _merge_context_with_secrets(context_vars: Dict[str, Any], secret_vars: Dict[
     return merged
 
 
+def _apply_db_mode_from_exec_env(exec_env: Dict[str, Any]) -> None:
+    mode = str(exec_env.get("db_mode") or "").strip()
+    if mode:
+        os.environ["ETL_DB_MODE"] = mode
+
+
 def _has_successful_run_for_pipeline(pipeline_path: Path, *, workdir: str) -> bool:
     records = load_runs(_run_store_path(workdir))
     target = pipeline_path.resolve().as_posix()
@@ -530,6 +536,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Ensure SLURM path inherits explicit CLI overrides even when environments config is used.
     exec_env["step_max_retries"] = max_retries
     exec_env["step_retry_delay_seconds"] = retry_delay_seconds
+    _apply_db_mode_from_exec_env(exec_env)
     try:
         commandline_vars = _parse_cli_var_overrides(getattr(args, "var", None))
     except ValueError as exc:

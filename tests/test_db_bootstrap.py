@@ -91,3 +91,9 @@ def test_ensure_database_schema_rejects_checksum_drift(monkeypatch, tmp_path: Pa
 
     with pytest.raises(db_module.DatabaseError, match="checksum mismatch"):
         db_module.ensure_database_schema(ddl_dir)
+
+
+def test_get_database_url_respects_offline_db_mode(monkeypatch) -> None:
+    monkeypatch.setenv("ETL_DATABASE_URL", "postgresql://u:p@h/db")
+    monkeypatch.setenv("ETL_DB_MODE", "offline")
+    assert db_module.get_database_url() is None
