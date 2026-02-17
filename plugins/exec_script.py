@@ -29,9 +29,14 @@ def _resolve_path(path_text: str, ctx) -> Path:
     p = Path(str(path_text or "")).expanduser()
     if p.is_absolute():
         return p
-    repo_rel = (Path(".").resolve() / p).resolve()
-    if repo_rel.exists():
-        return repo_rel
+    repo_root_env = str(os.environ.get("ETL_REPO_ROOT") or "").strip()
+    if repo_root_env:
+        repo_rel = (Path(repo_root_env).expanduser().resolve() / p).resolve()
+        if repo_rel.exists():
+            return repo_rel
+    cwd_rel = (Path(".").resolve() / p).resolve()
+    if cwd_rel.exists():
+        return cwd_rel
     return (ctx.workdir / p).resolve()
 
 
