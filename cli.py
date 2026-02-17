@@ -505,7 +505,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     if args.env:
         selected_env_name = args.env
-    elif args.executor == "local":
+    elif not args.executor:
         selected_env_name = "local"
     if selected_environments_config and selected_env_name:
         try:
@@ -527,6 +527,20 @@ def cmd_run(args: argparse.Namespace) -> int:
         args.environments_config = str(selected_environments_config)
     if selected_env_name:
         args.env = selected_env_name
+    env_executor = str(exec_env.get("executor") or "").strip().lower()
+    selected_executor = env_executor or str(args.executor or "").strip().lower() or "local"
+    if args.executor:
+        if env_executor:
+            print(
+                "[etl][WARN] `--executor` is deprecated; using executor from `--env` configuration.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "[etl][WARN] `--executor` is deprecated; prefer setting/using `--env` with an executor.",
+                file=sys.stderr,
+            )
+    args.executor = selected_executor
     max_retries = args.max_retries if args.max_retries is not None else int(exec_env.get("step_max_retries", 0) or 0)
     retry_delay_seconds = (
         args.retry_delay_seconds
@@ -1119,7 +1133,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip requires_pipelines resolution/execution (useful for faster local iteration).",
     )
-    p_run.add_argument("--executor", choices=["local", "slurm", "hpcc_direct"], default="local", help="Execution backend")
+    p_run.add_argument(
+        "--executor",
+        choices=["local", "slurm", "hpcc_direct"],
+        default=None,
+        help="DEPRECATED: execution backend override. Preferred: use --env and set executor in environments.yml.",
+    )
     p_run.add_argument("--allow-dirty-git", action="store_true", help="Allow strict git checkout runs from a dirty local worktree")
     p_run.add_argument(
         "--execution-source",

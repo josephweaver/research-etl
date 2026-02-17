@@ -100,6 +100,7 @@ class HpccDirectExecutor(Executor):
         self.remote_modules = list(self.env_config.get("modules") or [])
         self.ssh_timeout = int(self.env_config.get("ssh_timeout", 120))
         self.ssh_connect_timeout = max(1, int(self.env_config.get("ssh_connect_timeout", self.ssh_timeout)))
+        self.stream_run_batch_output = bool(self.env_config.get("stream_run_batch_output", True))
         self.propagate_secrets = bool(self.env_config.get("propagate_secrets", True))
         self.load_secrets_file = bool(self.env_config.get("load_secrets_file", True))
         self.secret_env_keys = _parse_str_list(self.env_config.get("secret_env_keys")) or list(DEFAULT_SECRET_ENV_KEYS)
@@ -146,6 +147,36 @@ class HpccDirectExecutor(Executor):
             timeout=self.ssh_timeout,
             check=False,
         )
+
+    def _build_remote_script(self, lines: list[str]) -> str:
+        base = [
+            "set -eo pipefail",
+            # Common site profile often initializes MODULEPATH/Lmod on clusters.
+            "set +u; [ -f /etc/profile ] && source /etc/profile || true; set -u",
+            # Ensure Lmod function is available in non-interactive SSH shells.
+            "if ! command -v module >/dev/null 2>&1; then "
+            "  [ -f /usr/lmod/lmod/init/bash ] && source /usr/lmod/lmod/init/bash || true; "
+            "fi",
+        ]
+        return "\n".join(base + list(lines or []))
+
+    def _run_stage(
+        self,
+        *,
+        target: str,
+        stage_name: str,
+        lines: list[str],
+        stream_output: bool = False,
+    ) -> subprocess.CompletedProcess:
+        proc = self._run_ssh_script(target, self._build_remote_script(lines), stream_output=stream_output)
+        if proc.returncode == 0:
+            return proc
+        stderr = str(proc.stderr or "").strip()
+        stdout = str(proc.stdout or "").strip()
+        detail = stderr or stdout
+        if not detail and stream_output:
+            detail = "remote output streamed to console"
+        raise RuntimeError(f"{stage_name} failed rc={proc.returncode}: {detail[:4000]}")
 
     def _scp_to_remote(self, target: str, local_path: Path, remote_path: str) -> subprocess.CompletedProcess:
         scp_cmd = [
@@ -347,8 +378,10 @@ class HpccDirectExecutor(Executor):
             else None
         )
 
+        # Execute run_batch with the interpreter from the activated runtime
+        # environment (venv/conda), not the bootstrap interpreter.
         batch_cmd = [
-            self.remote_python,
+            "python",
             "-m",
             "etl.run_batch",
             shlex.quote(pipeline_remote),
@@ -389,31 +422,26 @@ class HpccDirectExecutor(Executor):
                 continue
             batch_cmd += ["--var", shlex.quote(f"{key}={value}")]
 
-        lines = [
-            "set -eo pipefail",
-            # Common site profile often initializes MODULEPATH/Lmod on clusters.
-            "set +u; [ -f /etc/profile ] && source /etc/profile || true; set -u",
-            # Ensure Lmod function is available in non-interactive SSH shells.
-            "if ! command -v module >/dev/null 2>&1; then "
-            "  [ -f /usr/lmod/lmod/init/bash ] && source /usr/lmod/lmod/init/bash || true; "
-            "fi",
+        checkout_lines = [
             f"CHECKOUT_ROOT={shlex.quote(repo_root_remote)}",
             f"REPO_URL={shlex.quote(spec.origin_url)}",
             f"REPO_SHA={shlex.quote(spec.commit_sha)}",
             "mkdir -p \"$(dirname \\\"$CHECKOUT_ROOT\\\")\"",
-            "rm -rf \"$CHECKOUT_ROOT\"",
-            "git clone --no-checkout \"$REPO_URL\" \"$CHECKOUT_ROOT\"",
+            "if [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then git clone --no-checkout \"$REPO_URL\" \"$CHECKOUT_ROOT\"; fi",
             "cd \"$CHECKOUT_ROOT\"",
+            "git remote set-url origin \"$REPO_URL\" || true",
             "git fetch --tags --prune origin",
             "git checkout --detach \"$REPO_SHA\"",
             "git reset --hard \"$REPO_SHA\"",
+            "git clean -fd",
         ]
         staged_secrets_remote: Optional[str] = None
         if self.propagate_secrets and not self.dry_run:
             secret_exports = self._collect_secret_exports(context)
             staged_secrets_remote = self._stage_secret_exports(target=target, run_id=run_id, secrets=secret_exports)
+        secrets_lines: list[str] = []
         if staged_secrets_remote:
-            lines.extend(
+            secrets_lines.extend(
                 [
                     "mkdir -p \"$HOME/.secrets\"",
                     "chmod 700 \"$HOME/.secrets\"",
@@ -435,26 +463,26 @@ class HpccDirectExecutor(Executor):
                     "fi",
                 ]
             )
-        if self.load_secrets_file:
-            lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
         overlay_tar_remote: Optional[str] = None
         overlay_deletes: list[str] = []
         if bool(context.get("allow_dirty_git", False)):
             overlay_tar_remote, overlay_deletes = self._stage_dirty_overlay(target=target, run_id=run_id)
-            if overlay_tar_remote:
-                lines.append(f"DIRTY_OVERLAY_TAR={shlex.quote(overlay_tar_remote)}")
-                lines.append(
-                    "if [ -f \"$DIRTY_OVERLAY_TAR\" ]; then "
-                    "tar -xf \"$DIRTY_OVERLAY_TAR\" -C \"$CHECKOUT_ROOT\"; "
-                    "rm -f -- \"$DIRTY_OVERLAY_TAR\"; "
-                    "fi"
-                )
-            for rel in overlay_deletes:
-                lines.append(f"rm -f -- {shlex.quote(rel)}")
+        overlay_lines: list[str] = [f"CHECKOUT_ROOT={shlex.quote(repo_root_remote)}"]
+        if overlay_tar_remote:
+            overlay_lines.append(f"DIRTY_OVERLAY_TAR={shlex.quote(overlay_tar_remote)}")
+            overlay_lines.append(
+                "if [ -f \"$DIRTY_OVERLAY_TAR\" ]; then "
+                "tar -xf \"$DIRTY_OVERLAY_TAR\" -C \"$CHECKOUT_ROOT\"; "
+                "rm -f -- \"$DIRTY_OVERLAY_TAR\"; "
+                "fi"
+            )
+        for rel in overlay_deletes:
+            overlay_lines.append(f"rm -f -- {shlex.quote(rel)}")
+        runtime_lines: list[str] = [f"CHECKOUT_ROOT={shlex.quote(repo_root_remote)}", "cd \"$CHECKOUT_ROOT\""]
         for module_name in self.remote_modules:
             mod = str(module_name or "").strip()
             if mod:
-                lines.append(
+                runtime_lines.append(
                     "if command -v module >/dev/null 2>&1; then "
                     f"module load {shlex.quote(mod)}; "
                     "else "
@@ -462,31 +490,76 @@ class HpccDirectExecutor(Executor):
                     "fi"
                 )
         if self.remote_conda_env:
-            lines.append(f"source activate {shlex.quote(self.remote_conda_env)}")
+            runtime_lines.append(f"source activate {shlex.quote(self.remote_conda_env)}")
         if self.remote_venv:
-            lines.append(f"source {shlex.quote(self.remote_venv)}/bin/activate")
+            runtime_lines.append(f"source {shlex.quote(self.remote_venv)}/bin/activate")
         else:
-            lines.append(
+            runtime_lines.append(
                 "VENV=\"$CHECKOUT_ROOT/.venv\"; "
                 f"if [ ! -f \"$VENV/bin/activate\" ]; then {shlex.quote(self.remote_python)} -m venv \"$VENV\"; fi; "
                 "source \"$VENV/bin/activate\""
             )
-        lines.append(
+        runtime_lines.append(
             "if [ -f \"$CHECKOUT_ROOT/requirements.txt\" ]; then "
-            f"{shlex.quote(self.remote_python)} -m pip install --ignore-installed -r \"$CHECKOUT_ROOT/requirements.txt\"; "
+            "REQ_STAMP=\"$CHECKOUT_ROOT/.venv/.requirements.lock\"; "
+            "if [ ! -f \"$REQ_STAMP\" ] || ! cmp -s \"$CHECKOUT_ROOT/requirements.txt\" \"$REQ_STAMP\"; then "
+            "python -m pip install --ignore-installed -r \"$CHECKOUT_ROOT/requirements.txt\"; "
+            "cp \"$CHECKOUT_ROOT/requirements.txt\" \"$REQ_STAMP\"; "
+            "fi; "
             "fi"
         )
-        lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
-        lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
-        lines.append(" ".join(batch_cmd))
-        remote_script = "\n".join(lines)
+        run_lines = [f"CHECKOUT_ROOT={shlex.quote(repo_root_remote)}", "cd \"$CHECKOUT_ROOT\""]
+        for module_name in self.remote_modules:
+            mod = str(module_name or "").strip()
+            if mod:
+                run_lines.append(
+                    "if command -v module >/dev/null 2>&1; then "
+                    f"module load {shlex.quote(mod)}; "
+                    "else "
+                    f"echo '[hpcc_direct][WARN] module command not available; skipping {shlex.quote(mod)}' >&2; "
+                    "fi"
+                )
+        if self.remote_conda_env:
+            run_lines.append(f"source activate {shlex.quote(self.remote_conda_env)}")
+        if self.remote_venv:
+            run_lines.append(f"source {shlex.quote(self.remote_venv)}/bin/activate")
+        else:
+            run_lines.append("source \"$CHECKOUT_ROOT/.venv/bin/activate\"")
+        if self.load_secrets_file:
+            run_lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
+        run_lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
+        run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
+        run_lines.append(" ".join(batch_cmd))
 
         if self.dry_run:
             self._statuses[run_id] = RunStatus(run_id=run_id, state=RunState.QUEUED, message="dry-run")
             return SubmissionResult(run_id=run_id, message="dry-run")
 
         started_dt = datetime.utcnow()
-        proc = self._run_ssh_script(target, remote_script, stream_output=self.verbose)
+        try:
+            self._run_stage(target=target, stage_name="prepare_checkout", lines=checkout_lines, stream_output=self.verbose)
+            if secrets_lines:
+                self._run_stage(target=target, stage_name="apply_secrets", lines=secrets_lines, stream_output=self.verbose)
+            if len(overlay_lines) > 1:
+                self._run_stage(target=target, stage_name="apply_dirty_overlay", lines=overlay_lines, stream_output=self.verbose)
+            self._run_stage(target=target, stage_name="setup_runtime", lines=runtime_lines, stream_output=self.verbose)
+            proc = self._run_stage(
+                target=target,
+                stage_name="run_batch",
+                lines=run_lines,
+                stream_output=(self.verbose or self.stream_run_batch_output),
+            )
+        except Exception as exc:  # noqa: BLE001
+            ended_dt = datetime.utcnow()
+            status = RunStatus(
+                run_id=run_id,
+                state=RunState.FAILED,
+                message=str(exc)[:4000],
+                started_at=started_dt,
+                ended_at=ended_dt,
+            )
+            self._statuses[run_id] = status
+            return SubmissionResult(run_id=run_id, message=status.message)
         ended_dt = datetime.utcnow()
         stdout = str(proc.stdout or "").strip()
         stderr = str(proc.stderr or "").strip()

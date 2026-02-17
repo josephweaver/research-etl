@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,8 @@ import cli
 from etl.db import DatabaseError
 from etl.executors.slurm import SlurmSubmitError
 from etl.execution_config import ExecutionConfigError, apply_execution_env_overrides
+from etl.executors.base import SubmissionResult
+from etl.pipeline import Pipeline, Step
 
 
 def test_format_run_submission_error_for_resume_without_db() -> None:
@@ -84,3 +87,29 @@ def test_cli_parser_accepts_hpcc_direct_executor() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(["run", "pipelines/sample.yml", "--executor", "hpcc_direct"])
     assert args.executor == "hpcc_direct"
+
+
+def test_cmd_run_uses_env_executor_when_executor_not_provided(monkeypatch) -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["run", "pipelines/sample.yml", "--env", "hpcc"])
+    args._raw_argv = ["run", "pipelines/sample.yml", "--env", "hpcc"]
+    monkeypatch.setattr(cli, "resolve_execution_config_path", lambda _p: Path("config/environments.yml"))
+    monkeypatch.setattr(cli, "load_execution_config", lambda _p: {"hpcc": {"executor": "slurm"}})
+    monkeypatch.setattr(cli, "apply_execution_env_overrides", lambda env: env)
+    monkeypatch.setattr(cli, "resolve_execution_env_templates", lambda env, global_vars=None: env)
+    monkeypatch.setattr(cli, "parse_pipeline", lambda *a, **k: Pipeline(steps=[Step(name="s1", script="echo.py")]))
+    monkeypatch.setattr(cli, "collect_run_provenance", lambda **k: {"git_commit_sha": "abc"})
+
+    class _SlurmExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        def submit(self, pipeline_path, context):
+            return SubmissionResult(run_id="run_slurm")
+
+        def status(self, run_id):
+            return argparse.Namespace(state="queued", message="")
+
+    monkeypatch.setattr(cli, "SlurmExecutor", _SlurmExecutor)
+    rc = cli.cmd_run(args)
+    assert rc == 0

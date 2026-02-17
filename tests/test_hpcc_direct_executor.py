@@ -80,6 +80,8 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
 
     remote_script = str(seen["cmd"][-1])
     assert "etl.run_batch" in remote_script
+    assert "python -m etl.run_batch" in remote_script
+    assert "python3 -m etl.run_batch" not in remote_script
     assert "--steps 0,1" in remote_script
     assert "--project-id land_core" in remote_script
 
@@ -192,9 +194,9 @@ def test_hpcc_direct_allow_dirty_git_overlays_local_changes(monkeypatch, tmp_pat
     assert any(cmd and cmd[0] == "scp" for cmd in seen_cmds)
     ssh_calls = [cmd for cmd in seen_cmds if cmd and cmd[0] == "ssh"]
     assert ssh_calls
-    remote_script = str(ssh_calls[-1][-1])
-    assert "DIRTY_OVERLAY_TAR=" in remote_script
-    assert "rm -f -- deleted.txt" in remote_script
+    scripts = [str(cmd[-1]) for cmd in ssh_calls]
+    assert any("DIRTY_OVERLAY_TAR=" in s for s in scripts)
+    assert any("rm -f -- deleted.txt" in s for s in scripts)
 
 
 def test_hpcc_direct_propagates_secrets_file(monkeypatch, tmp_path: Path) -> None:
@@ -239,6 +241,49 @@ def test_hpcc_direct_propagates_secrets_file(monkeypatch, tmp_path: Path) -> Non
     assert any(cmd and cmd[0] == "scp" for cmd in seen_cmds)
     ssh_calls = [cmd for cmd in seen_cmds if cmd and cmd[0] == "ssh"]
     assert ssh_calls
-    remote_script = str(ssh_calls[-1][-1])
-    assert "STAGED_SECRETS=" in remote_script
-    assert "source \"$HOME/.secrets/etl\"" in remote_script
+    scripts = [str(cmd[-1]) for cmd in ssh_calls]
+    assert any("STAGED_SECRETS=" in s for s in scripts)
+    assert any("source \"$HOME/.secrets/etl\"" in s for s in scripts)
+
+
+def test_hpcc_direct_streams_run_batch_output_by_default(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ETL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    repo = tmp_path / "repo"
+    (repo / "pipelines").mkdir(parents=True, exist_ok=True)
+    pipeline_path = repo / "pipelines" / "sample.yml"
+    pipeline_path.write_text("steps: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        hpcc_mod,
+        "parse_pipeline",
+        lambda *_a, **_k: Pipeline(steps=[Step(name="s1", script="echo.py")]),
+    )
+    monkeypatch.setattr(
+        hpcc_mod,
+        "resolve_execution_spec",
+        lambda **_k: GitExecutionSpec(
+            commit_sha="32adb6b10db9aaaa111122223333444455556666",
+            origin_url="git@github.com:org/research-etl.git",
+            repo_name="research-etl",
+            git_is_dirty=False,
+        ),
+    )
+
+    stage_calls: list[tuple[str, bool]] = []
+
+    def _fake_run_stage(self, *, target, stage_name, lines, stream_output=False):
+        stage_calls.append((stage_name, bool(stream_output)))
+        return subprocess.CompletedProcess(["ssh"], 0, "", "")
+
+    monkeypatch.setattr(HpccDirectExecutor, "_run_stage", _fake_run_stage)
+
+    ex = HpccDirectExecutor(
+        env_config={"ssh_host": "dev.hpcc.local", "propagate_secrets": False},
+        repo_root=repo,
+        dry_run=False,
+        verbose=False,
+    )
+    _ = ex.submit(str(pipeline_path), {"run_id": "stream1"})
+    assert ("run_batch", True) in stage_calls
