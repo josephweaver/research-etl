@@ -8,6 +8,8 @@ Intended for fast development iteration only.
 from __future__ import annotations
 
 from dataclasses import replace
+import tarfile
+import tempfile
 import shlex
 import subprocess
 import uuid
@@ -102,8 +104,129 @@ class HpccDirectExecutor(Executor):
         except GitCheckoutError:
             return path.as_posix()
 
+    def _run_ssh_script(self, target: str, script: str) -> subprocess.CompletedProcess:
+        ssh_cmd = [
+            "ssh",
+            *self._ssh_common_args(),
+            target,
+            f"bash --login -lc {shlex.quote(script)}",
+        ]
+        return subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=self.ssh_timeout, check=False)
+
+    def _scp_to_remote(self, target: str, local_path: Path, remote_path: str) -> subprocess.CompletedProcess:
+        scp_cmd = [
+            "scp",
+            *self._ssh_common_args(),
+            str(local_path),
+            f"{target}:{remote_path}",
+        ]
+        return subprocess.run(scp_cmd, capture_output=True, text=True, timeout=self.ssh_timeout, check=False)
+
+    def _collect_dirty_overlay_paths(self) -> tuple[list[Path], list[str]]:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.repo_root),
+                "status",
+                "--porcelain=1",
+                "-z",
+                "--untracked-files=all",
+            ],
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return [], []
+        raw = bytes(proc.stdout or b"")
+        if not raw:
+            return [], []
+        parts = raw.decode("utf-8", errors="replace").split("\0")
+        uploads: list[Path] = []
+        deletes: list[str] = []
+        seen_uploads: set[str] = set()
+        seen_deletes: set[str] = set()
+
+        idx = 0
+        while idx < len(parts):
+            rec = parts[idx]
+            idx += 1
+            if not rec:
+                continue
+            if len(rec) < 3:
+                continue
+            x = rec[0]
+            y = rec[1]
+            path_from = rec[3:]
+            path_to: Optional[str] = None
+            if x in {"R", "C"} or y in {"R", "C"}:
+                if idx >= len(parts):
+                    break
+                path_to = parts[idx]
+                idx += 1
+
+            def _safe_rel(text: str) -> Optional[str]:
+                value = str(text or "").replace("\\", "/").strip()
+                if not value:
+                    return None
+                rel = Path(value)
+                if rel.is_absolute() or any(p == ".." for p in rel.parts):
+                    return None
+                return rel.as_posix()
+
+            rel_from = _safe_rel(path_from)
+            rel_to = _safe_rel(path_to or "")
+
+            if rel_from and (x == "D" or y == "D" or x == "R" or y == "R"):
+                if rel_from not in seen_deletes:
+                    seen_deletes.add(rel_from)
+                    deletes.append(rel_from)
+            if rel_to and (x == "R" or y == "R" or x == "C" or y == "C"):
+                local_rel = Path(rel_to)
+                local_abs = (self.repo_root / local_rel).resolve()
+                if local_abs.exists() and local_abs.is_file() and rel_to not in seen_uploads:
+                    seen_uploads.add(rel_to)
+                    uploads.append(local_rel)
+                continue
+            if rel_from and not (x == "D" or y == "D"):
+                local_rel = Path(rel_from)
+                local_abs = (self.repo_root / local_rel).resolve()
+                if local_abs.exists() and local_abs.is_file() and rel_from not in seen_uploads:
+                    seen_uploads.add(rel_from)
+                    uploads.append(local_rel)
+        return uploads, deletes
+
+    def _stage_dirty_overlay(self, *, target: str, run_id: str) -> tuple[Optional[str], list[str]]:
+        uploads, deletes = self._collect_dirty_overlay_paths()
+        if not uploads and not deletes:
+            return None, []
+
+        remote_tar: Optional[str] = None
+        if uploads:
+            tar_path = Path(tempfile.gettempdir()) / f"hpcc_direct_overlay_{run_id}.tar"
+            if tar_path.exists():
+                tar_path.unlink()
+            try:
+                with tarfile.open(tar_path, "w") as tf:
+                    for rel in uploads:
+                        tf.add((self.repo_root / rel).resolve(), arcname=rel.as_posix(), recursive=False)
+
+                remote_tar = f"/tmp/hpcc_direct_dirty_overlay_{run_id}.tar"
+                scp_proc = self._scp_to_remote(target, tar_path, remote_tar)
+                if scp_proc.returncode != 0:
+                    detail = (scp_proc.stderr or scp_proc.stdout or "").strip()
+                    raise RuntimeError(f"Failed to transfer dirty overlay: {detail[:2000]}")
+            finally:
+                try:
+                    tar_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        return remote_tar, deletes
+
     def submit(self, pipeline_path: str, context: Dict[str, Any]) -> SubmissionResult:
         context = context or {}
+        target = self._ssh_target()
         run_id = str(context.get("run_id") or "").strip() or uuid.uuid4().hex
         started_at = str(context.get("run_started_at") or "").strip() or (datetime.utcnow().isoformat() + "Z")
         cmdline_vars = dict(context.get("commandline_vars") or {})
@@ -213,6 +336,20 @@ class HpccDirectExecutor(Executor):
             "git checkout --detach \"$REPO_SHA\"",
             "git reset --hard \"$REPO_SHA\"",
         ]
+        overlay_tar_remote: Optional[str] = None
+        overlay_deletes: list[str] = []
+        if bool(context.get("allow_dirty_git", False)):
+            overlay_tar_remote, overlay_deletes = self._stage_dirty_overlay(target=target, run_id=run_id)
+            if overlay_tar_remote:
+                lines.append(f"DIRTY_OVERLAY_TAR={shlex.quote(overlay_tar_remote)}")
+                lines.append(
+                    "if [ -f \"$DIRTY_OVERLAY_TAR\" ]; then "
+                    "tar -xf \"$DIRTY_OVERLAY_TAR\" -C \"$CHECKOUT_ROOT\"; "
+                    "rm -f -- \"$DIRTY_OVERLAY_TAR\"; "
+                    "fi"
+                )
+            for rel in overlay_deletes:
+                lines.append(f"rm -f -- {shlex.quote(rel)}")
         for module_name in self.remote_modules:
             mod = str(module_name or "").strip()
             if mod:
@@ -233,24 +370,22 @@ class HpccDirectExecutor(Executor):
                 f"if [ ! -f \"$VENV/bin/activate\" ]; then {shlex.quote(self.remote_python)} -m venv \"$VENV\"; fi; "
                 "source \"$VENV/bin/activate\""
             )
-        lines.append("if [ -f \"$CHECKOUT_ROOT/requirements.txt\" ]; then pip install -r \"$CHECKOUT_ROOT/requirements.txt\"; fi")
+        lines.append(
+            "if [ -f \"$CHECKOUT_ROOT/requirements.txt\" ]; then "
+            f"{shlex.quote(self.remote_python)} -m pip install --ignore-installed -r \"$CHECKOUT_ROOT/requirements.txt\"; "
+            "fi"
+        )
         lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
         lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
         lines.append(" ".join(batch_cmd))
         remote_script = "\n".join(lines)
 
-        ssh_cmd = [
-            "ssh",
-            *self._ssh_common_args(),
-            self._ssh_target(),
-            f"bash --login -lc {shlex.quote(remote_script)}",
-        ]
         if self.dry_run:
             self._statuses[run_id] = RunStatus(run_id=run_id, state=RunState.QUEUED, message="dry-run")
             return SubmissionResult(run_id=run_id, message="dry-run")
 
         started_dt = datetime.utcnow()
-        proc = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=self.ssh_timeout, check=False)
+        proc = self._run_ssh_script(target, remote_script)
         ended_dt = datetime.utcnow()
         stdout = str(proc.stdout or "").strip()
         stderr = str(proc.stderr or "").strip()

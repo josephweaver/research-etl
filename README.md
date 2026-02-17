@@ -4,7 +4,19 @@
 
 A lightweight ETL tool to construct new pipelines from modular Python "plugin" scripts and to track runs and validation. In the future this may also call ChatGPT to write data dictionary entries.
 
-## Latest updates (2026-02-16)
+## Latest updates (2026-02-17)
+
+- `hpcc_direct` executor hardening and diagnostics:
+  - always performs a fresh remote git checkout (`rm -rf` + clone + pinned SHA checkout),
+  - uses UTF-8 output decoding with replacement to avoid Windows cp1252 decode crashes,
+  - failure message now includes both remote `stdout` and `stderr` for clearer root-cause visibility.
+- Updated `pipelines/yanroy/tiles_of_interest.yml` execution path on HPCC:
+  - fixed step-2 parser robustness in `scripts/yanroy/build_tiles_of_interest_from_facts.py` for simple one-value-per-line `states.of.interest.csv` inputs (Sniffer fallback).
+- Requirements updates for HPCC geospatial runs:
+  - added `geopandas`, explicit `python-dateutil`, and `requests` in `requirements.txt`.
+- `hpcc_direct` dependency install now uses `python -m pip install --ignore-installed -r requirements.txt` to prevent partial resolution against cluster-global packages.
+- TODO (execution source behavior):
+  - add explicit `--allow-dirty-git` support for remote execution by checking out pinned commit remotely, then overlaying local dirty files onto that checkout before run start.
 
 - Added `plugins/combine_files.py` to merge `csv`, `json`, `yaml/yml`, `xml`, or `text` outputs from fan-out steps.
 - Added generic script/plugin utilities:

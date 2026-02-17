@@ -1,4 +1,4 @@
-# Project Status (2026-02-16)
+# Project Status (2026-02-17)
 
 ## Current state
 - CLI/package baseline is in place (`pyproject.toml`, `etl` entrypoint, editable install flow, GitHub Actions tests).
@@ -6,6 +6,7 @@
 - Execution backends:
   - `local` executor (`etl/executors/local.py`)
   - `slurm` executor (`etl/executors/slurm.py`) with setup + dependent batch/array planning and SSH submission support.
+  - `hpcc_direct` executor (`etl/executors/hpcc_direct.py`) for direct SSH dev-node execution of `etl.run_batch`.
 - Strict git-pinned execution is implemented for both local and slurm execution paths.
 - Pipeline dependencies are supported via `requires_pipelines` with auto-run of missing successful prerequisites and cycle detection.
 - Hierarchical iterative variable resolution is active in pipeline parsing:
@@ -41,6 +42,16 @@
   - Added `pipelines/yanroy/tiles_of_interest.yml` as a separate stage pipeline.
   - Moved tile builder script to `scripts/yanroy/build_tiles_of_interest.py`.
   - `pipelines/yanroy/extract_fields.yml` now runs `raster_facts.py` via `foreach: tiles` and supports parallel combine steps.
+  - Debugged HPCC step-2 failures in `tiles_of_interest`:
+    - fixed `states.of.interest.csv` parsing for simple one-value-per-line files in `scripts/yanroy/build_tiles_of_interest_from_facts.py`,
+    - confirmed HPCC run success through steps 01-03 after parser/dependency fixes.
+- HPCC direct execution hardening:
+  - fresh remote checkout each run (no reuse of stale checkout directories),
+  - UTF-8 subprocess decode with replacement for Windows launcher stability,
+  - richer failure diagnostics by surfacing both remote stdout and stderr.
+- Dependency stabilization for HPCC geospatial steps:
+  - `requirements.txt` includes `geopandas`, `python-dateutil`, and `requests`,
+  - `hpcc_direct` requirement install now uses `--ignore-installed` to avoid cluster site-package leakage.
 - Runner telemetry update:
   - per-attempt fallback resource metrics now capture CPU/memory usage even when plugins do not emit them.
 - SLURM/web execution updates:
@@ -140,6 +151,8 @@
 - AI draft generation currently uses a single repair pass and no schema-constrained decoding.
 - Config/pipeline/plugin catalog tables are not yet populated by runtime snapshots.
 - Artifact class/location inference is heuristic when plugins do not emit explicit `_artifacts` descriptors.
+- `--allow-dirty-git` behavior for remote executors is not complete yet:
+  - current remote runs are commit-pinned; dirty local workspace changes are not propagated to remote checkout.
 
 ## Suggested next steps
 1) Add SSH-backed remote artifact retrieval for SLURM paths in web API.
@@ -148,6 +161,7 @@
 4) Persist config/catalog snapshots into DB catalog tables at run start.
 5) Add offline event buffering strategy for runs executed without DB connectivity.
 6) Improve AI generation with stronger constrained output schema and optional additional repair retries.
+7) Add remote dirty-overlay support for `--allow-dirty-git`: checkout pinned commit on remote, then apply local dirty files over that checkout before execution.
 
 ## Quick commands
 - Install/editable dev env: `python -m pip install -e ".[dev]"`
