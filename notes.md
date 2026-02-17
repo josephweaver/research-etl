@@ -170,3 +170,9 @@ I noticed that twe provide both a executor and an enviroment,  I belive the envi
 
 # things to fix later
 - [ ] Stat collection on plugin run times is not complete.  We need runtime by pipeline-step, not plugin to right size steps.  case. unzip 250mb file, or 1mb file.  they take significantly different runtimes/hardware.
+- [ ] Add optional step-scoped dependency environments to reduce `.venv` bloat and dependency collisions:
+  - keep current shared environment mode as default;
+  - add `env_mode: shared|per_step` (executor/pipeline setting);
+  - resolve per-step deps from plugin metadata (`meta.deps`) + optional step overrides;
+  - build/reuse cached envs by dependency hash;
+  - execute each step inside its resolved env and log env hash/provenance for reproducibility.

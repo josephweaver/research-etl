@@ -31,6 +31,7 @@ from etl.artifacts import (
 from etl.config import load_global_config, resolve_global_config_path, ConfigError
 from etl.db import ensure_database_schema, DatabaseError, get_database_url
 from etl.db_sync_queue import apply_tracking_queue
+from etl.datasets import DatasetServiceError, get_dataset, list_datasets
 from etl.diagnostics import write_error_report, find_latest_error_report
 from etl.executors import LocalExecutor, SlurmExecutor
 from etl.executors.slurm import SlurmSubmitError
@@ -588,6 +589,63 @@ def cmd_runs_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_datasets_list(args: argparse.Namespace) -> int:
+    try:
+        datasets = list_datasets(limit=args.limit, q=args.q)
+    except DatasetServiceError as exc:
+        print(f"Dataset query error: {exc}", file=sys.stderr)
+        return 1
+    if not datasets:
+        print("No datasets found.")
+        return 0
+    for item in datasets:
+        print(
+            f"{item['dataset_id']} | status={item['status']} | class={item['data_class'] or '-'} "
+            f"| owner={item['owner_user'] or '-'} | versions={item['version_count']} "
+            f"| latest={item['latest_version'] or '-'}"
+        )
+    return 0
+
+
+def cmd_datasets_show(args: argparse.Namespace) -> int:
+    try:
+        dataset = get_dataset(args.dataset_id)
+    except DatasetServiceError as exc:
+        print(f"Dataset query error: {exc}", file=sys.stderr)
+        return 1
+    if not dataset:
+        print(f"Dataset not found: {args.dataset_id}", file=sys.stderr)
+        return 1
+
+    print(f"Dataset: {dataset['dataset_id']}")
+    print(f"Status: {dataset['status']}")
+    print(f"Class: {dataset['data_class'] or '-'}")
+    print(f"Owner: {dataset['owner_user'] or '-'}")
+    print(f"Created: {dataset['created_at'] or '-'}")
+    print(f"Updated: {dataset['updated_at'] or '-'}")
+    print("Versions:")
+    if not dataset["versions"]:
+        print("  (none)")
+    else:
+        for version in dataset["versions"]:
+            print(
+                f"  - {version['version_label']} "
+                f"(id={version['dataset_version_id']}, immutable={version['is_immutable']}, "
+                f"run={version['created_by_run_id'] or '-'}, created={version['created_at'] or '-'})"
+            )
+    print("Locations:")
+    if not dataset["locations"]:
+        print("  (none)")
+    else:
+        for location in dataset["locations"]:
+            print(
+                f"  - version={location['version_label']} env={location['environment'] or '-'} "
+                f"type={location['location_type']} canonical={location['is_canonical']} "
+                f"uri={location['uri']}"
+            )
+    return 0
+
+
 def cmd_diagnostics_latest(args: argparse.Namespace) -> int:
     latest = find_latest_error_report(Path(args.workdir))
     if not latest:
@@ -896,6 +954,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_runs_show.add_argument("run_id", help="Run ID to show")
     p_runs_show.add_argument("--store", default=".runs/runs.jsonl", help="Run record store path")
     p_runs_show.set_defaults(func=cmd_runs_show)
+
+    p_datasets = subparsers.add_parser("datasets", help="Inspect registered datasets")
+    datasets_sub = p_datasets.add_subparsers(dest="datasets_command", required=True)
+
+    p_datasets_list = datasets_sub.add_parser("list", help="List registered datasets")
+    p_datasets_list.add_argument("--limit", type=int, default=50, help="Max datasets to show")
+    p_datasets_list.add_argument("--q", default=None, help="Filter by dataset id or owner")
+    p_datasets_list.set_defaults(func=cmd_datasets_list)
+
+    p_datasets_show = datasets_sub.add_parser("show", help="Show one dataset with versions/locations")
+    p_datasets_show.add_argument("dataset_id", help="Dataset id to inspect")
+    p_datasets_show.set_defaults(func=cmd_datasets_show)
 
     p_diag = subparsers.add_parser("diagnostics", help="Inspect generated diagnostic reports")
     diag_sub = p_diag.add_subparsers(dest="diagnostics_command", required=True)
