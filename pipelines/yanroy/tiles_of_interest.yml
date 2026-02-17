@@ -23,6 +23,7 @@ dirs:
   logdir: "{workdir}/logs"
   metadir: "{workdir}/meta"
   tiger_state_extractdir: "{env.basedir}/data/tiger/state/extract"
+  yanroy_metadir: "{env.basedir}/data/yanroy/meta"
 
 steps:
   - name: 01_download_states_of_interest
@@ -40,8 +41,8 @@ steps:
   - name: 02_build_tiles_of_interest
     plugin: exec_script.py
     args:
-      script: "scripts/yanroy/build_tiles_of_interest.py"
-      script_args: "--states-csv \"{states_interest.output_dir}/states.of.interest.csv\" --extract-dir \"{tiger_state_extractdir}\" --output-csv \"{metadir}/tiles.of.interest.csv\" --verbose"
+      script: "scripts/yanroy/build_tiles_of_interest_from_facts.py"
+      script_args: "--states-csv \"{states_interest.output_dir}/states.of.interest.csv\" --extract-dir \"{tiger_state_extractdir}\" --raster-facts-csv \"{yanroy_metadir}/raster_facts.csv\" --output-csv \"{metadir}/tiles.of.interest.csv\" --verbose"
       verbose: true
     output_var: tiles_builder
 

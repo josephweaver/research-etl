@@ -16,7 +16,7 @@ dirs:
   workdir: "{env.workdir}/yanroy/download/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
   logdir: "{workdir}/logs"
   rawdir: "{env.basedir}/data/yanroy/raw"
-
+  fieldsdir: "{env.basedir}/data/yanroy/fields"
 
 steps:
   - name: stage_raw_from_gdrive
@@ -30,3 +30,10 @@ steps:
       shared_drive: "{gdrive_shared_drive_name}"
       shared_drive_id: "{gdrive_shared_drive_id}"
     output_var: staged_raw
+  - name: 02_unzip
+    plugin: archive_extract.py
+    args:
+      archive_glob: "{archivedir}/ReleaseData.7z"
+      out: "{fieldsdir}"
+      include_glob: "**/*field_segments*.hdr,**/*field_segments"
+ 
