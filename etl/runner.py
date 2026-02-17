@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .pipeline import Pipeline, Step
-from .logging import CallbackLogSink, CompositeLogSink, ConsoleLogSink, FileLogSink, StepLogger
+from .logging import CallbackLogSink, CompositeLogSink, ConsoleLogSink, FileLogSink, RedactingLogSink, StepLogger
 from .plugins.base import (
     PluginContext,
     PluginDefinition,
@@ -41,6 +41,58 @@ from .plugins.base import (
 
 class RunError(RuntimeError):
     """Raised when a pipeline run fails."""
+
+
+DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
+
+
+def _parse_secret_env_keys() -> list[str]:
+    raw = str(os.environ.get("ETL_SECRET_ENV_KEYS") or "").strip()
+    if not raw:
+        return list(DEFAULT_SECRET_ENV_KEYS)
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw.replace(";", ",").split(","):
+        key = item.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out or list(DEFAULT_SECRET_ENV_KEYS)
+
+
+def _collect_log_redactions(secret_ns: Optional[Dict[str, Any]] = None) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        text = str(value or "")
+        if len(text) < 4:
+            return
+        if text in seen:
+            return
+        seen.add(text)
+        values.append(text)
+
+    for key in _parse_secret_env_keys():
+        env_val = os.environ.get(key)
+        if env_val:
+            _add(env_val)
+
+    if isinstance(secret_ns, dict):
+        for val in secret_ns.values():
+            if isinstance(val, (dict, list)):
+                continue
+            _add(val)
+    return sorted(values, key=len, reverse=True)
+
+
+def _redact_text(message: str, redactions: list[str]) -> str:
+    text = str(message)
+    for value in redactions:
+        if value and value in text:
+            text = text.replace(value, "[REDACTED]")
+    return text
 
 
 def _current_rss_bytes() -> Optional[int]:
@@ -546,14 +598,17 @@ def run_pipeline(
         base_workdir = workdir / date_dir / run_dir
     base_workdir.mkdir(parents=True, exist_ok=True)
 
+    log_redactions = _collect_log_redactions((pipeline.vars or {}).get("secret"))
+
     def log(msg: str, level: str = "INFO") -> None:
+        safe_msg = _redact_text(str(msg), log_redactions)
         if log_func:
             try:
-                log_func(msg, level)
+                log_func(safe_msg, level)
             except TypeError:
-                log_func(f"[{level}] {msg}")
+                log_func(f"[{level}] {safe_msg}")
         else:
-            print(f"[{run_id}] [{level}] {msg}")
+            print(f"[{run_id}] [{level}] {safe_msg}")
 
     step_results: List[StepResult] = []
     ctx_vars: Dict[str, Any] = dict(pipeline.vars)
@@ -642,6 +697,7 @@ def run_pipeline(
                     resolve_max_passes=resolve_max_passes,
                     step_index=len(step_results),
                     step_log_func=step_log_func,
+                    log_redactions=log_redactions,
                 )
                 step_results.append(res)
                 if res.success and step.output_var:
@@ -670,6 +726,7 @@ def run_pipeline(
                                 resolve_max_passes,
                                 None,
                                 step_log_func,
+                                log_redactions,
                             )
                         )
                     for fut in as_completed(futures):
@@ -700,6 +757,7 @@ def _execute_step(
     resolve_max_passes: int = 20,
     step_index: Optional[int] = None,
     step_log_func=None,
+    log_redactions: Optional[List[str]] = None,
 ) -> StepResult:
     log(f"step {step.name}")
     step_id = uuid.uuid4().hex
@@ -733,9 +791,18 @@ def _execute_step(
     step_workdir = base_workdir / step.name / step_id
     step_logdir = base_logdir / step.name / step_id / "logs"
 
-    sinks: List[Any] = [ConsoleLogSink(run_id, step.name), FileLogSink(step_logdir / "step.log")]
+    redactions = list(log_redactions or [])
+    sinks: List[Any] = [
+        RedactingLogSink(ConsoleLogSink(run_id, step.name), redactions=redactions),
+        RedactingLogSink(FileLogSink(step_logdir / "step.log"), redactions=redactions),
+    ]
     if step_log_func is not None:
-        sinks.append(CallbackLogSink(lambda level, message: step_log_func(step.name, message, level)))
+        sinks.append(
+            RedactingLogSink(
+                CallbackLogSink(lambda level, message: step_log_func(step.name, message, level)),
+                redactions=redactions,
+            )
+        )
     step_logger = StepLogger(CompositeLogSink(sinks))
     ctx = PluginContext(run_id=run_id, workdir=step_workdir, log=step_logger)
 

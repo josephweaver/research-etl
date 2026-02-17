@@ -432,6 +432,80 @@ def test_web_api_builder_resolve_text_with_env_context(tmp_path: Path) -> None:
     assert payload["resolved"] == ".out/work/yanroy/cache/raw"
 
 
+def test_web_api_builder_resolve_text_applies_env_templates_with_global(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    global_cfg = cfg / "global.yml"
+    global_cfg.write_text("datadir: /data\n", encoding="utf-8")
+    env_cfg = cfg / "environments.yml"
+    env_cfg.write_text(
+        "\n".join(
+            [
+                "environments:",
+                "  local:",
+                "    executor: local",
+                "    datadir: \"{global.datadir}/dev\"",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "vars:",
+            "  pipe:",
+            "    name: yanroy",
+            "dirs:",
+            "  raw_cache: \"{env.datadir}/{pipe.name}/cache/raw\"",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/resolve-text",
+        json={
+            "yaml_text": yaml_text,
+            "value": "{dirs.raw_cache}",
+            "global_config": str(global_cfg),
+            "environments_config": str(env_cfg),
+            "env": "local",
+        },
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["resolved"] == "/data/dev/yanroy/cache/raw"
+
+
+def test_web_api_builder_resolve_text_is_iterative() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "vars:",
+            "  a: \"{b}\"",
+            "  b: \"{c}\"",
+            "  c: done",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/resolve-text",
+        json={"yaml_text": yaml_text, "value": "{a}"},
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["resolved"] == "done"
+
+
 def test_web_api_builder_resolve_text_with_sys_placeholder() -> None:
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

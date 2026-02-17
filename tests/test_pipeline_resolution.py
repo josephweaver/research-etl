@@ -76,6 +76,25 @@ def test_parse_pipeline_supports_globals_namespace_alias(tmp_path: Path) -> None
     assert pipeline.steps[0].script == "echo.py out=/tmp/out/work"
 
 
+def test_parse_pipeline_supports_secret_namespace_from_context(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: \"echo.py key={secret.OPENAI_API_KEY}\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(
+        p,
+        context_vars={"secret": {"OPENAI_API_KEY": "sk-test-123"}},
+    )
+    assert pipeline.steps[0].script == "echo.py key=sk-test-123"
+
+
 def test_parse_pipeline_resolves_iterative_chain(tmp_path: Path) -> None:
     p = tmp_path / "p.yml"
     p.write_text(
@@ -406,4 +425,46 @@ def test_parse_pipeline_rejects_foreach_kind_without_foreach_glob(tmp_path: Path
         encoding="utf-8",
     )
     with pytest.raises(PipelineError, match="requires `foreach_glob`"):
+        parse_pipeline(p)
+
+
+def test_parse_pipeline_skips_disabled_steps_with_default_false(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: enabled_default",
+                "    script: echo.py",
+                "  - name: disabled_lower",
+                "    script: echo.py",
+                "    disabled: true",
+                "  - name: disabled_upper",
+                "    script: echo.py",
+                "    Disabled: true",
+                "  - name: enabled_explicit",
+                "    script: echo.py",
+                "    disabled: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    assert [s.name for s in pipeline.steps] == ["enabled_default", "enabled_explicit"]
+
+
+def test_parse_pipeline_rejects_non_boolean_disabled(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+                "    disabled: \"true\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="`disabled` must be a boolean"):
         parse_pipeline(p)

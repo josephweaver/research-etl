@@ -33,6 +33,8 @@ from etl.projects import resolve_project_id
 from etl.runner import run_pipeline, RunResult
 from etl.tracking import upsert_run_status, upsert_step_attempt, load_run_step_states
 
+DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
+
 
 def _vprint(enabled: bool, message: str) -> None:
     if enabled:
@@ -67,6 +69,55 @@ def _parse_cli_var_overrides(entries: list[str] | None) -> dict:
             raise ValueError(f"Invalid --var '{text}': key may not be empty")
         _assign_dotted_path(out, key_text, value)
     return out
+
+
+def _parse_secret_env_keys(exec_env: dict) -> list[str]:
+    raw = exec_env.get("secret_env_keys")
+    if isinstance(raw, (list, tuple, set)):
+        items = [str(x).strip() for x in raw]
+    elif raw is None:
+        env_raw = str(os.environ.get("ETL_SECRET_ENV_KEYS") or "").strip()
+        if env_raw:
+            items = [x.strip() for x in env_raw.replace(";", ",").split(",")]
+        else:
+            items = list(DEFAULT_SECRET_ENV_KEYS)
+    else:
+        items = [x.strip() for x in str(raw).replace(";", ",").split(",")]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not item:
+            continue
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
+def _collect_secret_vars(exec_env: dict) -> dict:
+    out: dict = {}
+    for key in _parse_secret_env_keys(exec_env):
+        val = os.environ.get(key)
+        if val is None:
+            continue
+        text = str(val).strip()
+        if not text:
+            continue
+        out[key] = text
+    return out
+
+
+def _merge_context_with_secrets(context_vars: dict, secret_vars: dict) -> dict:
+    merged = dict(context_vars or {})
+    if not secret_vars:
+        return merged
+    secret_ns = dict(secret_vars)
+    existing = merged.get("secret")
+    if isinstance(existing, dict):
+        secret_ns.update({str(k): v for k, v in existing.items()})
+    merged["secret"] = secret_ns
+    return merged
 
 
 def load_context(path: Path) -> dict:
@@ -221,13 +272,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if resolved_exec_cfg:
         args.environments_config = str(resolved_exec_cfg)
+    parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
 
     try:
         full_pipeline = parse_pipeline(
             Path(args.pipeline),
             global_vars=global_vars,
             env_vars=exec_env,
-            context_vars=commandline_vars,
+            context_vars=parse_context_vars,
         )
     except PipelineError as exc:
         print(f"Pipeline error: {exc}")

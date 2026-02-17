@@ -42,7 +42,14 @@ def _read_state_codes(path: Path) -> Tuple[set[str], set[str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         sample = f.read(4096)
         f.seek(0)
-        has_header = csv.Sniffer().has_header(sample) if sample.strip() else False
+        has_header = False
+        if sample.strip():
+            try:
+                has_header = csv.Sniffer().has_header(sample)
+            except csv.Error:
+                # Single-token/line files can fail Sniffer delimiter detection.
+                # Treat as plain row values.
+                has_header = False
 
         if has_header:
             rdr = csv.DictReader(f)
@@ -120,6 +127,7 @@ def build_tiles_of_interest(
     state_shapefile: Path,
     raster_facts_csv: Path,
     output_csv: Path,
+    touch_buffer_m: float = 1.0,
     verbose: bool = False,
 ) -> int:
     try:
@@ -158,8 +166,22 @@ def build_tiles_of_interest(
         raise RuntimeError("no states matched states.of.interest.csv")
     if gdf.crs is None:
         raise RuntimeError("state shapefile missing CRS")
+    src_crs = str(gdf.crs)
 
     gdf = gdf.to_crs(MODIS_SINU_WKT)
+    # Repair invalid geometries after reprojection to reduce topology/CRS edge-case misses.
+    gdf = gdf.loc[gdf.geometry.notna()].copy()
+    try:
+        gdf["geometry"] = gdf.geometry.make_valid()
+    except Exception:
+        gdf["geometry"] = gdf.geometry.buffer(0)
+    gdf = gdf.loc[~gdf.geometry.is_empty].copy()
+    if gdf.empty:
+        raise RuntimeError("all selected state geometries became empty/invalid after CRS transform")
+    if float(touch_buffer_m) > 0.0:
+        # Expand state boundaries slightly to include edge-touch cases that can
+        # be missed due to CRS transform / floating precision effects.
+        gdf["geometry"] = gdf.geometry.buffer(float(touch_buffer_m))
     tiles = []
     for h, v, minx, miny, maxx, maxy in _iter_modis_tiles():
         tile_id = f"h{h:02d}v{v:02d}"
@@ -212,8 +234,9 @@ def build_tiles_of_interest(
     if verbose:
         print(
             "[build_tiles_of_interest_from_facts] "
+            f"state_src_crs={src_crs} state_join_crs={MODIS_SINU_WKT} "
             f"states={len(gdf)} available_tiles={len(tiles_available)} matched_rows={len(rows)} "
-            f"output={output_csv.as_posix()}"
+            f"touch_buffer_m={float(touch_buffer_m)} output={output_csv.as_posix()}"
         )
     return len(rows)
 
@@ -230,6 +253,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--state-shp", default="", help="Path to TIGER state shapefile")
     ap.add_argument("--extract-dir", default="", help="Directory containing state shapefile(s)")
     ap.add_argument("--output-csv", required=True, help="Output CSV path")
+    ap.add_argument(
+        "--touch-buffer-m",
+        type=float,
+        default=1.0,
+        help="Positive buffer (meters, MODIS sinusoidal) applied to state polygons before intersect.",
+    )
     ap.add_argument("--verbose", action="store_true")
     args, unknown_args = ap.parse_known_args(argv)
     if unknown_args:
@@ -261,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         state_shapefile=state_shp,
         raster_facts_csv=raster_facts_csv,
         output_csv=output_csv,
+        touch_buffer_m=float(args.touch_buffer_m),
         verbose=args.verbose,
     )
     return 0

@@ -49,6 +49,25 @@ class CallbackLogSink:
         self.callback(str(level), str(message))
 
 
+class RedactingLogSink:
+    """
+    Sink wrapper that redacts configured sensitive values from log messages.
+    """
+
+    def __init__(self, sink: LogSink, redactions: List[str] | None = None):
+        self.sink = sink
+        values = [str(x) for x in list(redactions or []) if str(x)]
+        # Replace longer tokens first to avoid partial leakage.
+        self.redactions = sorted(values, key=len, reverse=True)
+
+    def emit(self, level: str, message: str) -> None:
+        text = str(message)
+        for value in self.redactions:
+            if value and value in text:
+                text = text.replace(value, "[REDACTED]")
+        self.sink.emit(level, text)
+
+
 class StepLogger:
     """
     Standard plugin-facing logger.

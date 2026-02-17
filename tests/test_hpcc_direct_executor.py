@@ -10,6 +10,9 @@ from etl.pipeline import Pipeline, Step
 
 
 def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ETL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     repo = tmp_path / "repo"
     (repo / "pipelines").mkdir(parents=True, exist_ok=True)
     (repo / "plugins").mkdir(parents=True, exist_ok=True)
@@ -50,6 +53,7 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
             "ssh_user": "alice",
             "remote_repo": "/scratch/alice/research-etl",
             "python": "python3",
+            "propagate_secrets": False,
         },
         repo_root=repo,
         plugins_dir=repo / "plugins",
@@ -81,6 +85,9 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
 
 
 def test_hpcc_direct_submit_records_failed_status(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ETL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     repo = tmp_path / "repo"
     (repo / "pipelines").mkdir(parents=True, exist_ok=True)
     pipeline_path = repo / "pipelines" / "sample.yml"
@@ -106,7 +113,7 @@ def test_hpcc_direct_submit_records_failed_status(monkeypatch, tmp_path: Path) -
         lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", "boom"),
     )
     ex = HpccDirectExecutor(
-        env_config={"ssh_host": "dev.hpcc.local", "remote_repo": "/scratch/alice/research-etl"},
+        env_config={"ssh_host": "dev.hpcc.local", "remote_repo": "/scratch/alice/research-etl", "propagate_secrets": False},
         repo_root=repo,
         dry_run=False,
     )
@@ -121,7 +128,7 @@ def test_hpcc_direct_requires_ssh_host(tmp_path: Path) -> None:
     (repo / "pipelines").mkdir(parents=True, exist_ok=True)
     pipeline_path = repo / "pipelines" / "sample.yml"
     pipeline_path.write_text("steps: []\n", encoding="utf-8")
-    ex = HpccDirectExecutor(env_config={}, repo_root=repo)
+    ex = HpccDirectExecutor(env_config={"propagate_secrets": False}, repo_root=repo)
     hpcc_mod.parse_pipeline = lambda *_a, **_k: Pipeline(steps=[Step(name="s1", script="echo.py")])  # type: ignore[assignment]
     try:
         ex.submit(str(pipeline_path), {})
@@ -131,6 +138,9 @@ def test_hpcc_direct_requires_ssh_host(tmp_path: Path) -> None:
 
 
 def test_hpcc_direct_allow_dirty_git_overlays_local_changes(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ETL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     repo = tmp_path / "repo"
     (repo / "pipelines").mkdir(parents=True, exist_ok=True)
     (repo / "plugins").mkdir(parents=True, exist_ok=True)
@@ -168,7 +178,12 @@ def test_hpcc_direct_allow_dirty_git_overlays_local_changes(monkeypatch, tmp_pat
     monkeypatch.setattr(hpcc_mod.subprocess, "run", _fake_run)
 
     ex = HpccDirectExecutor(
-        env_config={"ssh_host": "dev.hpcc.local", "ssh_user": "alice", "remote_repo": "/scratch/alice/research-etl"},
+        env_config={
+            "ssh_host": "dev.hpcc.local",
+            "ssh_user": "alice",
+            "remote_repo": "/scratch/alice/research-etl",
+            "propagate_secrets": False,
+        },
         repo_root=repo,
         plugins_dir=repo / "plugins",
         dry_run=False,
@@ -180,3 +195,50 @@ def test_hpcc_direct_allow_dirty_git_overlays_local_changes(monkeypatch, tmp_pat
     remote_script = str(ssh_calls[-1][-1])
     assert "DIRTY_OVERLAY_TAR=" in remote_script
     assert "rm -f -- deleted.txt" in remote_script
+
+
+def test_hpcc_direct_propagates_secrets_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-value")
+    monkeypatch.delenv("ETL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    repo = tmp_path / "repo"
+    (repo / "pipelines").mkdir(parents=True, exist_ok=True)
+    pipeline_path = repo / "pipelines" / "sample.yml"
+    pipeline_path.write_text("steps: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        hpcc_mod,
+        "parse_pipeline",
+        lambda *_a, **_k: Pipeline(steps=[Step(name="s1", script="echo.py")]),
+    )
+    monkeypatch.setattr(
+        hpcc_mod,
+        "resolve_execution_spec",
+        lambda **_k: GitExecutionSpec(
+            commit_sha="32adb6b10db9aaaa111122223333444455556666",
+            origin_url="git@github.com:org/research-etl.git",
+            repo_name="research-etl",
+            git_is_dirty=False,
+        ),
+    )
+
+    seen_cmds: list[list[str]] = []
+
+    def _fake_run(cmd, capture_output, text, timeout, check):
+        seen_cmds.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr(hpcc_mod.subprocess, "run", _fake_run)
+
+    ex = HpccDirectExecutor(
+        env_config={"ssh_host": "dev.hpcc.local", "ssh_user": "alice", "remote_repo": "/scratch/alice/research-etl"},
+        repo_root=repo,
+        dry_run=False,
+    )
+    _ = ex.submit(str(pipeline_path), {"run_id": "sec1"})
+    assert any(cmd and cmd[0] == "scp" for cmd in seen_cmds)
+    ssh_calls = [cmd for cmd in seen_cmds if cmd and cmd[0] == "ssh"]
+    assert ssh_calls
+    remote_script = str(ssh_calls[-1][-1])
+    assert "STAGED_SECRETS=" in remote_script
+    assert "source \"$HOME/.secrets/etl\"" in remote_script

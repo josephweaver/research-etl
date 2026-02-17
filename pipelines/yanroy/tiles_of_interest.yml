@@ -42,7 +42,7 @@ steps:
     plugin: exec_script.py
     args:
       script: "scripts/yanroy/build_tiles_of_interest_from_facts.py"
-      script_args: "--states-csv \"{states_interest.output_dir}/states.of.interest.csv\" --extract-dir \"{tiger_state_extractdir}\" --raster-facts-csv \"{yanroy_metadir}/raster_facts.csv\" --output-csv \"{metadir}/tiles.of.interest.csv\" --verbose"
+      script_args: "--states-csv \"{states_interest.output_dir}/states.of.interest.csv\" --extract-dir \"{tiger_state_extractdir}\" --raster-facts-csv \"{yanroy_metadir}/raster_facts.csv\" --output-csv \"{metadir}/tiles.of.interest.csv\" --touch-buffer-m 1.0 --verbose"
       verbose: true
     output_var: tiles_builder
 

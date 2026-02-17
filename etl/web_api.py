@@ -42,6 +42,7 @@ from .projects import infer_project_id_from_pipeline_path, normalize_project_id,
 from .plugins.base import PluginLoadError, load_plugin
 from .runner import run_pipeline
 from .tracking import fetch_plugin_resource_stats, upsert_run_status
+from .variable_solver import VariableSolver
 from .web_queries import (
     WebQueryError,
     fetch_dataset_detail,
@@ -3700,6 +3701,7 @@ def _parse_pipeline_from_yaml_text(
     env_vars = _resolve_builder_env_vars(
         environments_config_path=environments_config_path,
         env_name=env_name,
+        global_vars=global_vars,
     )
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as tmp:
         tmp.write(yaml_text)
@@ -3980,15 +3982,6 @@ def _build_builder_namespace(
 
     max_passes = resolve_max_passes_setting(global_vars=global_vars, env_vars=env_vars)
 
-    def _resolve_preview_text(value: str, ctx: dict[str, Any], *, self_key: str, self_fallback: Any) -> str:
-        text = str(value or "")
-        temp_ctx = dict(ctx)
-        if self_key in temp_ctx:
-            temp_ctx.pop(self_key, None)
-        if self_fallback is not None and not isinstance(self_fallback, (dict, list)):
-            temp_ctx[self_key] = self_fallback
-        return _resolve_text_with_ctx(text, temp_ctx)
-
     def _resolve_preview_flat(
         flat_map: dict[str, Any],
         base_ctx: dict[str, Any],
@@ -4007,12 +4000,17 @@ def _build_builder_namespace(
             for k, v in current.items():
                 if isinstance(v, str):
                     ktxt = str(k)
-                    nxt[ktxt] = _resolve_preview_text(
-                        v,
-                        ctx,
-                        self_key=ktxt,
-                        self_fallback=seed_flat.get(ktxt),
-                    )
+                    temp_ctx = dict(ctx)
+                    if ktxt in temp_ctx:
+                        temp_ctx.pop(ktxt, None)
+                    fallback = seed_flat.get(ktxt)
+                    if fallback is not None and not isinstance(fallback, (dict, list)):
+                        temp_ctx[ktxt] = fallback
+                    resolved = VariableSolver.resolve_iterative(v, temp_ctx, max_passes=1)
+                    if isinstance(resolved, (dict, list)):
+                        nxt[ktxt] = v
+                    else:
+                        nxt[ktxt] = str(resolved)
                 else:
                     nxt[str(k)] = v
             if nxt == current:
@@ -4637,7 +4635,9 @@ def api_builder_resolve_text(payload: Optional[dict[str, Any]] = Body(default=No
         raw_vars=raw_vars,
         raw_dirs=raw_dirs,
     )
-    resolved = _resolve_text_with_ctx(value, ctx)
+    max_passes = resolve_max_passes_setting(global_vars=global_vars, env_vars=env_vars)
+    resolved_raw = VariableSolver.resolve_iterative(value, ctx, max_passes=max_passes)
+    resolved = str(resolved_raw) if not isinstance(resolved_raw, (dict, list)) else value
     return {"value": value, "resolved": resolved, "changed": resolved != value}
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import shlex
@@ -52,6 +53,7 @@ from etl.execution_config import (
 
 
 DEFAULT_PLUGIN_DIR = Path("plugins")
+DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
 
 
 def _run_store_path(workdir: str) -> Path:
@@ -112,6 +114,56 @@ def _parse_cli_var_overrides(entries: List[str] | None) -> Dict[str, Any]:
             raise ValueError(f"Invalid --var '{text}': key may not be empty")
         _assign_dotted_path(out, key_text, value)
     return out
+
+
+def _parse_secret_env_keys(exec_env: Dict[str, Any]) -> List[str]:
+    raw = exec_env.get("secret_env_keys")
+    items: List[str]
+    if isinstance(raw, (list, tuple, set)):
+        items = [str(x).strip() for x in raw]
+    elif raw is None:
+        env_raw = str(os.environ.get("ETL_SECRET_ENV_KEYS") or "").strip()
+        if env_raw:
+            items = [x.strip() for x in env_raw.replace(";", ",").split(",")]
+        else:
+            items = list(DEFAULT_SECRET_ENV_KEYS)
+    else:
+        items = [x.strip() for x in str(raw).replace(";", ",").split(",")]
+    out: List[str] = []
+    seen: Set[str] = set()
+    for key in items:
+        if not key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _collect_secret_vars(exec_env: Dict[str, Any]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for key in _parse_secret_env_keys(exec_env):
+        val = os.environ.get(key)
+        if val is None:
+            continue
+        text = str(val).strip()
+        if not text:
+            continue
+        out[key] = text
+    return out
+
+
+def _merge_context_with_secrets(context_vars: Dict[str, Any], secret_vars: Dict[str, str]) -> Dict[str, Any]:
+    merged = dict(context_vars or {})
+    if not secret_vars:
+        return merged
+    secret_ns: Dict[str, Any] = dict(secret_vars)
+    existing = merged.get("secret")
+    if isinstance(existing, dict):
+        secret_ns.update({str(k): v for k, v in existing.items()})
+    merged["secret"] = secret_ns
+    return merged
 
 
 def _has_successful_run_for_pipeline(pipeline_path: Path, *, workdir: str) -> bool:
@@ -183,12 +235,13 @@ def _submit_pipeline_run(
 ) -> int:
     plugins_dir_path = Path(args.plugins_dir)
     repo_root = Path(".").resolve()
+    parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
     try:
         pipeline = parse_pipeline(
             pipeline_path,
             global_vars=global_vars,
             env_vars=exec_env,
-            context_vars=commandline_vars,
+            context_vars=parse_context_vars,
         )
     except (PipelineError, FileNotFoundError) as exc:
         print(f"Invalid pipeline: {exc}", file=sys.stderr)
@@ -485,6 +538,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.workdir:
         # Keep explicit --workdir as the strongest CLI override, unified under one overlay.
         commandline_vars["workdir"] = str(args.workdir)
+    parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
     if bool(getattr(args, "ignore_dependencies", False)):
         print("Ignoring pipeline dependencies (--ignore-dependencies).")
         return _submit_pipeline_run(
@@ -501,7 +555,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             pipeline_path.resolve(),
             global_vars=global_vars,
             env_vars=exec_env,
-            context_vars=commandline_vars,
+            context_vars=parse_context_vars,
             stack=[],
             visiting=set(),
             ordered=ordered_reqs,
@@ -519,7 +573,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 dep,
                 global_vars=global_vars,
                 env_vars=exec_env,
-                context_vars=commandline_vars,
+                context_vars=parse_context_vars,
             )
         except (PipelineError, FileNotFoundError) as exc:
             print(f"Invalid pipeline: {exc}", file=sys.stderr)

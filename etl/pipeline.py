@@ -49,6 +49,7 @@ class Step:
     foreach: Optional[str] = None  # name of list variable to fan out over
     foreach_glob: Optional[str] = None  # glob pattern to fan out over filesystem paths
     foreach_kind: Optional[str] = None  # any|files|dirs (applies to foreach_glob)
+    disabled: bool = False
 
 
 @dataclass
@@ -411,6 +412,15 @@ def parse_pipeline(
                 raise PipelineError(f"Step {idx} `foreach_kind` must be one of: any, files, dirs")
             if foreach_glob is None:
                 raise PipelineError(f"Step {idx} `foreach_kind` requires `foreach_glob`.")
+        disabled = step_map.get("disabled")
+        if disabled is None and "Disabled" in step_map:
+            disabled = step_map.get("Disabled")
+        if disabled is None:
+            disabled = False
+        if not isinstance(disabled, bool):
+            raise PipelineError(f"Step {idx} `disabled` must be a boolean if provided")
+        if disabled:
+            continue
         script_interp = _resolve_iterative(script, step_ctx, max_passes=resolve_max_passes)
         env_interp = _resolve_iterative(env, step_ctx, max_passes=resolve_max_passes)
         foreach_glob_interp: Optional[str] = None
@@ -428,6 +438,7 @@ def parse_pipeline(
                 foreach=foreach,
                 foreach_glob=foreach_glob_interp,
                 foreach_kind=foreach_kind_norm,
+                disabled=False,
             )
         )
 

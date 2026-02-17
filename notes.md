@@ -216,3 +216,27 @@ I noticed that twe provide both a executor and an enviroment,  I belive the envi
   - resolve per-step deps from plugin metadata (`meta.deps`) + optional step overrides;
   - build/reuse cached envs by dependency hash;
   - execute each step inside its resolved env and log env hash/provenance for reproducibility.
+- [ ] Investigate first-class masked variable objects for secrets (replace raw string dict model).
+  - Problem: current masking relies on string replacement dictionaries and can miss unsafe stringification paths.
+  - Goal: represent sensitive values as typed variable objects (for example `SecretValue`) with controlled `__str__`/print/log behavior.
+  - Design direction:
+    - keep real secret value accessible only via explicit method (`reveal()` / `value()`), not implicit string conversion;
+    - default string/render output should be masked token (for example `"[REDACTED]"`);
+    - provide safe serialization modes (`masked`, `for_runtime_env`) to prevent accidental leakage.
+  - Integration points:
+    - variable resolver namespaces (`secret.*`, future project/env secret scopes),
+    - runner logs and plugin logs,
+    - diagnostics/error reports, web API payloads, and tracking DB writes.
+  - Migration:
+    - add compatibility layer so existing plugins expecting strings still work in runtime env injection;
+    - incrementally adopt typed secrets in parser/runner first, then plugin contract updates.
+- [ ] Add structured progress reporting/progress bars for long-running steps.
+  - Goal: show live step progress in CLI/web for long tasks instead of only start/end logs.
+  - Add plugin progress API (for example `ctx.progress(current, total, message=None)`), plus optional named phases.
+  - Support loop-style reporting (`iteration i of N`) and unknown-total mode (`spinner` / indeterminate progress).
+  - Persist progress events in run tracking so progress survives refresh/reconnect and is visible in live run views.
+  - Render as:
+    - CLI: single-line progress bar with percent + current/total + ETA when total is known.
+    - Web: per-step progress bar + latest progress message.
+  - Backward compatibility:
+    - plugins that do not report progress continue to work unchanged.

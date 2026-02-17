@@ -8,6 +8,7 @@ Intended for fast development iteration only.
 from __future__ import annotations
 
 from dataclasses import replace
+import os
 import tarfile
 import tempfile
 import shlex
@@ -27,6 +28,9 @@ from ..git_checkout import (
 from ..pipeline import parse_pipeline, PipelineError
 
 
+DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
+
+
 def _flatten_scalar_vars(prefix: str, obj: Dict[str, Any]) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for key, value in (obj or {}).items():
@@ -39,6 +43,25 @@ def _flatten_scalar_vars(prefix: str, obj: Dict[str, Any]) -> Dict[str, str]:
             continue
         else:
             out[path] = str(value)
+    return out
+
+
+def _parse_str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_items = [str(x).strip() for x in value]
+    else:
+        raw_items = [x.strip() for x in str(value).replace(";", ",").split(",")]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not item:
+            continue
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
     return out
 
 
@@ -76,6 +99,11 @@ class HpccDirectExecutor(Executor):
         self.remote_conda_env = str(self.env_config.get("conda_env") or "").strip()
         self.remote_modules = list(self.env_config.get("modules") or [])
         self.ssh_timeout = int(self.env_config.get("ssh_timeout", 120))
+        self.ssh_connect_timeout = max(1, int(self.env_config.get("ssh_connect_timeout", self.ssh_timeout)))
+        self.propagate_secrets = bool(self.env_config.get("propagate_secrets", True))
+        self.load_secrets_file = bool(self.env_config.get("load_secrets_file", True))
+        self.secret_env_keys = _parse_str_list(self.env_config.get("secret_env_keys")) or list(DEFAULT_SECRET_ENV_KEYS)
+        self.required_secret_keys = _parse_str_list(self.env_config.get("required_secret_keys"))
         self._statuses: Dict[str, RunStatus] = {}
 
     def _ssh_target(self) -> str:
@@ -91,7 +119,7 @@ class HpccDirectExecutor(Executor):
             "-o",
             "BatchMode=yes",
             "-o",
-            "ConnectTimeout=20",
+            f"ConnectTimeout={self.ssh_connect_timeout}",
             "-o",
             "ConnectionAttempts=1",
         ]
@@ -104,14 +132,20 @@ class HpccDirectExecutor(Executor):
         except GitCheckoutError:
             return path.as_posix()
 
-    def _run_ssh_script(self, target: str, script: str) -> subprocess.CompletedProcess:
+    def _run_ssh_script(self, target: str, script: str, *, stream_output: bool = False) -> subprocess.CompletedProcess:
         ssh_cmd = [
             "ssh",
             *self._ssh_common_args(),
             target,
             f"bash --login -lc {shlex.quote(script)}",
         ]
-        return subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=self.ssh_timeout, check=False)
+        return subprocess.run(
+            ssh_cmd,
+            capture_output=not bool(stream_output),
+            text=True,
+            timeout=self.ssh_timeout,
+            check=False,
+        )
 
     def _scp_to_remote(self, target: str, local_path: Path, remote_path: str) -> subprocess.CompletedProcess:
         scp_cmd = [
@@ -223,6 +257,44 @@ class HpccDirectExecutor(Executor):
                 except Exception:
                     pass
         return remote_tar, deletes
+
+    def _collect_secret_exports(self, context: Dict[str, Any]) -> Dict[str, str]:
+        key_candidates = _parse_str_list(context.get("secret_env_keys")) or list(self.secret_env_keys)
+        required = _parse_str_list(context.get("required_secret_keys")) or list(self.required_secret_keys)
+        out: Dict[str, str] = {}
+        for key in key_candidates:
+            val = os.environ.get(key)
+            if val is None:
+                continue
+            text = str(val).strip()
+            if not text:
+                continue
+            out[key] = text
+        missing_required = [k for k in required if k not in out]
+        if missing_required:
+            raise RuntimeError(
+                "Missing required local secrets for hpcc_direct: " + ", ".join(sorted(missing_required))
+            )
+        return out
+
+    def _stage_secret_exports(self, *, target: str, run_id: str, secrets: Dict[str, str]) -> Optional[str]:
+        if not secrets:
+            return None
+        local_tmp = Path(tempfile.gettempdir()) / f"hpcc_direct_secrets_{run_id}.env"
+        remote_tmp = f"/tmp/hpcc_direct_secrets_{run_id}.env"
+        lines = [f"export {key}={shlex.quote(value)}" for key, value in sorted(secrets.items())]
+        try:
+            local_tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            scp_proc = self._scp_to_remote(target, local_tmp, remote_tmp)
+            if scp_proc.returncode != 0:
+                detail = (scp_proc.stderr or scp_proc.stdout or "").strip()
+                raise RuntimeError(f"Failed to transfer staged secrets file: {detail[:2000]}")
+        finally:
+            try:
+                local_tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+        return remote_tmp
 
     def submit(self, pipeline_path: str, context: Dict[str, Any]) -> SubmissionResult:
         context = context or {}
@@ -336,6 +408,35 @@ class HpccDirectExecutor(Executor):
             "git checkout --detach \"$REPO_SHA\"",
             "git reset --hard \"$REPO_SHA\"",
         ]
+        staged_secrets_remote: Optional[str] = None
+        if self.propagate_secrets and not self.dry_run:
+            secret_exports = self._collect_secret_exports(context)
+            staged_secrets_remote = self._stage_secret_exports(target=target, run_id=run_id, secrets=secret_exports)
+        if staged_secrets_remote:
+            lines.extend(
+                [
+                    "mkdir -p \"$HOME/.secrets\"",
+                    "chmod 700 \"$HOME/.secrets\"",
+                    "touch \"$HOME/.secrets/etl\"",
+                    "chmod 600 \"$HOME/.secrets/etl\"",
+                    f"STAGED_SECRETS={shlex.quote(staged_secrets_remote)}",
+                    "if [ -f \"$STAGED_SECRETS\" ]; then",
+                    "  cp \"$HOME/.secrets/etl\" \"$HOME/.secrets/etl.tmp\" || true",
+                    "  while IFS= read -r line; do",
+                    "    key=$(printf '%s' \"$line\" | sed -n 's/^export[[:space:]]\\+\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p')",
+                    "    [ -n \"$key\" ] || continue",
+                    "    grep -v \"^export $key=\" \"$HOME/.secrets/etl.tmp\" > \"$HOME/.secrets/etl.tmp2\" || true",
+                    "    mv \"$HOME/.secrets/etl.tmp2\" \"$HOME/.secrets/etl.tmp\"",
+                    "    printf '%s\\n' \"$line\" >> \"$HOME/.secrets/etl.tmp\"",
+                    "  done < \"$STAGED_SECRETS\"",
+                    "  mv \"$HOME/.secrets/etl.tmp\" \"$HOME/.secrets/etl\"",
+                    "  chmod 600 \"$HOME/.secrets/etl\"",
+                    "  rm -f -- \"$STAGED_SECRETS\"",
+                    "fi",
+                ]
+            )
+        if self.load_secrets_file:
+            lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
         overlay_tar_remote: Optional[str] = None
         overlay_deletes: list[str] = []
         if bool(context.get("allow_dirty_git", False)):
@@ -385,11 +486,11 @@ class HpccDirectExecutor(Executor):
             return SubmissionResult(run_id=run_id, message="dry-run")
 
         started_dt = datetime.utcnow()
-        proc = self._run_ssh_script(target, remote_script)
+        proc = self._run_ssh_script(target, remote_script, stream_output=self.verbose)
         ended_dt = datetime.utcnow()
         stdout = str(proc.stdout or "").strip()
         stderr = str(proc.stderr or "").strip()
-        detail = stderr or stdout or ""
+        detail = stderr or stdout or ("remote output streamed to console" if self.verbose else "")
         if proc.returncode == 0:
             status = RunStatus(
                 run_id=run_id,
