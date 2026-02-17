@@ -31,6 +31,20 @@ class AppliedMigration:
     checksum: str
 
 
+def _flag_enabled(raw: Optional[str]) -> bool:
+    text = str(raw or "").strip().lower()
+    return text in {"1", "true", "yes", "on", "y"}
+
+
+def db_verbose_enabled() -> bool:
+    return _flag_enabled(os.environ.get("ETL_DB_VERBOSE")) or _flag_enabled(os.environ.get("ETL_DATABASE_VERBOSE"))
+
+
+def db_log(message: str) -> None:
+    if db_verbose_enabled():
+        print(f"[db] {str(message)}")
+
+
 def _db_mode_is_offline(raw: Optional[str]) -> bool:
     text = str(raw or "").strip().lower()
     if not text:
@@ -58,6 +72,7 @@ def _load_database_url() -> Optional[str]:
     if _db_mode_is_offline(os.environ.get("ETL_DB_MODE")) or _db_mode_is_offline(
         os.environ.get("ETL_DATABASE_MODE")
     ):
+        db_log("db_mode=offline -> database disabled")
         return None
     raw = os.environ.get("ETL_DATABASE_URL")
     if raw is None:
@@ -166,23 +181,29 @@ def ensure_database_schema(ddl_dir: Path = Path("db/ddl")) -> List[AppliedMigrat
     """
     db_url = _load_database_url()
     if not db_url:
+        db_log("ensure_database_schema skipped: no database URL configured")
         return []
 
     scripts = _discover_ddl_scripts(ddl_dir)
+    db_log(f"ensure_database_schema start ddl_dir={ddl_dir} scripts={len(scripts)}")
     applied: List[AppliedMigration] = []
 
     try:
+        db_log("connect: schema bootstrap")
         with psycopg.connect(db_url) as conn:
             with conn.cursor() as cur:
                 # Serialize migration bootstrap across concurrent processes.
+                db_log("query: SELECT pg_advisory_lock(918273645)")
                 cur.execute("SELECT pg_advisory_lock(918273645)")
             try:
+                db_log("query: ensure migration metadata tables")
                 _ensure_migration_tables(conn)
                 conn.commit()
 
                 for script in scripts:
                     sql_text = script.read_text(encoding="utf-8")
                     checksum = _sha256(sql_text)
+                    db_log(f"query: check migration version={script.name}")
                     existing = _fetch_existing_migration(conn, script.name)
 
                     if existing:
@@ -192,15 +213,19 @@ def ensure_database_schema(ddl_dir: Path = Path("db/ddl")) -> List[AppliedMigrat
                                 f"Migration checksum mismatch for {script.name}. "
                                 "Do not edit applied scripts; add a new incremental .sql migration."
                             )
+                        db_log(f"migration unchanged version={script.name}")
                         continue
 
                     with conn.cursor() as cur:
+                        db_log(f"query: apply migration version={script.name}")
                         cur.execute(sql_text)
+                    db_log(f"query: record migration version={script.name}")
                     _record_migration(conn, script.name, checksum)
                     conn.commit()
                     applied.append(AppliedMigration(version_name=script.name, checksum=checksum))
             finally:
                 with conn.cursor() as cur:
+                    db_log("query: SELECT pg_advisory_unlock(918273645)")
                     cur.execute("SELECT pg_advisory_unlock(918273645)")
                 conn.commit()
     except DatabaseError:
@@ -211,4 +236,11 @@ def ensure_database_schema(ddl_dir: Path = Path("db/ddl")) -> List[AppliedMigrat
     return applied
 
 
-__all__ = ["DatabaseError", "AppliedMigration", "ensure_database_schema", "get_database_url"]
+__all__ = [
+    "DatabaseError",
+    "AppliedMigration",
+    "ensure_database_schema",
+    "get_database_url",
+    "db_verbose_enabled",
+    "db_log",
+]

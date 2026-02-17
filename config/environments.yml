@@ -51,6 +51,7 @@ environments:
   hpcc_msu_direct:
     executor: hpcc_direct
     db_mode: offline
+    db_verbose: true
     path_style: unix
     git_remote_url: "git@github.com:josephweaver/research-etl.git"
     rclone_bin: "rclone"

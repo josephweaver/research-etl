@@ -170,6 +170,12 @@ def _apply_db_mode_from_exec_env(exec_env: Dict[str, Any]) -> None:
     mode = str(exec_env.get("db_mode") or "").strip()
     if mode:
         os.environ["ETL_DB_MODE"] = mode
+    verbose = exec_env.get("db_verbose")
+    if verbose is not None:
+        if bool(verbose):
+            os.environ["ETL_DB_VERBOSE"] = "1"
+        else:
+            os.environ["ETL_DB_VERBOSE"] = "0"
 
 
 def _has_successful_run_for_pipeline(pipeline_path: Path, *, workdir: str) -> bool:

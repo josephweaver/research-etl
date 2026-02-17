@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import psycopg
 
 from .artifacts import register_run_artifacts, register_step_artifacts
-from .db import get_database_url
+from .db import db_log, get_database_url
 from .runner import RunResult, StepResult
 
 
@@ -66,6 +66,7 @@ def _upsert_run_db(
 ) -> None:
     db_url = get_database_url()
     if not db_url:
+        db_log("_upsert_run_db skipped: no database URL configured")
         return
 
     provenance = provenance or {}
@@ -79,8 +80,10 @@ def _upsert_run_db(
     execution_config_checksum = provenance.get("execution_config_checksum")
     plugin_checksums_json = json.dumps(provenance.get("plugin_checksums_json")) if provenance.get("plugin_checksums_json") is not None else None
 
+    db_log(f"connect: _upsert_run_db run_id={rec.run_id}")
     with psycopg.connect(db_url) as conn:
         with conn.cursor() as cur:
+            db_log(f"query: upsert etl_runs run_id={rec.run_id} status={rec.status}")
             cur.execute(
                 """
                 INSERT INTO etl_runs (
@@ -140,6 +143,7 @@ def _upsert_run_db(
                 step_success = step.get("success", False)
                 step_skipped = step.get("skipped", False)
                 step_error = step.get("error")
+                db_log(f"query: upsert etl_run_steps run_id={rec.run_id} step={step_name}")
                 cur.execute(
                     """
                     INSERT INTO etl_run_steps (
@@ -168,6 +172,10 @@ def _upsert_run_db(
                 if attempts:
                     for att in attempts:
                         att_outputs_json = json.dumps(att.get("outputs") or {}, default=str)
+                        db_log(
+                            "query: upsert etl_run_step_attempts "
+                            f"run_id={rec.run_id} step={step_name} attempt_no={int(att.get('attempt_no', step.get('attempt_no', 1)))}"
+                        )
                         cur.execute(
                             """
                             INSERT INTO etl_run_step_attempts (
@@ -213,6 +221,10 @@ def _upsert_run_db(
                         )
                 elif int(step.get("attempt_no", 0) or 0) > 0:
                     # Backward-compatible fallback when attempt history is not present.
+                    db_log(
+                        "query: upsert etl_run_step_attempts (fallback) "
+                        f"run_id={rec.run_id} step={step_name} attempt_no={int(step.get('attempt_no', 1))}"
+                    )
                     cur.execute(
                         """
                         INSERT INTO etl_run_step_attempts (
@@ -264,6 +276,7 @@ def _upsert_run_db(
                     "step_count": len(rec.steps),
                 }
             )
+            db_log(f"query: insert etl_run_events run_id={rec.run_id} event=run_completed")
             cur.execute(
                 """
                 INSERT INTO etl_run_events (run_id, event_type, details_json)
@@ -292,6 +305,7 @@ def upsert_run_status(
 ) -> None:
     db_url = get_database_url()
     if not db_url:
+        db_log(f"upsert_run_status skipped: no database URL configured run_id={run_id}")
         return
 
     provenance = provenance or {}
@@ -307,8 +321,10 @@ def upsert_run_status(
 
     started = started_at or _now_iso()
     ended = ended_at or _now_iso()
+    db_log(f"connect: upsert_run_status run_id={run_id} status={status}")
     with psycopg.connect(db_url) as conn:
         with conn.cursor() as cur:
+            db_log(f"query: upsert etl_runs run_id={run_id} status={status}")
             cur.execute(
                 """
                 INSERT INTO etl_runs (
@@ -362,6 +378,7 @@ def upsert_run_status(
             )
             if event_type:
                 details_json = json.dumps(event_details or {})
+                db_log(f"query: insert etl_run_events run_id={run_id} event={event_type}")
                 cur.execute(
                     """
                     INSERT INTO etl_run_events (run_id, event_type, details_json)
@@ -400,12 +417,15 @@ def upsert_step_attempt(
     """
     db_url = get_database_url()
     if not db_url:
+        db_log(f"upsert_step_attempt skipped: no database URL configured run_id={run_id} step={step_name}")
         return
     started = started_at or _now_iso()
     ended = ended_at or _now_iso()
     outputs_json = json.dumps(outputs or {}, default=str)
+    db_log(f"connect: upsert_step_attempt run_id={run_id} step={step_name} attempt_no={attempt_no}")
     with psycopg.connect(db_url) as conn:
         with conn.cursor() as cur:
+            db_log(f"query: upsert etl_run_steps run_id={run_id} step={step_name}")
             cur.execute(
                 """
                 INSERT INTO etl_run_steps (
@@ -430,6 +450,7 @@ def upsert_step_attempt(
                     outputs_json,
                 ),
             )
+            db_log(f"query: upsert etl_run_step_attempts run_id={run_id} step={step_name} attempt_no={attempt_no}")
             cur.execute(
                 """
                 INSERT INTO etl_run_step_attempts (
@@ -558,13 +579,16 @@ def load_run_step_states(run_id: str) -> Dict[str, RunStepState]:
     """
     db_url = get_database_url()
     if not db_url:
+        db_log(f"load_run_step_states skipped: no database URL configured run_id={run_id}")
         raise RuntimeError(
             "ETL_DATABASE_URL is required for --resume-run-id because step state is loaded from DB."
         )
 
+    db_log(f"connect: load_run_step_states run_id={run_id}")
     states: Dict[str, RunStepState] = {}
     with psycopg.connect(db_url) as conn:
         with conn.cursor() as cur:
+            db_log(f"query: select etl_run_steps run_id={run_id}")
             cur.execute(
                 """
                 SELECT step_name, success, skipped, COALESCE(outputs_json, '{}'::jsonb)
@@ -619,6 +643,7 @@ def fetch_plugin_resource_stats(
     """
     db_url = get_database_url()
     if not db_url:
+        db_log("fetch_plugin_resource_stats skipped: no database URL configured")
         return {}
 
     p_name = str(plugin_name or "").strip()
@@ -628,9 +653,11 @@ def fetch_plugin_resource_stats(
 
     rows: List[Any] = []
     try:
+        db_log(f"connect: fetch_plugin_resource_stats plugin={p_name} version={p_ver} executor={executor}")
         with psycopg.connect(db_url) as conn:
             with conn.cursor() as cur:
                 if p_name and p_ver:
+                    db_log("query: select etl_run_step_attempts by plugin/version")
                     cur.execute(
                         """
                         SELECT
@@ -649,6 +676,7 @@ def fetch_plugin_resource_stats(
                     )
                     rows = cur.fetchall()
                 if not rows and refs:
+                    db_log("query: select etl_run_step_attempts fallback by script refs")
                     cur.execute(
                         """
                         SELECT
