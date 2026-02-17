@@ -24,6 +24,14 @@ from etl.datasets.transports.base import fetch_via_transport
 class DatasetServiceError(RuntimeError):
     """Raised when dataset queries fail."""
 
+    def __init__(self, message: str, *, details: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.details: Dict[str, Any] = dict(details or {})
+
+
+def _log_step(trace: List[str], message: str) -> None:
+    trace.append(str(message))
+
 
 def _connect() -> psycopg.Connection:
     db_url = get_database_url()
@@ -297,12 +305,14 @@ def store_data(
     dry_run: bool = False,
     transport_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    trace: List[str] = []
     ds_id = str(dataset_id or "").strip()
     if not ds_id:
-        raise DatasetServiceError("dataset_id is required")
+        raise DatasetServiceError("dataset_id is required", details={"operation_log": trace})
     src = Path(str(source_path or "")).expanduser().resolve()
     if not src.exists():
-        raise DatasetServiceError(f"source_path not found: {src}")
+        raise DatasetServiceError(f"source_path not found: {src}", details={"operation_log": trace})
+    _log_step(trace, f"store_data:start dataset_id={ds_id} source_path={src}")
 
     stage_text = _normalize_stage(stage)
     ver = str(version_label or "").strip() or _default_version_label()
@@ -320,6 +330,10 @@ def store_data(
         source_name=src.name,
     )
     artifact_class = "published" if stage_text == "published" else "cache"
+    _log_step(
+        trace,
+        f"store_data:resolved stage={stage_text} version={ver} location_type={loc_type} target_uri={tgt}",
+    )
     try:
         validate_target(
             policy=policy,
@@ -333,10 +347,13 @@ def store_data(
             policy=policy,
             explicit_transport=transport,
         )
+        _log_step(trace, f"store_data:transport_selected transport={chosen_transport}")
     except DatasetRoutingError as exc:
-        raise DatasetServiceError(str(exc)) from exc
+        _log_step(trace, f"store_data:routing_error error={exc}")
+        raise DatasetServiceError(str(exc), details={"operation_log": trace}) from exc
 
     try:
+        _log_step(trace, "store_data:transfer_begin")
         transfer_receipt = transfer_via_transport(
             transport=chosen_transport,
             source_path=str(src),
@@ -344,8 +361,13 @@ def store_data(
             dry_run=bool(dry_run),
             options=transport_options or {},
         )
+        _log_step(trace, f"store_data:transfer_complete target={transfer_receipt.get('target_uri') or tgt}")
     except (DatasetTransportError, FileNotFoundError, ValueError, RuntimeError) as exc:
-        raise DatasetServiceError(f"store_data transfer failed: {exc}") from exc
+        _log_step(trace, f"store_data:transfer_error error={exc}")
+        raise DatasetServiceError(
+            f"store_data transfer failed: {exc}",
+            details={"operation_log": trace},
+        ) from exc
 
     persisted_uri = str(transfer_receipt.get("target_uri") or tgt)
     size_bytes, checksum = _file_stats(str(src))
@@ -357,6 +379,7 @@ def store_data(
     try:
         with _connect() as conn:
             with conn.cursor() as cur:
+                _log_step(trace, "store_data:db_upsert_dataset")
                 cur.execute(
                     """
                     INSERT INTO etl_datasets (dataset_id, data_class, owner_user, status, created_at, updated_at)
@@ -384,8 +407,12 @@ def store_data(
                 )
                 row = cur.fetchone()
                 if not row:
-                    raise DatasetServiceError("Failed to create or load dataset version row.")
+                    raise DatasetServiceError(
+                        "Failed to create or load dataset version row.",
+                        details={"operation_log": trace},
+                    )
                 dataset_version_id = int(row[0])
+                _log_step(trace, f"store_data:db_upsert_version dataset_version_id={dataset_version_id}")
                 cur.execute(
                     """
                     INSERT INTO etl_dataset_locations (
@@ -425,10 +452,15 @@ def store_data(
                     ),
                 )
             conn.commit()
+            _log_step(trace, "store_data:db_commit_complete")
     except DatasetServiceError:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise DatasetServiceError(f"Failed to persist dataset storage metadata: {exc}") from exc
+        _log_step(trace, f"store_data:db_error error={exc}")
+        raise DatasetServiceError(
+            f"Failed to persist dataset storage metadata: {exc}",
+            details={"operation_log": trace},
+        ) from exc
 
     return {
         "dataset_id": ds_id,
@@ -441,6 +473,7 @@ def store_data(
         "checksum": checksum,
         "size_bytes": size_bytes,
         "dry_run": bool(dry_run),
+        "operation_log": trace,
     }
 
 
@@ -457,9 +490,11 @@ def get_data(
     prefer_direct_local: bool = True,
     transport_options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    trace: List[str] = []
     ds_id = str(dataset_id or "").strip()
     if not ds_id:
-        raise DatasetServiceError("dataset_id is required")
+        raise DatasetServiceError("dataset_id is required", details={"operation_log": trace})
+    _log_step(trace, f"get_data:start dataset_id={ds_id} version={version}")
     ver_req = str(version or "latest").strip() or "latest"
     env_name = str(environment or runtime_context or "").strip().lower() or None
     policy = _load_policy_or_none()
@@ -492,11 +527,14 @@ def get_data(
                     )
                 version_row = cur.fetchone()
                 if not version_row:
+                    _log_step(trace, "get_data:version_not_found")
                     raise DatasetServiceError(
-                        f"Dataset version not found for dataset_id='{ds_id}' version='{ver_req}'."
+                        f"Dataset version not found for dataset_id='{ds_id}' version='{ver_req}'.",
+                        details={"operation_log": trace},
                     )
                 dataset_version_id = int(version_row[0])
                 resolved_version = str(version_row[1])
+                _log_step(trace, f"get_data:resolved_version version={resolved_version}")
 
                 where_loc = "dataset_version_id = %s"
                 params: list[Any] = [dataset_version_id]
@@ -526,8 +564,10 @@ def get_data(
                 )
                 location_rows = cur.fetchall()
                 if not location_rows:
+                    _log_step(trace, "get_data:location_not_found")
                     raise DatasetServiceError(
-                        f"No locations found for dataset_id='{ds_id}' version='{resolved_version}'."
+                        f"No locations found for dataset_id='{ds_id}' version='{resolved_version}'.",
+                        details={"operation_log": trace},
                     )
                 loc = location_rows[0]
                 location_id = int(loc[0])
@@ -536,10 +576,18 @@ def get_data(
                 src_uri = str(loc[3])
                 src_checksum = loc[5]
                 src_size_bytes = int(loc[6]) if loc[6] is not None else None
+                _log_step(
+                    trace,
+                    f"get_data:resolved_location location_type={src_loc_type} environment={src_env or '-'} uri={src_uri}",
+                )
     except DatasetServiceError:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise DatasetServiceError(f"Failed to resolve dataset retrieval: {exc}") from exc
+        _log_step(trace, f"get_data:resolve_error error={exc}")
+        raise DatasetServiceError(
+            f"Failed to resolve dataset retrieval: {exc}",
+            details={"operation_log": trace},
+        ) from exc
 
     local_cache_root = Path(cache_dir or ".runs/datasets_cache").expanduser().resolve()
     target_name = _location_name_from_uri(src_uri)
@@ -552,9 +600,11 @@ def get_data(
             chosen_transport = "none"
             fetched = False
             receipt = {"transport": "none", "target_path": str(local_target), "dry_run": bool(dry_run)}
+            _log_step(trace, "get_data:direct_local_hit no_transfer")
         else:
             chosen_transport = _infer_fetch_transport(location_type=src_loc_type, policy=policy, explicit=transport)
             try:
+                _log_step(trace, f"get_data:fetch_begin transport={chosen_transport}")
                 receipt = fetch_via_transport(
                     transport=chosen_transport,
                     source_uri=src_uri,
@@ -562,12 +612,18 @@ def get_data(
                     dry_run=bool(dry_run),
                     options=transport_options or {},
                 )
+                _log_step(trace, "get_data:fetch_complete")
             except (DatasetTransportError, FileNotFoundError, ValueError, RuntimeError) as exc:
-                raise DatasetServiceError(f"get_data fetch failed: {exc}") from exc
+                _log_step(trace, f"get_data:fetch_error error={exc}")
+                raise DatasetServiceError(
+                    f"get_data fetch failed: {exc}",
+                    details={"operation_log": trace},
+                ) from exc
             fetched = True
     else:
         chosen_transport = _infer_fetch_transport(location_type=src_loc_type, policy=policy, explicit=transport)
         try:
+            _log_step(trace, f"get_data:fetch_begin transport={chosen_transport}")
             receipt = fetch_via_transport(
                 transport=chosen_transport,
                 source_uri=src_uri,
@@ -575,8 +631,13 @@ def get_data(
                 dry_run=bool(dry_run),
                 options=transport_options or {},
             )
+            _log_step(trace, "get_data:fetch_complete")
         except (DatasetTransportError, FileNotFoundError, ValueError, RuntimeError) as exc:
-            raise DatasetServiceError(f"get_data fetch failed: {exc}") from exc
+            _log_step(trace, f"get_data:fetch_error error={exc}")
+            raise DatasetServiceError(
+                f"get_data fetch failed: {exc}",
+                details={"operation_log": trace},
+            ) from exc
         fetched = True
 
     result_path = str(receipt.get("target_path") or local_target)
@@ -611,8 +672,10 @@ def get_data(
                     ),
                 )
             conn.commit()
+            _log_step(trace, "get_data:event_logged")
     except Exception:
         # Retrieval event logging should not block data access.
+        _log_step(trace, "get_data:event_log_failed_nonblocking")
         pass
 
     return {
@@ -627,6 +690,7 @@ def get_data(
         "checksum": src_checksum,
         "size_bytes": src_size_bytes,
         "dry_run": bool(dry_run),
+        "operation_log": trace,
     }
 
 
