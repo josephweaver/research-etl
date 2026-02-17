@@ -161,6 +161,48 @@ def test_run_batch_emits_failed_event_with_attempt_summary(monkeypatch, tmp_path
     ]
 
 
+def test_run_batch_prints_failed_step_error_summary(monkeypatch, tmp_path: Path, capsys) -> None:
+    pipeline_path = tmp_path / "pipeline.yml"
+    _write_min_pipeline(pipeline_path)
+
+    monkeypatch.setattr(run_batch, "upsert_run_status", lambda **_: None)
+    monkeypatch.setattr(run_batch, "upsert_step_attempt", lambda **_: None)
+    monkeypatch.setattr(run_batch, "collect_run_provenance", lambda **_: {})
+
+    result = RunResult(
+        run_id="runerr",
+        steps=[
+            StepResult(
+                step=Step(name="s1", script="echo.py"),
+                success=False,
+                error="boom-2",
+                attempt_no=2,
+                attempts=[
+                    {"attempt_no": 1, "success": False, "skipped": False, "error": "boom-1", "outputs": {}},
+                    {"attempt_no": 2, "success": False, "skipped": False, "error": "boom-2", "outputs": {}},
+                ],
+            ),
+        ],
+        artifact_dir=str(tmp_path / ".runs"),
+    )
+    monkeypatch.setattr(run_batch, "run_pipeline", lambda *args, **kwargs: result)
+
+    rc = run_batch.main(
+        [
+            str(pipeline_path),
+            "--steps",
+            "1",
+            "--run-id",
+            "runerr",
+            "--workdir",
+            str(tmp_path / ".runs"),
+        ]
+    )
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "[run_batch][ERROR] step=s1 attempts=2 final_error=boom-2" in out
+
+
 def test_run_batch_verbose_prints_progress(monkeypatch, tmp_path: Path, capsys) -> None:
     pipeline_path = tmp_path / "pipeline.yml"
     _write_min_pipeline(pipeline_path)

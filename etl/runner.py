@@ -723,6 +723,7 @@ def _execute_step(
         plugin_path = _resolve_plugin_path(plugin_dir, plugin_ref)
         plugin = load_plugin(plugin_path)
     except Exception as exc:  # noqa: BLE001
+        log(f"step {step.name} failed before execution: Plugin load failed: {exc}", "ERROR")
         return StepResult(step=step, success=False, step_id=step_id, error=f"Plugin load failed: {exc}")
 
     args = _parse_args(arg_tokens)
@@ -865,6 +866,7 @@ def _execute_step(
                 if retry_delay_seconds > 0:
                     time.sleep(retry_delay_seconds)
             else:
+                log(f"step {step.name} failed on attempt {attempt_no}/{max_attempts}: {err}", "ERROR")
                 return StepResult(
                     step=step,
                     success=False,

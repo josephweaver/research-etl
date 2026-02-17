@@ -31,7 +31,7 @@ from etl.artifacts import (
 from etl.config import load_global_config, resolve_global_config_path, ConfigError
 from etl.db import ensure_database_schema, DatabaseError, get_database_url
 from etl.db_sync_queue import apply_tracking_queue
-from etl.datasets import DatasetServiceError, get_dataset, list_datasets
+from etl.datasets import DatasetServiceError, get_data, get_dataset, list_datasets, store_data
 from etl.diagnostics import write_error_report, find_latest_error_report
 from etl.executors import LocalExecutor, SlurmExecutor
 from etl.executors.slurm import SlurmSubmitError
@@ -646,6 +646,71 @@ def cmd_datasets_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_datasets_store(args: argparse.Namespace) -> int:
+    try:
+        receipt = store_data(
+            dataset_id=args.dataset_id,
+            source_path=args.path,
+            stage=args.stage,
+            version_label=args.version,
+            environment=args.environment,
+            runtime_context=args.runtime_context,
+            location_type=args.location_type,
+            target_uri=args.target_uri,
+            transport=args.transport,
+            owner_user=args.owner,
+            data_class=args.data_class,
+            dry_run=bool(args.dry_run),
+            transport_options={
+                "rclone_bin": args.rclone_bin,
+                "shared_drive_id": args.shared_drive_id,
+            },
+        )
+    except DatasetServiceError as exc:
+        print(f"Dataset store error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Stored dataset: {receipt['dataset_id']}")
+    print(f"Version: {receipt['version_label']}")
+    print(f"Stage: {receipt['stage']}")
+    print(f"Location: {receipt['location_type']} -> {receipt['target_uri']}")
+    print(f"Transport: {receipt['transport']} (dry_run={receipt['dry_run']})")
+    print(f"Checksum: {receipt['checksum'] or '-'}")
+    print(f"Size bytes: {receipt['size_bytes'] if receipt['size_bytes'] is not None else '-'}")
+    return 0
+
+
+def cmd_datasets_get(args: argparse.Namespace) -> int:
+    try:
+        receipt = get_data(
+            dataset_id=args.dataset_id,
+            version=args.version,
+            environment=args.environment,
+            runtime_context=args.runtime_context,
+            location_type=args.location_type,
+            cache_dir=args.cache_dir,
+            transport=args.transport,
+            dry_run=bool(args.dry_run),
+            prefer_direct_local=not bool(args.no_direct_local),
+            transport_options={
+                "rclone_bin": args.rclone_bin,
+                "shared_drive_id": args.shared_drive_id,
+            },
+        )
+    except DatasetServiceError as exc:
+        print(f"Dataset get error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Retrieved dataset: {receipt['dataset_id']}")
+    print(f"Version: {receipt['version_label']}")
+    print(f"Source: {receipt['location_type']} -> {receipt['source_uri']}")
+    print(f"Local path: {receipt['local_path']}")
+    print(f"Transport: {receipt['transport']} (fetched={receipt['fetched']}, dry_run={receipt['dry_run']})")
+    print(f"Checksum: {receipt['checksum'] or '-'}")
+    print(f"Size bytes: {receipt['size_bytes'] if receipt['size_bytes'] is not None else '-'}")
+    return 0
+
+
 def cmd_diagnostics_latest(args: argparse.Namespace) -> int:
     latest = find_latest_error_report(Path(args.workdir))
     if not latest:
@@ -966,6 +1031,37 @@ def build_parser() -> argparse.ArgumentParser:
     p_datasets_show = datasets_sub.add_parser("show", help="Show one dataset with versions/locations")
     p_datasets_show.add_argument("dataset_id", help="Dataset id to inspect")
     p_datasets_show.set_defaults(func=cmd_datasets_show)
+
+    p_datasets_store = datasets_sub.add_parser("store", help="Store local data into dataset registry/location")
+    p_datasets_store.add_argument("dataset_id", help="Dataset id to store under")
+    p_datasets_store.add_argument("--path", required=True, help="Local source file/directory path")
+    p_datasets_store.add_argument("--stage", default="staging", choices=["staging", "published"], help="Storage stage")
+    p_datasets_store.add_argument("--version", default=None, help="Version label (default generated UTC label)")
+    p_datasets_store.add_argument("--environment", default=None, help="Target environment name")
+    p_datasets_store.add_argument("--runtime-context", default="local", help="Current runtime context (local|slurm)")
+    p_datasets_store.add_argument("--location-type", default=None, help="Target location type (policy key)")
+    p_datasets_store.add_argument("--target-uri", default=None, help="Explicit target URI/path")
+    p_datasets_store.add_argument("--transport", default=None, help="Transport override (local_fs|rclone|rsync)")
+    p_datasets_store.add_argument("--owner", default=None, help="Optional owner_user value for dataset record")
+    p_datasets_store.add_argument("--data-class", default=None, help="Optional data_class value for dataset record")
+    p_datasets_store.add_argument("--dry-run", action="store_true", help="Plan transfer without copying bytes")
+    p_datasets_store.add_argument("--rclone-bin", default="rclone", help="rclone binary for rclone transport")
+    p_datasets_store.add_argument("--shared-drive-id", default="", help="Optional team drive id for rclone transport")
+    p_datasets_store.set_defaults(func=cmd_datasets_store)
+
+    p_datasets_get = datasets_sub.add_parser("get", help="Retrieve dataset version to local cache path")
+    p_datasets_get.add_argument("dataset_id", help="Dataset id to retrieve")
+    p_datasets_get.add_argument("--version", default="latest", help="Version label or 'latest'")
+    p_datasets_get.add_argument("--environment", default=None, help="Preferred source environment")
+    p_datasets_get.add_argument("--runtime-context", default="local", help="Current runtime context (local|slurm)")
+    p_datasets_get.add_argument("--location-type", default=None, help="Optional location type filter")
+    p_datasets_get.add_argument("--cache-dir", default=".runs/datasets_cache", help="Local cache root for fetched data")
+    p_datasets_get.add_argument("--transport", default=None, help="Transport override (local_fs|rclone|rsync)")
+    p_datasets_get.add_argument("--dry-run", action="store_true", help="Plan retrieval without copying bytes")
+    p_datasets_get.add_argument("--no-direct-local", action="store_true", help="Force copy even if source local path exists")
+    p_datasets_get.add_argument("--rclone-bin", default="rclone", help="rclone binary for rclone transport")
+    p_datasets_get.add_argument("--shared-drive-id", default="", help="Optional team drive id for rclone transport")
+    p_datasets_get.set_defaults(func=cmd_datasets_get)
 
     p_diag = subparsers.add_parser("diagnostics", help="Inspect generated diagnostic reports")
     diag_sub = p_diag.add_subparsers(dest="diagnostics_command", required=True)

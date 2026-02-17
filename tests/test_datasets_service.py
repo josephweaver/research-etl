@@ -25,6 +25,7 @@ class _FakeCursor:
         self._last_params = params
         self._conn.last_sql = sql
         self._conn.last_params = params
+        self._conn.executed.append((sql, params))
         if "FROM etl_datasets\n                    WHERE dataset_id = %s" in sql:
             if params and params[0] == "serve.demo":
                 self._row = (
@@ -35,6 +36,13 @@ class _FakeCursor:
                     datetime(2026, 2, 17, 1, 2, 3),
                     datetime(2026, 2, 17, 1, 3, 3),
                 )
+            else:
+                self._row = None
+        elif "INSERT INTO etl_dataset_versions" in sql:
+            self._row = (2,)
+        elif "SELECT dataset_version_id, version_label" in sql and "FROM etl_dataset_versions" in sql:
+            if params and params[0] == "serve.demo":
+                self._row = (2, "v2")
             else:
                 self._row = None
         else:
@@ -60,6 +68,10 @@ class _FakeCursor:
                 (1, "v1", True, "sch1", "r1", datetime(2026, 2, 17, 1, 2, 3)),
             ]
         if "FROM etl_dataset_locations" in self._last_sql:
+            if "dataset_version_id = %s" in self._last_sql:
+                return [
+                    (10, "local", "local_cache", "C:/tmp/demo/file.txt", True, "abc", 123, datetime(2026, 2, 17, 1, 3, 4)),
+                ]
             return [
                 (2, "v2", "local", "local_cache", "file:///tmp/demo", True, "abc", 123, datetime(2026, 2, 17, 1, 3, 4)),
             ]
@@ -73,6 +85,7 @@ class _FakeConn:
     def __init__(self):
         self.last_sql = ""
         self.last_params = None
+        self.executed = []
 
     def __enter__(self):
         return self
@@ -82,6 +95,9 @@ class _FakeConn:
 
     def cursor(self):
         return _FakeCursor(self)
+
+    def commit(self):
+        return None
 
 
 def test_list_datasets_returns_rows(monkeypatch):
@@ -124,3 +140,125 @@ def test_list_datasets_requires_db_url(monkeypatch):
     monkeypatch.setattr(ds, "get_database_url", lambda: None)
     with pytest.raises(ds.DatasetServiceError):
         ds.list_datasets(limit=5)
+
+
+def test_store_data_persists_records(monkeypatch, tmp_path):
+    conn = _FakeConn()
+    src = tmp_path / "payload.txt"
+    src.write_text("hello", encoding="utf-8")
+
+    def _fake_transfer(**kwargs):
+        return {
+            "transport": kwargs["transport"],
+            "target_uri": str(tmp_path / "stored" / "payload.txt"),
+            "dry_run": False,
+        }
+
+    monkeypatch.setattr(ds, "_connect", lambda: conn)
+    monkeypatch.setattr(ds, "_load_policy_or_none", lambda: None)
+    monkeypatch.setattr(ds, "transfer_via_transport", _fake_transfer)
+
+    out = ds.store_data(
+        dataset_id="serve.demo",
+        source_path=str(src),
+        stage="staging",
+        runtime_context="local",
+        version_label="v1",
+    )
+
+    assert out["dataset_id"] == "serve.demo"
+    assert out["version_label"] == "v1"
+    assert out["transport"] == "local_fs"
+    assert any("INSERT INTO etl_datasets" in sql for sql, _ in conn.executed)
+    assert any("INSERT INTO etl_dataset_versions" in sql for sql, _ in conn.executed)
+    assert any("INSERT INTO etl_dataset_locations" in sql for sql, _ in conn.executed)
+    assert any("INSERT INTO etl_dataset_events" in sql for sql, _ in conn.executed)
+
+
+def test_store_data_policy_violation_raises(monkeypatch, tmp_path):
+    src = tmp_path / "payload.txt"
+    src.write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(ds, "_load_policy_or_none", lambda: {
+        "classes": {"cache": {"allowed_location_types": ["hpcc_cache"]}},
+        "locations": {"local_cache": {"kind": "filesystem", "root_path": str(tmp_path)}},
+    })
+    with pytest.raises(ds.DatasetServiceError):
+        ds.store_data(
+            dataset_id="serve.demo",
+            source_path=str(src),
+            stage="staging",
+            runtime_context="local",
+            location_type="local_cache",
+            target_uri=str(tmp_path / "payload.txt"),
+        )
+
+
+def test_get_data_returns_direct_local_path(monkeypatch, tmp_path):
+    conn = _FakeConn()
+    src = tmp_path / "file.txt"
+    src.write_text("hello", encoding="utf-8")
+
+    class _Cursor(_FakeCursor):
+        def fetchall(self):
+            if "dataset_version_id = %s" in self._last_sql:
+                return [
+                    (10, "local", "local_cache", str(src), True, "abc", 5, datetime(2026, 2, 17, 1, 3, 4)),
+                ]
+            return super().fetchall()
+
+    class _Conn(_FakeConn):
+        def cursor(self):
+            return _Cursor(self)
+
+    monkeypatch.setattr(ds, "_connect", lambda: _Conn())
+    out = ds.get_data(dataset_id="serve.demo", version="latest", runtime_context="local")
+    assert out["dataset_id"] == "serve.demo"
+    assert out["version_label"] == "v2"
+    assert out["transport"] == "none"
+    assert out["fetched"] is False
+    assert out["local_path"] == str(src.resolve())
+
+
+def test_get_data_fetches_when_no_direct(monkeypatch, tmp_path):
+    conn = _FakeConn()
+    src_uri = "gdrive://data/etl/serve/demo/v2/file.txt"
+    captured = {}
+
+    class _Cursor(_FakeCursor):
+        def fetchall(self):
+            if "dataset_version_id = %s" in self._last_sql:
+                return [
+                    (11, "local", "gdrive", src_uri, True, "abc", 5, datetime(2026, 2, 17, 1, 3, 4)),
+                ]
+            return super().fetchall()
+
+    class _Conn(_FakeConn):
+        def cursor(self):
+            return _Cursor(self)
+
+    def _fake_fetch(**kwargs):
+        captured.update(kwargs)
+        return {"target_path": str(tmp_path / "cache" / "file.txt"), "transport": kwargs["transport"], "dry_run": False}
+
+    monkeypatch.setattr(ds, "_connect", lambda: _Conn())
+    monkeypatch.setattr(ds, "fetch_via_transport", _fake_fetch)
+    out = ds.get_data(dataset_id="serve.demo", version="latest", runtime_context="local", cache_dir=str(tmp_path / "cache"))
+    assert out["transport"] == "rclone"
+    assert out["fetched"] is True
+    assert captured["source_uri"] == src_uri
+
+
+def test_get_data_missing_version_raises(monkeypatch):
+    class _Cursor(_FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if "SELECT dataset_version_id, version_label" in sql:
+                self._row = None
+
+    class _Conn(_FakeConn):
+        def cursor(self):
+            return _Cursor(self)
+
+    monkeypatch.setattr(ds, "_connect", lambda: _Conn())
+    with pytest.raises(ds.DatasetServiceError):
+        ds.get_data(dataset_id="serve.demo", version="latest")

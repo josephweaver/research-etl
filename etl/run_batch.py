@@ -383,6 +383,13 @@ def main(argv: list[str] | None = None) -> int:
     # If a batch fails, mark the full run failed immediately.
     if not result.success:
         step_attempts = _build_step_attempt_summary(result)
+        for s in step_attempts:
+            if not bool(s.get("success", False)) and not bool(s.get("skipped", False)):
+                print(
+                    "[run_batch][ERROR] "
+                    f"step={s.get('step_name')} attempts={s.get('attempts')} "
+                    f"final_error={s.get('final_error')}"
+                )
         _safe_tracking_write(
             "batch_failed",
             upsert_run_status,

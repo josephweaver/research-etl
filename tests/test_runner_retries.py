@@ -87,3 +87,21 @@ def test_runner_records_engine_metrics_when_plugin_omits_them(tmp_path: Path) ->
     assert attempt["memory_gb"] is not None
     assert attempt["cpu_cores"] is not None
     assert attempt["cpu_count"] is None or attempt["cpu_count"] >= 1
+
+
+def test_runner_logs_final_failure_to_stdout(tmp_path: Path, capsys) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_retry_plugin(plugin_dir / "retry_plugin.py", fail_count=5)
+
+    pipeline = Pipeline(steps=[Step(name="retry_step", script="retry_plugin.py")])
+    result = run_pipeline(
+        pipeline,
+        plugin_dir=plugin_dir,
+        workdir=tmp_path / ".runs",
+        max_retries=1,
+    )
+
+    assert result.success is False
+    out = capsys.readouterr().out
+    assert "step retry_step failed on attempt 2/2: boom-2" in out
