@@ -4,7 +4,16 @@
 
 A lightweight ETL tool to construct new pipelines from modular Python "plugin" scripts and to track runs and validation. In the future this may also call ChatGPT to write data dictionary entries.
 
-## Latest updates (2026-02-17)
+## Latest updates (2026-02-18)
+
+- Added reusable geospatial attribute filter plugin: `plugins/geo_vector_filter.py`.
+  - Purpose: select polygons/features from a vector file into a new output file (for example TIGER states by `STUSPS`).
+  - Supports:
+    - explicit args: `key` + `op` (`eq|ne|in|not_in`) + `value`/`values`,
+    - lightweight `where` expressions: `COL in (...)`, `COL == ...`, `COL != ...`.
+  - Example:
+    - `where: STUSPS in (MI, WI, IA, IL, IN, OH, MN, MO, KS)`
+  - Companion tests added in `tests/test_plugin_geo_vector_filter.py` (runs when `geopandas`/`shapely` are present in env).
 
 - `hpcc_direct` executor hardening and diagnostics:
   - always performs a fresh remote git checkout (`rm -rf` + clone + pinned SHA checkout),

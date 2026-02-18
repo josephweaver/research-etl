@@ -1,4 +1,4 @@
-# Project Status (2026-02-17)
+# Project Status (2026-02-18)
 
 ## Current state
 - CLI/package baseline is in place (`pyproject.toml`, `etl` entrypoint, editable install flow, GitHub Actions tests).
@@ -97,6 +97,12 @@
 - YanRoy pipeline split is scaffolded:
   - `pipelines/yanroy_base.yml` (dependency stage: gdrive raw staging)
   - `pipelines/yanroy.yml` (main pipeline requiring base)
+- New geospatial filter plugin:
+  - `plugins/geo_vector_filter.py` filters vector features by attribute and writes a new vector output.
+  - Supports either:
+    - explicit args: `key` + `op` (`eq|ne|in|not_in`) + `value/values`,
+    - lightweight `where` expressions: `COL in (...)`, `COL == ...`, `COL != ...`.
+  - Designed for TIGER state filtering use cases (for example `STUSPS in (...)`) as a reusable pre-step.
 
 ## Web UI/API status
 - Web server: `etl web --host 127.0.0.1 --port 8000 --reload`
@@ -138,6 +144,8 @@
   - `tests/test_plugin_file_move_regex.py` -> passed
   - `tests/test_plugin_file_delete_regex.py` -> passed
   - additional targeted resolver/workdir/logging suites passed during this update cycle.
+  - New plugin tests added: `tests/test_plugin_geo_vector_filter.py` (attribute filter behavior and validation).
+    - Note: currently skips in local `.venv` if `geopandas`/`shapely` are unavailable.
 - Coverage includes:
   - DB migration bootstrap
   - tracking write paths
@@ -167,6 +175,7 @@
 5) Add offline event buffering strategy for runs executed without DB connectivity.
 6) Improve AI generation with stronger constrained output schema and optional additional repair retries.
 7) Add remote dirty-overlay support for `--allow-dirty-git`: checkout pinned commit on remote, then apply local dirty files over that checkout before execution.
+8) Wire `geo_vector_filter.py` into `pipelines/yanroy/tiles_of_interest.yml` before tile intersection logic (state prefilter stage).
 
 ## Quick commands
 - Install/editable dev env: `python -m pip install -e ".[dev]"`

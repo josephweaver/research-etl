@@ -9,6 +9,11 @@ Build a reusable geospatial ETL flow for Yanroy:
 - convert selected Yanroy rasters to polygons
 - aggregate PRISM raster values by Yanroy polygons into tabular output
 
+## Next Session Reminder
+
+- [ ] Create/verify a dedicated geo plugin folder structure (for example `plugins/geo/`) and move/new geo plugins there.
+- [ ] Update UI pipeline step plugin selector to hierarchical tree (`jsTree`) so plugins can be selected by folder/group instead of flat list.
+
 ## Pipeline Draft
 
 - [ ] `pipelines/yanroy/geo_stage.yml`
@@ -23,10 +28,11 @@ Build a reusable geospatial ETL flow for Yanroy:
 
 ## Plugin Backlog
 
-- [ ] `plugins/geo_select_features.py`
-  - [ ] Input: vector file/dir
-  - [ ] Params: `key`, `op` (`in`, `eq`), `values`
-  - [ ] Output: filtered vector artifact
+- [x] `plugins/geo_vector_filter.py`
+  - [x] Input: vector file
+  - [x] Params: `key`, `op` (`eq|ne|in|not_in`), `value/values`, optional `where`
+  - [x] Output: filtered vector artifact
+  - [x] Supports simple where syntax: `COL in (...)`, `COL == ...`, `COL != ...`
 
 - [ ] `plugins/geo_filter_rasters_by_polygon.py`
   - [ ] Input: raster dir or raster facts csv
@@ -84,7 +90,7 @@ Build a reusable geospatial ETL flow for Yanroy:
 ## Implementation Order
 
 - [ ] 1. Finalize `geo_filter_rasters_by_polygon` behavior and output schema
-- [ ] 2. Add `geo_select_features`
+- [x] 2. Add vector feature filter (`geo_vector_filter`)
 - [ ] 3. Add `raster_zonal_stats`
 - [ ] 4. Wire `pipelines/yanroy/geo_stage.yml`
 - [ ] 5. Add tests + docs
