@@ -181,6 +181,7 @@ class SlurmExecutor(Executor):
         plugins_dir: Path = Path("plugins"),
         workdir: Path = Path(".runs"),
         global_config: Optional[Path] = None,
+        projects_config: Optional[Path] = None,
         environments_config: Optional[Path] = None,
         env_name: Optional[str] = None,
         dry_run: bool = False,
@@ -231,6 +232,7 @@ class SlurmExecutor(Executor):
         self.plugins_dir = plugins_dir
         self.workdir = workdir
         self.global_config = global_config
+        self.projects_config = projects_config
         self.environments_config = environments_config
         self.env_name = env_name
         self.dry_run = dry_run
@@ -525,6 +527,7 @@ class SlurmExecutor(Executor):
             Path(pipeline_path),
             global_vars=context.get("global_vars") or {},
             env_vars=context.get("execution_env") or {},
+            project_vars=context.get("project_vars") or {},
             context_vars=context.get("commandline_vars") or {},
         )
         batches = self._group_steps_with_indices(pipeline.steps)
@@ -543,9 +546,11 @@ class SlurmExecutor(Executor):
         global_ns = dict(context.get("global_vars") or {})
         env_ns = dict(context.get("execution_env") or {})
         commandline_ns = dict(context.get("commandline_vars") or {})
+        project_ns = dict(context.get("project_vars") or {})
         solver.overlay("global", global_ns, add_namespace=True, add_flat=True)
         solver.overlay("globals", global_ns, add_namespace=True, add_flat=False)
         solver.overlay("env", env_ns, add_namespace=True, add_flat=True)
+        solver.overlay("project", project_ns, add_namespace=True, add_flat=True)
         solver.overlay("pipe", dict(getattr(pipeline, "vars", {}) or {}), add_namespace=True, add_flat=True)
         solver.overlay("vars", dict(getattr(pipeline, "vars", {}) or {}), add_namespace=True, add_flat=False)
         solver.overlay("dirs", dict(getattr(pipeline, "dirs", {}) or {}), add_namespace=True, add_flat=True)
@@ -710,6 +715,16 @@ class SlurmExecutor(Executor):
                 environments_config_remote = (
                     (Path(checkout_root) / ec_path).as_posix() if not ec_path.is_absolute() else ec_path.as_posix()
                 )
+        projects_config_remote = None
+        if self.projects_config:
+            pc_path = Path(self.projects_config)
+            if use_repo_relative_paths:
+                pc_rel = repo_relative_path(pc_path, source_repo_root, "projects_config")
+                projects_config_remote = (Path(checkout_root) / pc_rel).as_posix()
+            else:
+                projects_config_remote = (
+                    (Path(checkout_root) / pc_path).as_posix() if not pc_path.is_absolute() else pc_path.as_posix()
+                )
 
         pipeline_logdir_resolved = str(solver.get_path("dirs.logdir", "", path_style=style_norm) or "").strip()
         if "{" in pipeline_logdir_resolved or "}" in pipeline_logdir_resolved:
@@ -820,6 +835,7 @@ class SlurmExecutor(Executor):
                             resume_run_id=resume_run_id,
                             run_started_at=run_started_at,
                             global_config_path=global_config_remote,
+                            projects_config_path=projects_config_remote,
                             environments_config_path=environments_config_remote,
                             commandline_vars=commandline_ns,
                             child_jobs_file=child_jobs_file,
@@ -867,6 +883,7 @@ class SlurmExecutor(Executor):
                     resume_run_id=resume_run_id,
                     run_started_at=run_started_at,
                     global_config_path=global_config_remote,
+                    projects_config_path=projects_config_remote,
                     environments_config_path=environments_config_remote,
                     commandline_vars=commandline_ns,
                     child_jobs_file=child_jobs_file,
@@ -911,6 +928,7 @@ class SlurmExecutor(Executor):
                         resume_run_id=resume_run_id,
                         run_started_at=run_started_at,
                         global_config_path=global_config_remote,
+                        projects_config_path=projects_config_remote,
                         environments_config_path=environments_config_remote,
                         commandline_vars=commandline_ns,
                         child_jobs_file=child_jobs_file,
@@ -1083,6 +1101,10 @@ class SlurmExecutor(Executor):
             gc_path = Path(self.global_config)
             gc_arg = ((Path(checkout_root) / gc_path).as_posix() if not gc_path.is_absolute() else gc_path.as_posix())
             cmd += ["--global-config", gc_arg]
+        if self.projects_config:
+            pc_path = Path(self.projects_config)
+            pc_arg = ((Path(checkout_root) / pc_path).as_posix() if not pc_path.is_absolute() else pc_path.as_posix())
+            cmd += ["--projects-config", pc_arg]
         if self.environments_config and self.env_name:
             ec_path = Path(self.environments_config)
             ec_arg = ((Path(checkout_root) / ec_path).as_posix() if not ec_path.is_absolute() else ec_path.as_posix())
@@ -1111,6 +1133,7 @@ class SlurmExecutor(Executor):
         resume_run_id: Optional[str] = None,
         run_started_at: Optional[str] = None,
         global_config_path: Optional[str] = None,
+        projects_config_path: Optional[str] = None,
         environments_config_path: Optional[str] = None,
         commandline_vars: Optional[Dict[str, Any]] = None,
         child_jobs_file: Optional[str] = None,
@@ -1235,6 +1258,8 @@ class SlurmExecutor(Executor):
         cmd += ["--retry-delay-seconds", str(self.step_retry_delay_seconds)]
         if global_config_path:
             cmd += ["--global-config", global_config_path]
+        if projects_config_path:
+            cmd += ["--projects-config", projects_config_path]
         if environments_config_path and self.env_name:
             cmd += ["--environments-config", environments_config_path, "--env", self.env_name]
         if foreach_arg:

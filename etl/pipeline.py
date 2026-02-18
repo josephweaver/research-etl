@@ -272,6 +272,7 @@ def parse_pipeline(
     path: Path,
     global_vars: Optional[Dict[str, Any]] = None,
     env_vars: Optional[Dict[str, Any]] = None,
+    project_vars: Optional[Dict[str, Any]] = None,
     context_vars: Optional[Dict[str, Any]] = None,
 ) -> Pipeline:
     """Parse a pipeline YAML file into a Pipeline object."""
@@ -331,6 +332,8 @@ def parse_pipeline(
     solver.overlay("global", global_ns, add_namespace=True, add_flat=True)
     solver.overlay("globals", global_ns, add_namespace=True, add_flat=False)
     solver.overlay("env", env_vars or {}, add_namespace=True, add_flat=True)
+    solver.overlay("project", project_vars or {}, add_namespace=True, add_flat=True)
+    solver.overlay("projects", project_vars or {}, add_namespace=True, add_flat=False)
     solver.overlay("pipe", vars_section, add_namespace=True, add_flat=True)
     if context_vars:
         # Context vars are extra overlays (already-resolved call-site values).

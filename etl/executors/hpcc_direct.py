@@ -91,6 +91,7 @@ class HpccDirectExecutor(Executor):
         plugins_dir: Path = Path("plugins"),
         workdir: Path = Path(".runs"),
         global_config: Optional[Path] = None,
+        projects_config: Optional[Path] = None,
         environments_config: Optional[Path] = None,
         env_name: Optional[str] = None,
         dry_run: bool = False,
@@ -101,6 +102,7 @@ class HpccDirectExecutor(Executor):
         self.plugins_dir = Path(plugins_dir)
         self.workdir = Path(workdir)
         self.global_config = Path(global_config) if global_config else None
+        self.projects_config = Path(projects_config) if projects_config else None
         self.environments_config = Path(environments_config) if environments_config else None
         self.env_name = env_name
         self.dry_run = bool(dry_run)
@@ -397,6 +399,7 @@ class HpccDirectExecutor(Executor):
         started_at = str(context.get("run_started_at") or "").strip() or (datetime.utcnow().isoformat() + "Z")
         cmdline_vars = dict(context.get("commandline_vars") or {})
         exec_env = dict(context.get("execution_env") or {})
+        project_vars = dict(context.get("project_vars") or {})
         global_vars = dict(context.get("global_vars") or {})
         provenance = dict(context.get("provenance") or {})
 
@@ -405,6 +408,7 @@ class HpccDirectExecutor(Executor):
                 Path(pipeline_path),
                 global_vars=global_vars,
                 env_vars=exec_env,
+                project_vars=project_vars,
                 context_vars=cmdline_vars,
             )
         except PipelineError as exc:
@@ -440,6 +444,11 @@ class HpccDirectExecutor(Executor):
             if self.global_config
             else None
         )
+        projects_remote = (
+            self._map_repo_path_for_root(self.projects_config.resolve(), repo_root_remote, label="projects_config")
+            if self.projects_config
+            else None
+        )
 
         # Execute run_batch with the interpreter from the activated runtime
         # environment (venv/conda), not the bootstrap interpreter.
@@ -462,6 +471,8 @@ class HpccDirectExecutor(Executor):
         ]
         if self.global_config and global_remote:
             batch_cmd += ["--global-config", shlex.quote(global_remote)]
+        if self.projects_config and projects_remote:
+            batch_cmd += ["--projects-config", shlex.quote(projects_remote)]
         # hpcc_direct may run against older remote checkouts where the local
         # environment name does not exist. Pass resolved env values as --var
         # overrides instead of requiring remote environments config parity.

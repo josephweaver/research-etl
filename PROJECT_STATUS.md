@@ -12,6 +12,7 @@
 - Hierarchical iterative variable resolution is active in pipeline parsing:
   - `global.*` + flat globals
   - `env.*` + flat env overrides (from execution config env)
+  - `project.*` + flat project vars (from `config/projects.yml`, selected by resolved `project_id`)
   - `pipe.*` + flat pipeline overrides
 - Resolver depth guard is configurable and unified:
   - `resolve_max_passes` supported from global/env config (default `20`, clamped `1..100`)

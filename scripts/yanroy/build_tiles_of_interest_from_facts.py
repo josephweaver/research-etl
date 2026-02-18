@@ -4,18 +4,10 @@ import argparse
 import csv
 import re
 from pathlib import Path
-from typing import Iterable, List, Set, Tuple
+from typing import Any, Dict, List, Tuple
 
 
-MODIS_XMIN = -20015109.354
-MODIS_YMAX = 10007554.677
-MODIS_TILE_SIZE = 1111950.5196666666
-MODIS_H_MAX = 35
-MODIS_V_MAX = 17
-MODIS_SINU_WKT = (
-    "+proj=sinu +R=6371007.181 +nadgrids=@null +wktext +units=m +no_defs"
-)
-_TILE_RE = re.compile(r"(?i)h\d{2}v\d{2}")
+_TILE_RE = re.compile(r"(?i)(h\d{2}v\d{2})")
 
 
 def _norm(s: str) -> str:
@@ -82,16 +74,6 @@ def _read_state_codes(path: Path) -> Tuple[set[str], set[str]]:
     return fips, abbr
 
 
-def _iter_modis_tiles() -> Iterable[tuple[int, int, float, float, float, float]]:
-    for h in range(0, MODIS_H_MAX + 1):
-        for v in range(0, MODIS_V_MAX + 1):
-            minx = MODIS_XMIN + (h * MODIS_TILE_SIZE)
-            maxx = minx + MODIS_TILE_SIZE
-            maxy = MODIS_YMAX - (v * MODIS_TILE_SIZE)
-            miny = maxy - MODIS_TILE_SIZE
-            yield h, v, minx, miny, maxx, maxy
-
-
 def _find_state_shp(extract_dir: Path) -> Path:
     candidates = sorted(extract_dir.rglob("*.shp"))
     for p in candidates:
@@ -104,8 +86,49 @@ def _find_state_shp(extract_dir: Path) -> Path:
     raise FileNotFoundError(f"could not find state shapefile under {extract_dir}")
 
 
-def _read_tiles_from_raster_facts(raster_facts_csv: Path) -> Set[str]:
-    tiles: Set[str] = set()
+def _parse_bounds(text: str) -> tuple[float, float, float, float] | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    parts = [p.strip() for p in raw.split(",")]
+    if len(parts) != 4:
+        return None
+    try:
+        minx, miny, maxx, maxy = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+    except Exception:
+        return None
+    if not (maxx > minx and maxy > miny):
+        return None
+    return minx, miny, maxx, maxy
+
+
+def _parse_hv(tile_id: str) -> tuple[int | None, int | None]:
+    m = _TILE_RE.search(str(tile_id or ""))
+    if not m:
+        return None, None
+    text = m.group(1).lower()
+    try:
+        return int(text[1:3]), int(text[4:6])
+    except Exception:
+        return None, None
+
+
+def _normalize_tile_id(relative_path: str) -> str:
+    rel = str(relative_path or "").strip()
+    if not rel:
+        return ""
+    m = _TILE_RE.search(rel)
+    if m:
+        return m.group(1).lower()
+    # Fallback for non-hXXvYY naming: keep stable file stem-ish id.
+    name = Path(rel).name
+    stem = Path(name).stem if name else rel
+    return str(stem or rel).strip().lower()
+
+
+def _read_raster_footprints_from_facts(raster_facts_csv: Path) -> List[Dict[str, Any]]:
+    # One footprint per logical tile_id; duplicate rows/bands are expected in facts output.
+    by_tile: Dict[str, Dict[str, Any]] = {}
     with raster_facts_csv.open("r", encoding="utf-8-sig", newline="") as f:
         rdr = csv.DictReader(f)
         if not rdr.fieldnames:
@@ -114,12 +137,35 @@ def _read_tiles_from_raster_facts(raster_facts_csv: Path) -> Set[str]:
             rel = str(row.get("relative_path") or "").strip()
             if not rel:
                 continue
-            match = _TILE_RE.search(rel)
-            if match:
-                tiles.add(match.group(0).lower())
-    if not tiles:
-        raise ValueError("no tile ids (hXXvYY) found in raster_facts csv relative_path")
-    return tiles
+            bounds = _parse_bounds(str(row.get("bounds") or ""))
+            if bounds is None:
+                continue
+            crs_text = str(row.get("crs") or "").strip()
+            if not crs_text:
+                continue
+            tile_id = _normalize_tile_id(rel)
+            if not tile_id:
+                continue
+            h_val, v_val = _parse_hv(tile_id)
+            minx, miny, maxx, maxy = bounds
+            prev = by_tile.get(tile_id)
+            if prev is not None:
+                # Keep first footprint for tile_id to avoid duplicate-band spam.
+                continue
+            by_tile[tile_id] = {
+                "tile_id": tile_id,
+                "h": h_val,
+                "v": v_val,
+                "crs": crs_text,
+                "minx": minx,
+                "miny": miny,
+                "maxx": maxx,
+                "maxy": maxy,
+            }
+    out = list(by_tile.values())
+    if not out:
+        raise ValueError("no usable raster footprints (relative_path+bounds+crs) found in raster_facts csv")
+    return out
 
 
 def build_tiles_of_interest(
@@ -132,6 +178,7 @@ def build_tiles_of_interest(
 ) -> int:
     try:
         import geopandas as gpd
+        import pandas as pd
         from shapely.geometry import box
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
@@ -140,7 +187,7 @@ def build_tiles_of_interest(
         ) from exc
 
     fips_interest, abbr_interest = _read_state_codes(states_csv)
-    tiles_available = _read_tiles_from_raster_facts(raster_facts_csv)
+    footprints = _read_raster_footprints_from_facts(raster_facts_csv)
 
     gdf = gpd.read_file(state_shapefile)
     if gdf.empty:
@@ -150,6 +197,24 @@ def build_tiles_of_interest(
     has_stusps = "STUSPS" in gdf.columns
     if not has_statefp and not has_stusps:
         raise RuntimeError("state shapefile missing STATEFP and STUSPS columns")
+
+    missing_fips: list[str] = []
+    missing_abbr: list[str] = []
+    if has_statefp and fips_interest:
+        known_fips = set(gdf["STATEFP"].astype(str).str.zfill(2).tolist())
+        missing_fips = sorted(fips_interest - known_fips)
+    if has_stusps and abbr_interest:
+        known_abbr = set(gdf["STUSPS"].astype(str).str.upper().tolist())
+        missing_abbr = sorted(abbr_interest - known_abbr)
+    if missing_fips or missing_abbr:
+        parts: list[str] = []
+        if missing_fips:
+            parts.append("fips=" + ",".join(missing_fips))
+        if missing_abbr:
+            parts.append("abbr=" + ",".join(missing_abbr))
+        raise RuntimeError(
+            "requested states not found in state shapefile: " + " ".join(parts)
+        )
 
     mask = None
     if has_statefp and fips_interest:
@@ -167,40 +232,63 @@ def build_tiles_of_interest(
     if gdf.crs is None:
         raise RuntimeError("state shapefile missing CRS")
     src_crs = str(gdf.crs)
-
-    gdf = gdf.to_crs(MODIS_SINU_WKT)
-    # Repair invalid geometries after reprojection to reduce topology/CRS edge-case misses.
-    gdf = gdf.loc[gdf.geometry.notna()].copy()
-    try:
-        gdf["geometry"] = gdf.geometry.make_valid()
-    except Exception:
-        gdf["geometry"] = gdf.geometry.buffer(0)
-    gdf = gdf.loc[~gdf.geometry.is_empty].copy()
-    if gdf.empty:
-        raise RuntimeError("all selected state geometries became empty/invalid after CRS transform")
-    if float(touch_buffer_m) > 0.0:
-        # Expand state boundaries slightly to include edge-touch cases that can
-        # be missed due to CRS transform / floating precision effects.
-        gdf["geometry"] = gdf.geometry.buffer(float(touch_buffer_m))
-    tiles = []
-    for h, v, minx, miny, maxx, maxy in _iter_modis_tiles():
-        tile_id = f"h{h:02d}v{v:02d}"
-        if tile_id not in tiles_available:
-            continue
-        tiles.append({"tile_id": tile_id, "h": h, "v": v, "geometry": box(minx, miny, maxx, maxy)})
-    if not tiles:
-        raise RuntimeError("no MODIS tile polygons left after filtering by raster_facts.csv")
-    tdf = gpd.GeoDataFrame(tiles, geometry="geometry", crs=MODIS_SINU_WKT)
+    footprints_by_crs: Dict[str, List[Dict[str, Any]]] = {}
+    for fp in footprints:
+        crs_key = str(fp["crs"])
+        footprints_by_crs.setdefault(crs_key, []).append(fp)
 
     state_cols = [c for c in ["STATEFP", "STUSPS", "geometry"] if c in gdf.columns]
-    joined = gpd.sjoin(
-        gdf[state_cols],
-        tdf[["tile_id", "h", "v", "geometry"]],
-        how="inner",
-        predicate="intersects",
-    )
-    if joined.empty:
-        raise RuntimeError("no available MODIS tiles intersect selected states")
+    joined_parts = []
+    for crs_key, fps in footprints_by_crs.items():
+        state_proj = gdf.to_crs(crs_key)
+        state_proj = state_proj.loc[state_proj.geometry.notna()].copy()
+        try:
+            state_proj["geometry"] = state_proj.geometry.make_valid()
+        except Exception:
+            state_proj["geometry"] = state_proj.geometry.buffer(0)
+        state_proj = state_proj.loc[~state_proj.geometry.is_empty].copy()
+        if state_proj.empty:
+            continue
+        if float(touch_buffer_m) > 0.0:
+            # Expand state boundaries slightly to include edge-touch cases that can
+            # be missed due to transform / floating precision effects.
+            state_proj["geometry"] = state_proj.geometry.buffer(float(touch_buffer_m))
+        tile_rows = []
+        for fp in fps:
+            tile_rows.append(
+                {
+                    "tile_id": fp["tile_id"],
+                    "h": fp["h"],
+                    "v": fp["v"],
+                    "geometry": box(fp["minx"], fp["miny"], fp["maxx"], fp["maxy"]),
+                }
+            )
+        tdf = gpd.GeoDataFrame(tile_rows, geometry="geometry", crs=crs_key)
+        joined = gpd.sjoin(
+            state_proj[state_cols],
+            tdf[["tile_id", "h", "v", "geometry"]],
+            how="inner",
+            predicate="intersects",
+        )
+        if not joined.empty:
+            joined_parts.append(joined)
+    if not joined_parts:
+        raise RuntimeError("no raster_facts footprints intersect selected states")
+    if len(joined_parts) == 1:
+        joined = joined_parts[0]
+    else:
+        joined = gpd.GeoDataFrame(pd.concat(joined_parts, ignore_index=True), geometry="geometry")
+
+    def _to_int_or_blank(value: Any) -> int | str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text or text.lower() == "nan":
+            return ""
+        try:
+            return int(float(text))
+        except Exception:
+            return ""
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     seen: set[Tuple[str, str]] = set()
@@ -220,8 +308,8 @@ def build_tiles_of_interest(
                 "statefp": statefp,
                 "stusps": stusps,
                 "tile_id": tile_id,
-                "h": int(row.get("h")),
-                "v": int(row.get("v")),
+                "h": _to_int_or_blank(row.get("h")),
+                "v": _to_int_or_blank(row.get("v")),
             }
         )
     rows.sort(key=lambda r: (r["statefp"], r["tile_id"]))
@@ -232,10 +320,12 @@ def build_tiles_of_interest(
         w.writerows(rows)
 
     if verbose:
+        unique_tiles = sorted({str(r["tile_id"]).lower() for r in rows})
         print(
             "[build_tiles_of_interest_from_facts] "
-            f"state_src_crs={src_crs} state_join_crs={MODIS_SINU_WKT} "
-            f"states={len(gdf)} available_tiles={len(tiles_available)} matched_rows={len(rows)} "
+            f"state_src_crs={src_crs} raster_crs_count={len(footprints_by_crs)} "
+            f"states={len(gdf)} available_tiles={len(footprints)} "
+            f"matched_rows={len(rows)} matched_unique_tiles={len(unique_tiles)} "
             f"touch_buffer_m={float(touch_buffer_m)} output={output_csv.as_posix()}"
         )
     return len(rows)
@@ -244,8 +334,8 @@ def build_tiles_of_interest(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=(
-            "Build tiles.of.interest.csv by intersecting selected states with MODIS tiles, "
-            "then filtering to tile_ids present in raster_facts.csv"
+            "Build tiles.of.interest.csv by intersecting selected states with raster "
+            "footprints read from raster_facts.csv (bounds + crs)."
         )
     )
     ap.add_argument("--states-csv", required=True, help="Path to states.of.interest.csv")
@@ -257,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         "--touch-buffer-m",
         type=float,
         default=1.0,
-        help="Positive buffer (meters, MODIS sinusoidal) applied to state polygons before intersect.",
+        help="Positive buffer in projected units (usually meters) applied to state polygons before intersect.",
     )
     ap.add_argument("--verbose", action="store_true")
     args, unknown_args = ap.parse_known_args(argv)

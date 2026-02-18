@@ -29,7 +29,12 @@ from etl.execution_config import (
 )
 from etl.pipeline import parse_pipeline, PipelineError
 from etl.provenance import collect_run_provenance
-from etl.projects import resolve_project_id
+from etl.projects import (
+    resolve_project_id,
+    resolve_projects_config_path,
+    load_project_vars,
+    ProjectConfigError,
+)
 from etl.runner import run_pipeline, RunResult
 from etl.tracking import upsert_run_status, upsert_step_attempt, load_run_step_states
 
@@ -194,6 +199,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--foreach-item-index", type=int, default=None, help="Run only one foreach item index for selected step(s)")
     parser.add_argument("--global-config", help="Path to global config YAML", default=None)
     parser.add_argument(
+        "--projects-config",
+        help="Path to project vars config YAML (default: config/projects.yml when present)",
+        default=None,
+    )
+    parser.add_argument(
         "--environments-config",
         help="Path to environments config YAML (default: config/environments.yml)",
         default=None,
@@ -258,6 +268,13 @@ def main(argv: list[str] | None = None) -> int:
         args.global_config = str(resolved_global_cfg)
         _vprint(args.verbose, f"loaded global config: {args.global_config}")
     try:
+        resolved_projects_cfg = resolve_projects_config_path(
+            Path(args.projects_config) if args.projects_config else None
+        )
+    except ProjectConfigError as exc:
+        print(f"Projects config error: {exc}")
+        return 1
+    try:
         resolved_exec_cfg = resolve_execution_config_path(
             Path(args.environments_config) if args.environments_config else None
         )
@@ -288,10 +305,31 @@ def main(argv: list[str] | None = None) -> int:
     parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
 
     try:
+        pre_pipeline = parse_pipeline(
+            Path(args.pipeline),
+            global_vars=global_vars,
+            env_vars=exec_env,
+            context_vars=parse_context_vars,
+        )
+    except PipelineError as exc:
+        print(f"Pipeline error: {exc}")
+        return 1
+    project_id = resolve_project_id(
+        explicit_project_id=args.project_id,
+        pipeline_project_id=getattr(pre_pipeline, "project_id", None),
+        pipeline_path=args.pipeline,
+    )
+    try:
+        project_vars = load_project_vars(project_id=project_id, projects_config_path=resolved_projects_cfg)
+    except ProjectConfigError as exc:
+        print(f"Projects config error: {exc}")
+        return 1
+    try:
         full_pipeline = parse_pipeline(
             Path(args.pipeline),
             global_vars=global_vars,
             env_vars=exec_env,
+            project_vars=project_vars,
             context_vars=parse_context_vars,
         )
     except PipelineError as exc:
@@ -311,11 +349,12 @@ def main(argv: list[str] | None = None) -> int:
     ctx = load_context(Path(args.context_file)) if args.context_file else {}
     if args.context_file:
         _vprint(args.verbose, f"loaded context file: {args.context_file}")
-    project_id = resolve_project_id(
-        explicit_project_id=args.project_id or ctx.get("project_id"),
-        pipeline_project_id=getattr(full_pipeline, "project_id", None),
-        pipeline_path=args.pipeline,
-    )
+    if args.project_id is None and ctx.get("project_id"):
+        project_id = resolve_project_id(
+            explicit_project_id=ctx.get("project_id"),
+            pipeline_project_id=getattr(full_pipeline, "project_id", None),
+            pipeline_path=args.pipeline,
+        )
 
     # slice pipeline steps
     indices = [int(x) for x in args.steps.split(",") if x.strip() != ""]

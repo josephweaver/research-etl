@@ -39,7 +39,12 @@ from etl.executors import HpccDirectExecutor, LocalExecutor, SlurmExecutor
 from etl.executors.slurm import SlurmSubmitError
 from etl.pipeline import PipelineError, parse_pipeline
 from etl.provenance import collect_run_provenance
-from etl.projects import resolve_project_id
+from etl.projects import (
+    resolve_project_id,
+    resolve_projects_config_path,
+    load_project_vars,
+    ProjectConfigError,
+)
 from etl.plugins.base import describe_plugin, discover_plugins, PluginLoadError
 from etl.tracking import load_runs, find_run
 from etl.execution_config import (
@@ -248,13 +253,42 @@ def _submit_pipeline_run(
     plugins_dir_path = Path(args.plugins_dir)
     repo_root = Path(".").resolve()
     parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
+    # Pre-parse without project vars to discover pipeline metadata/project_id.
     try:
-        pipeline = parse_pipeline(
+        pre_pipeline = parse_pipeline(
             pipeline_path,
             global_vars=global_vars,
             env_vars=exec_env,
             context_vars=parse_context_vars,
         )
+    except (PipelineError, FileNotFoundError) as exc:
+        print(f"Invalid pipeline: {exc}", file=sys.stderr)
+        return 1
+    project_id = resolve_project_id(
+        explicit_project_id=args.project_id,
+        pipeline_project_id=getattr(pre_pipeline, "project_id", None),
+        pipeline_path=pipeline_path,
+    )
+    project_vars = {}
+    if getattr(args, "projects_config", None):
+        try:
+            project_vars = load_project_vars(
+                project_id=project_id,
+                projects_config_path=Path(args.projects_config),
+            )
+        except ProjectConfigError as exc:
+            print(f"Projects config error: {exc}", file=sys.stderr)
+            return 1
+    # Re-parse with project vars in final resolver chain.
+    try:
+        parse_kwargs = {
+            "global_vars": global_vars,
+            "env_vars": exec_env,
+            "context_vars": parse_context_vars,
+        }
+        if project_vars:
+            parse_kwargs["project_vars"] = project_vars
+        pipeline = parse_pipeline(pipeline_path, **parse_kwargs)
     except (PipelineError, FileNotFoundError) as exc:
         print(f"Invalid pipeline: {exc}", file=sys.stderr)
         return 1
@@ -286,12 +320,6 @@ def _submit_pipeline_run(
     source_bundle = args.source_bundle or exec_env.get("source_bundle")
     source_snapshot = args.source_snapshot or exec_env.get("source_snapshot")
     allow_workspace_source = bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False))
-    project_id = resolve_project_id(
-        explicit_project_id=args.project_id,
-        pipeline_project_id=getattr(pipeline, "project_id", None),
-        pipeline_path=pipeline_path,
-    )
-
     if args.executor == "slurm":
         executor = SlurmExecutor(
             env_config=exec_env,
@@ -299,6 +327,7 @@ def _submit_pipeline_run(
             plugins_dir=plugins_dir_path,
             workdir=Path(resolved_workdir),
             global_config=Path(args.global_config) if args.global_config else None,
+            projects_config=Path(args.projects_config) if getattr(args, "projects_config", None) else None,
             environments_config=Path(args.environments_config) if args.environments_config else None,
             env_name=args.env,
             dry_run=args.dry_run,
@@ -317,6 +346,7 @@ def _submit_pipeline_run(
             plugins_dir=plugins_dir_path,
             workdir=Path(resolved_workdir),
             global_config=Path(args.global_config) if args.global_config else None,
+            projects_config=Path(args.projects_config) if getattr(args, "projects_config", None) else None,
             environments_config=Path(args.environments_config) if args.environments_config else None,
             env_name=args.env,
             dry_run=args.dry_run,
@@ -347,6 +377,7 @@ def _submit_pipeline_run(
                 "provenance": provenance,
                 "repo_root": repo_root,
                 "global_vars": global_vars,
+                "project_vars": project_vars,
                 "commandline_vars": commandline_vars,
                 "execution_source": execution_source,
                 "source_bundle": source_bundle,
@@ -496,6 +527,16 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"Global config error: {exc}", file=sys.stderr)
             return 1
         args.global_config = str(selected_global_config)
+    selected_projects_config: Path | None = None
+    try:
+        selected_projects_config = resolve_projects_config_path(
+            Path(args.projects_config) if getattr(args, "projects_config", None) else None
+        )
+    except ProjectConfigError as exc:
+        print(f"Projects config error: {exc}", file=sys.stderr)
+        return 1
+    if selected_projects_config:
+        args.projects_config = str(selected_projects_config)
     try:
         selected_environments_config = resolve_execution_config_path(
             Path(args.environments_config) if args.environments_config else None
@@ -656,10 +697,31 @@ def cmd_validate(args: argparse.Namespace) -> int:
             print(f"Global config error: {exc}", file=sys.stderr)
             return 1
         args.global_config = str(selected_global_config)
+    selected_projects_config: Path | None = None
     try:
-        pipeline = parse_pipeline(pipeline_path, global_vars=global_vars, env_vars={})
+        selected_projects_config = resolve_projects_config_path(
+            Path(args.projects_config) if getattr(args, "projects_config", None) else None
+        )
+    except ProjectConfigError as exc:
+        print(f"Projects config error: {exc}", file=sys.stderr)
+        return 1
+    try:
+        pre = parse_pipeline(pipeline_path, global_vars=global_vars, env_vars={})
+        project_id = resolve_project_id(
+            explicit_project_id=getattr(args, "project_id", None),
+            pipeline_project_id=getattr(pre, "project_id", None),
+            pipeline_path=pipeline_path,
+        )
+        project_vars = load_project_vars(project_id=project_id, projects_config_path=selected_projects_config)
+        parse_kwargs = {"global_vars": global_vars, "env_vars": {}}
+        if project_vars:
+            parse_kwargs["project_vars"] = project_vars
+        pipeline = parse_pipeline(pipeline_path, **parse_kwargs)
     except (PipelineError, FileNotFoundError) as exc:
         print(f"Invalid pipeline: {exc}", file=sys.stderr)
+        return 1
+    except ProjectConfigError as exc:
+        print(f"Projects config error: {exc}", file=sys.stderr)
         return 1
     print(f"Pipeline is valid. Steps: {len(pipeline.steps)}")
     return 0
@@ -1110,6 +1172,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("pipeline", help="Path to pipeline YAML")
     p_run.add_argument("--global-config", help="Path to global config YAML", default=None)
     p_run.add_argument(
+        "--projects-config",
+        help="Path to project vars config YAML (default: config/projects.yml when present)",
+        default=None,
+    )
+    p_run.add_argument(
         "--environments-config",
         help="Path to environments config YAML (default: config/environments.yml)",
         default=None,
@@ -1245,6 +1312,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate = subparsers.add_parser("validate", help="Validate a pipeline file")
     p_validate.add_argument("pipeline", help="Path to pipeline YAML")
     p_validate.add_argument("--global-config", help="Path to global config YAML", default=None)
+    p_validate.add_argument(
+        "--projects-config",
+        help="Path to project vars config YAML (default: config/projects.yml when present)",
+        default=None,
+    )
+    p_validate.add_argument("--project-id", default=None, help="Project id override for validation context.")
     p_validate.set_defaults(func=cmd_validate)
 
     p_web = subparsers.add_parser("web", help="Run the minimal web UI/API server")

@@ -1,0 +1,15 @@
+projects:
+  default:
+    vars:
+      basedir: "/data/default"
+      owner: "core"
+
+  land_core:
+    vars:
+      basedir: "/data/land_core"
+      owner: "land-core"
+      states_of_interest: [ 'IL', 'MN', 'WI', 'OH', 'SD', 'IA', 'IN', 'MI', 'MO' ]
+  gee_lee:
+    vars:
+      basedir: "/data/gee_lee"
+      owner: "gee-lee"

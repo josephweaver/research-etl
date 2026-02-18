@@ -247,7 +247,8 @@ Templating is iterative (resolved repeatedly until values stop changing). Resolu
 
 1. `global.*` from `config/global.yml`, also loaded as flat keys.
 2. `env.*` from selected execution environment (`config/environments.yml --env ...`), also loaded as flat keys and overriding global flat collisions.
-3. `pipe.*` from pipeline `vars`, also loaded as flat keys and overriding prior flat collisions.
+3. `project.*` from `config/projects.yml` (selected by resolved `project_id`), also loaded as flat keys and overriding prior flat collisions.
+4. `pipe.*` from pipeline `vars`, also loaded as flat keys and overriding prior flat collisions.
 
 `resolve_max_passes` controls iterative depth globally/environment-wide:
 
@@ -388,6 +389,7 @@ Detailed platform install steps: `docs/install.md`.
 4) Add a plugin under `plugins/` (see `plugins/echo.py`).  
 5) Create a pipeline YAML (see `pipelines/sample.yml`).  
 6) (Optional) Create global config `config/global.yml` using `config/global.example.yml` and reference with `{global.data}` etc.  
+6.1) (Optional) Create project vars config `config/projects.yml` using `config/projects.example.yml` and reference with `{project.*}`.
 7) (Optional) Define execution environments in `config/environments.yml` (see `config/environments.example.yml`) and pick one with `--environments-config ... --env hpcc_alpha`.  
 8) Run: `etl validate pipelines/sample.yml --global-config config/global.yml` then `etl run pipelines/sample.yml --global-config config/global.yml --environments-config config/environments.yml --env hpcc_alpha`.  
 9) Inspect runs: `etl runs list` and `etl runs show <run_id>`.
@@ -411,7 +413,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 
 - `etl plugins list [-d plugins/]` â€“ list discovered plugins.  
 - `etl validate <pipeline.yml> [--global-config config/global.yml]` â€“ parse and validate pipeline syntax/templating.  
-- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --environments-config ... --env name --project-id <project_id> --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.  
+- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --projects-config ... --environments-config ... --env name --project-id <project_id> --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.  
   - Workdir precedence: `--workdir` (CLI) -> pipeline `workdir` -> execution env `workdir` -> global config `workdir` -> `.runs`.
   - If `requires_pipelines` is set in the target pipeline, missing successful dependencies are run first automatically.
   - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in environments config or env vars.  
@@ -597,3 +599,4 @@ Goal: trigger ETL when a pipeline YAML is committed, but run heavy geospatial wo
 - Status return: the Action captures the SLURM job ID and can comment on the PR or fail the workflow on non-zero exit.
 - If SSH is blocked: use a campus-hosted webhook/queue or a cron poller on HPCC to submit `sbatch` for new pipeline commits.
 - Security: use read-only deploy key, minimal privileges; avoid moving data through GitHub - compute and storage stay on HPCC.
+

@@ -66,6 +66,7 @@ class LocalExecutor(Executor):
         plugin_dir = self.plugin_dir
         global_vars = context.get("global_vars") or {}
         execution_env = context.get("execution_env") or {}
+        project_vars = context.get("project_vars") or {}
         commandline_vars = context.get("commandline_vars") or {}
         path_style = str(commandline_vars.get("path_style") or execution_env.get("path_style") or "").strip()
 
@@ -74,6 +75,7 @@ class LocalExecutor(Executor):
             solver.overlay("global", dict(global_vars), add_namespace=True, add_flat=True)
             solver.overlay("globals", dict(global_vars), add_namespace=True, add_flat=False)
             solver.overlay("env", dict(execution_env), add_namespace=True, add_flat=True)
+            solver.overlay("project", dict(project_vars), add_namespace=True, add_flat=True)
             if pipeline_obj is not None:
                 solver.overlay("pipe", dict(getattr(pipeline_obj, "vars", {}) or {}), add_namespace=True, add_flat=True)
                 solver.overlay("vars", dict(getattr(pipeline_obj, "vars", {}) or {}), add_namespace=True, add_flat=False)
@@ -165,6 +167,7 @@ class LocalExecutor(Executor):
                 pipeline_ref,
                 global_vars=global_vars,
                 env_vars=execution_env,
+                project_vars=project_vars,
                 context_vars=commandline_vars,
             )
         except PipelineError as exc:
