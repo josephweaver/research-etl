@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import shlex
 import subprocess
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,21 @@ def _parse_str_list(value: Any) -> list[str]:
     return out
 
 
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return bool(default)
+    if text in {"1", "true", "yes", "on", "y"}:
+        return True
+    if text in {"0", "false", "no", "off", "n"}:
+        return False
+    return bool(default)
+
+
 class HpccDirectExecutor(Executor):
     name = "hpcc_direct"
 
@@ -100,6 +116,7 @@ class HpccDirectExecutor(Executor):
         self.remote_modules = list(self.env_config.get("modules") or [])
         self.ssh_timeout = int(self.env_config.get("ssh_timeout", 120))
         self.ssh_connect_timeout = max(1, int(self.env_config.get("ssh_connect_timeout", self.ssh_timeout)))
+        self.stream_setup_output = bool(self.env_config.get("stream_setup_output", True))
         self.stream_run_batch_output = bool(self.env_config.get("stream_run_batch_output", True))
         self.propagate_secrets = bool(self.env_config.get("propagate_secrets", True))
         self.load_secrets_file = bool(self.env_config.get("load_secrets_file", True))
@@ -140,13 +157,59 @@ class HpccDirectExecutor(Executor):
             target,
             f"bash --login -lc {shlex.quote(script)}",
         ]
-        return subprocess.run(
+        if not stream_output:
+            return subprocess.run(
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.ssh_timeout,
+                check=False,
+            )
+        proc = subprocess.Popen(
             ssh_cmd,
-            capture_output=not bool(stream_output),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=self.ssh_timeout,
-            check=False,
+            encoding="utf-8",
+            errors="replace",
         )
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+
+        def _reader(stream, buf: list[str], stream_name: str) -> None:
+            if stream is None:
+                return
+            try:
+                for line in iter(stream.readline, ""):
+                    buf.append(line)
+                    text = line.rstrip("\r\n")
+                    if text:
+                        print(f"[hpcc_direct][{stream_name}] {text}", flush=True)
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        t_out = threading.Thread(target=_reader, args=(proc.stdout, stdout_parts, "stdout"), daemon=True)
+        t_err = threading.Thread(target=_reader, args=(proc.stderr, stderr_parts, "stderr"), daemon=True)
+        t_out.start()
+        t_err.start()
+        try:
+            rc = proc.wait(timeout=self.ssh_timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            t_out.join(timeout=2)
+            t_err.join(timeout=2)
+            raise
+        t_out.join(timeout=2)
+        t_err.join(timeout=2)
+        return subprocess.CompletedProcess(ssh_cmd, rc, "".join(stdout_parts), "".join(stderr_parts))
 
     def _build_remote_script(self, lines: list[str]) -> str:
         base = [
@@ -382,6 +445,7 @@ class HpccDirectExecutor(Executor):
         # environment (venv/conda), not the bootstrap interpreter.
         batch_cmd = [
             "python",
+            "-u",
             "-m",
             "etl.run_batch",
             shlex.quote(pipeline_remote),
@@ -508,6 +572,11 @@ class HpccDirectExecutor(Executor):
             "fi; "
             "fi"
         )
+        runtime_lines.append(
+            "if ! python -c 'import etl.run_batch' >/dev/null 2>&1; then "
+            "python -m pip install --no-deps -e \"$CHECKOUT_ROOT\"; "
+            "fi"
+        )
         run_lines = [f"CHECKOUT_ROOT={shlex.quote(repo_root_remote)}", "cd \"$CHECKOUT_ROOT\""]
         for module_name in self.remote_modules:
             mod = str(module_name or "").strip()
@@ -527,6 +596,12 @@ class HpccDirectExecutor(Executor):
             run_lines.append("source \"$CHECKOUT_ROOT/.venv/bin/activate\"")
         if self.load_secrets_file:
             run_lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
+        db_mode = str(exec_env.get("db_mode") or "").strip()
+        if db_mode:
+            run_lines.append(f"export ETL_DB_MODE={shlex.quote(db_mode)}")
+        if exec_env.get("db_verbose") is not None:
+            run_lines.append(f"export ETL_DB_VERBOSE={'1' if _parse_bool(exec_env.get('db_verbose')) else '0'}")
+        run_lines.append("export PYTHONUNBUFFERED=1")
         run_lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
         run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
         run_lines.append(" ".join(batch_cmd))
@@ -537,12 +612,32 @@ class HpccDirectExecutor(Executor):
 
         started_dt = datetime.utcnow()
         try:
-            self._run_stage(target=target, stage_name="prepare_checkout", lines=checkout_lines, stream_output=self.verbose)
+            self._run_stage(
+                target=target,
+                stage_name="prepare_checkout",
+                lines=checkout_lines,
+                stream_output=(self.verbose or self.stream_setup_output),
+            )
             if secrets_lines:
-                self._run_stage(target=target, stage_name="apply_secrets", lines=secrets_lines, stream_output=self.verbose)
+                self._run_stage(
+                    target=target,
+                    stage_name="apply_secrets",
+                    lines=secrets_lines,
+                    stream_output=(self.verbose or self.stream_setup_output),
+                )
             if len(overlay_lines) > 1:
-                self._run_stage(target=target, stage_name="apply_dirty_overlay", lines=overlay_lines, stream_output=self.verbose)
-            self._run_stage(target=target, stage_name="setup_runtime", lines=runtime_lines, stream_output=self.verbose)
+                self._run_stage(
+                    target=target,
+                    stage_name="apply_dirty_overlay",
+                    lines=overlay_lines,
+                    stream_output=(self.verbose or self.stream_setup_output),
+                )
+            self._run_stage(
+                target=target,
+                stage_name="setup_runtime",
+                lines=runtime_lines,
+                stream_output=(self.verbose or self.stream_setup_output),
+            )
             proc = self._run_stage(
                 target=target,
                 stage_name="run_batch",

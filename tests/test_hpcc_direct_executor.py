@@ -9,6 +9,14 @@ from etl.git_checkout import GitExecutionSpec
 from etl.pipeline import Pipeline, Step
 
 
+def _fake_ssh_runner(seen_scripts: list[str], *, returncode: int = 0, stdout: str = "ok", stderr: str = ""):
+    def _runner(self, target, script, stream_output=False):
+        seen_scripts.append(str(script))
+        return subprocess.CompletedProcess(["ssh", target], returncode, stdout, stderr)
+
+    return _runner
+
+
 def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ETL_DATABASE_URL", raising=False)
@@ -39,13 +47,8 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
             git_is_dirty=False,
         ),
     )
-    seen = {}
-
-    def _fake_run(cmd, capture_output, text, timeout, check):
-        seen["cmd"] = cmd
-        return subprocess.CompletedProcess(cmd, 0, "ok", "")
-
-    monkeypatch.setattr(hpcc_mod.subprocess, "run", _fake_run)
+    seen_scripts: list[str] = []
+    monkeypatch.setattr(HpccDirectExecutor, "_run_ssh_script", _fake_ssh_runner(seen_scripts))
 
     ex = HpccDirectExecutor(
         env_config={
@@ -69,7 +72,12 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
         {
             "run_id": "runabc",
             "run_started_at": "2026-02-17T01:02:03Z",
-            "execution_env": {"step_max_retries": 2, "step_retry_delay_seconds": 1.5},
+            "execution_env": {
+                "step_max_retries": 2,
+                "step_retry_delay_seconds": 1.5,
+                "db_mode": "offline",
+                "db_verbose": True,
+            },
             "commandline_vars": {"foo": "bar"},
             "project_id": "land_core",
         },
@@ -78,10 +86,13 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
     status = ex.status("runabc")
     assert status.state.value == "succeeded"
 
-    remote_script = str(seen["cmd"][-1])
+    remote_script = str(seen_scripts[-1])
     assert "etl.run_batch" in remote_script
-    assert "python -m etl.run_batch" in remote_script
+    assert "python -u -m etl.run_batch" in remote_script
     assert "python3 -m etl.run_batch" not in remote_script
+    assert "export PYTHONUNBUFFERED=1" in remote_script
+    assert "export ETL_DB_MODE=offline" in remote_script
+    assert "export ETL_DB_VERBOSE=1" in remote_script
     assert "--steps 0,1" in remote_script
     assert "--project-id land_core" in remote_script
 
@@ -109,10 +120,11 @@ def test_hpcc_direct_submit_records_failed_status(monkeypatch, tmp_path: Path) -
             git_is_dirty=False,
         ),
     )
+    seen_scripts: list[str] = []
     monkeypatch.setattr(
-        hpcc_mod.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", "boom"),
+        HpccDirectExecutor,
+        "_run_ssh_script",
+        _fake_ssh_runner(seen_scripts, returncode=1, stdout="", stderr="boom"),
     )
     ex = HpccDirectExecutor(
         env_config={"ssh_host": "dev.hpcc.local", "remote_repo": "/scratch/alice/research-etl", "propagate_secrets": False},
@@ -172,12 +184,14 @@ def test_hpcc_direct_allow_dirty_git_overlays_local_changes(monkeypatch, tmp_pat
     )
 
     seen_cmds: list[list[str]] = []
+    seen_scripts: list[str] = []
 
     def _fake_run(cmd, capture_output, text, timeout, check):
         seen_cmds.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, "ok", "")
 
     monkeypatch.setattr(hpcc_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(HpccDirectExecutor, "_run_ssh_script", _fake_ssh_runner(seen_scripts))
 
     ex = HpccDirectExecutor(
         env_config={
@@ -192,11 +206,9 @@ def test_hpcc_direct_allow_dirty_git_overlays_local_changes(monkeypatch, tmp_pat
     )
     _ = ex.submit(str(pipeline_path), {"run_id": "dirty1", "allow_dirty_git": True})
     assert any(cmd and cmd[0] == "scp" for cmd in seen_cmds)
-    ssh_calls = [cmd for cmd in seen_cmds if cmd and cmd[0] == "ssh"]
-    assert ssh_calls
-    scripts = [str(cmd[-1]) for cmd in ssh_calls]
-    assert any("DIRTY_OVERLAY_TAR=" in s for s in scripts)
-    assert any("rm -f -- deleted.txt" in s for s in scripts)
+    assert seen_scripts
+    assert any("DIRTY_OVERLAY_TAR=" in s for s in seen_scripts)
+    assert any("rm -f -- deleted.txt" in s for s in seen_scripts)
 
 
 def test_hpcc_direct_propagates_secrets_file(monkeypatch, tmp_path: Path) -> None:
@@ -225,12 +237,14 @@ def test_hpcc_direct_propagates_secrets_file(monkeypatch, tmp_path: Path) -> Non
     )
 
     seen_cmds: list[list[str]] = []
+    seen_scripts: list[str] = []
 
     def _fake_run(cmd, capture_output, text, timeout, check):
         seen_cmds.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, "ok", "")
 
     monkeypatch.setattr(hpcc_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(HpccDirectExecutor, "_run_ssh_script", _fake_ssh_runner(seen_scripts))
 
     ex = HpccDirectExecutor(
         env_config={"ssh_host": "dev.hpcc.local", "ssh_user": "alice", "remote_repo": "/scratch/alice/research-etl"},
@@ -239,11 +253,9 @@ def test_hpcc_direct_propagates_secrets_file(monkeypatch, tmp_path: Path) -> Non
     )
     _ = ex.submit(str(pipeline_path), {"run_id": "sec1"})
     assert any(cmd and cmd[0] == "scp" for cmd in seen_cmds)
-    ssh_calls = [cmd for cmd in seen_cmds if cmd and cmd[0] == "ssh"]
-    assert ssh_calls
-    scripts = [str(cmd[-1]) for cmd in ssh_calls]
-    assert any("STAGED_SECRETS=" in s for s in scripts)
-    assert any("source \"$HOME/.secrets/etl\"" in s for s in scripts)
+    assert seen_scripts
+    assert any("STAGED_SECRETS=" in s for s in seen_scripts)
+    assert any("source \"$HOME/.secrets/etl\"" in s for s in seen_scripts)
 
 
 def test_hpcc_direct_streams_run_batch_output_by_default(monkeypatch, tmp_path: Path) -> None:
