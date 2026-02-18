@@ -48,7 +48,11 @@
 - HPCC direct execution hardening:
   - fresh remote checkout each run (no reuse of stale checkout directories),
   - UTF-8 subprocess decode with replacement for Windows launcher stability,
-  - richer failure diagnostics by surfacing both remote stdout and stderr.
+  - richer failure diagnostics by surfacing both remote stdout and stderr,
+  - streamed SSH stage output now emits line-by-line logs during execution (Popen-based streaming path),
+  - remote `run_batch` now runs unbuffered (`python -u`, `PYTHONUNBUFFERED=1`) for faster live log flush,
+  - runtime checks `import etl.run_batch` and installs editable package remotely when missing (`pip install --no-deps -e .`),
+  - execution env DB mode/verbosity are exported as `ETL_DB_MODE`/`ETL_DB_VERBOSE` before invoking `run_batch` (prevents unintended DB connection hangs when secrets file defines `ETL_DATABASE_URL`).
 - Dependency stabilization for HPCC geospatial steps:
   - `requirements.txt` includes `geopandas`, `python-dateutil`, and `requests`,
   - `hpcc_direct` requirement install now uses `--ignore-installed` to avoid cluster site-package leakage.

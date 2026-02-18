@@ -9,7 +9,11 @@ A lightweight ETL tool to construct new pipelines from modular Python "plugin" s
 - `hpcc_direct` executor hardening and diagnostics:
   - always performs a fresh remote git checkout (`rm -rf` + clone + pinned SHA checkout),
   - uses UTF-8 output decoding with replacement to avoid Windows cp1252 decode crashes,
-  - failure message now includes both remote `stdout` and `stderr` for clearer root-cause visibility.
+  - failure message now includes both remote `stdout` and `stderr` for clearer root-cause visibility,
+  - streamed SSH stage output now prints line-by-line while remote commands are still running (uses `subprocess.Popen` for streaming stages),
+  - remote `run_batch` now runs unbuffered (`python -u` + `PYTHONUNBUFFERED=1`) to improve real-time log visibility,
+  - runtime now verifies `etl.run_batch` import and auto-installs repo package remotely (`pip install --no-deps -e .`) when missing,
+  - execution env DB toggles (`db_mode`, `db_verbose`) are exported as process env (`ETL_DB_MODE`, `ETL_DB_VERBOSE`) before remote `run_batch`.
 - Updated `pipelines/yanroy/tiles_of_interest.yml` execution path on HPCC:
   - fixed step-2 parser robustness in `scripts/yanroy/build_tiles_of_interest_from_facts.py` for simple one-value-per-line `states.of.interest.csv` inputs (Sniffer fallback).
 - Requirements updates for HPCC geospatial runs:
