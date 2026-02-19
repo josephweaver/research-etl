@@ -395,6 +395,25 @@ INDEX_HTML = """<!doctype html>
     .step-plugin-picker .combo-dropdown { max-height:260px; overflow:auto; }
     .builder-step-plugin-tree { max-height:232px; overflow:auto; }
     #b_pipeline_tree { max-height:260px; overflow:auto; }
+    #b_pipeline_tree .jstree-themeicon.new-pipeline-icon {
+      position: relative;
+    }
+    #b_pipeline_tree .jstree-themeicon.new-pipeline-icon::after {
+      content: "+";
+      position: absolute;
+      right: -2px;
+      bottom: -2px;
+      width: 10px;
+      height: 10px;
+      line-height: 10px;
+      text-align: center;
+      font-size: 9px;
+      font-weight: 700;
+      color: #1d4f91;
+      background: #ffffff;
+      border: 1px solid #8fb2e0;
+      border-radius: 50%;
+    }
     #builder_namespace_tree { max-height:260px; overflow:auto; border:1px solid var(--line); border-radius:8px; background:#fff; padding:6px; margin-bottom:8px; }
     #builder_namespace_tree .ns-row { display:grid; grid-template-columns: minmax(140px, 38%) minmax(0, 1fr); gap:8px; width:100%; align-items:center; }
     #builder_namespace_tree .ns-key { font-weight:600; color:#304a70; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -545,12 +564,17 @@ INDEX_HTML = """<!doctype html>
                 <span id="builder_pipeline_status" class="status-pill not-run">not run</span>
               </div>
               <div class="controls">
+                <select id="b_pipeline_source">
+                  <option value="">repo (auto)</option>
+                </select>
                 <div id="b_pipeline_combo" class="combo-picker">
-                  <input id="b_pipeline_path" placeholder="pipeline name (stored under pipelines/)" />
+                  <input id="b_pipeline_path" placeholder="pipeline path within selected repo (e.g. yanroy/download.yml)" autocomplete="off" spellcheck="false" />
+                  <datalist id="b_pipeline_path_suggestions"></datalist>
                   <div class="combo-dropdown">
                     <div id="b_pipeline_tree"></div>
                   </div>
                 </div>
+                <button id="btn_builder_create" style="display:none;">Create</button>
                 <button id="btn_builder_import_local">Import Local</button>
                 <button id="btn_builder_save">Save Draft</button>
                 <button id="btn_builder_generate">Generate</button>
@@ -743,6 +767,8 @@ INDEX_HTML = """<!doctype html>
     let builderTreeDirs = [];
     let builderTreeFileSelection = "";
     let builderSelectedPipelineSource = "";
+    let builderPipelineSources = [];
+    let builderCreateMode = false;
     let builderProjectInjectedVarValues = {};
     let builderNamespaceTimer = null;
     let builderLastTextTarget = null;
@@ -1328,7 +1354,7 @@ INDEX_HTML = """<!doctype html>
       const runBtn = document.getElementById("btn_builder_run");
       if(runBtn){
         runBtn.classList.toggle("loading", !!builderPipelineRunning);
-        runBtn.disabled = !!builderPipelineRunning;
+        runBtn.disabled = !!builderPipelineRunning || !!builderCreateMode;
       }
       const termBtn = document.getElementById("btn_builder_terminate");
       if(termBtn){
@@ -1365,6 +1391,8 @@ INDEX_HTML = """<!doctype html>
       const intent = document.getElementById("b_intent").value.trim();
       const constraints = document.getElementById("b_constraints").value.trim();
       const projectId = document.getElementById("b_project_id").value.trim();
+      const sourceSel = document.getElementById("b_pipeline_source");
+      const pipelineSource = String(sourceSel && sourceSel.value ? sourceSel.value : builderSelectedPipelineSource).trim();
       const envName = currentEnvName();
       const workdir = deriveBuilderWorkdir();
       const retries = document.getElementById("b_max_retries").value.trim();
@@ -1374,7 +1402,7 @@ INDEX_HTML = """<!doctype html>
       if (intent) body.intent = intent;
       if (constraints) body.constraints = constraints;
       if (projectId) body.project_id = projectId;
-      if (builderSelectedPipelineSource) body.pipeline_source = builderSelectedPipelineSource;
+      if (pipelineSource) body.pipeline_source = pipelineSource;
       if (envName) body.env = envName;
       if (builderEnvironmentsConfig) body.environments_config = builderEnvironmentsConfig;
       if (workdir) body.workdir = workdir;
@@ -2471,7 +2499,126 @@ INDEX_HTML = """<!doctype html>
         const fname = parts[parts.length - 1];
         nodes.push({ id: `f:${treePath}`, parent: parentId, text: fname, type: "file", icon: "jstree-file", relpath: pipelinePath, treepath: treePath, source: sourceLabel });
       }
+      nodes.push({
+        id: "new:pipeline",
+        parent: "#",
+        text: "[new pipeline]",
+        type: "new",
+        icon: "jstree-file new-pipeline-icon",
+      });
       return nodes;
+    }
+    function builderKnownPipelineExists(pipelinePath){
+      const target = normalizeBuilderPipelineName(String(pipelinePath || "").trim());
+      if(!target) return false;
+      const all = Array.isArray(builderTreeFiles) ? builderTreeFiles : [];
+      for(const rawEntry of all){
+        let rel = "";
+        if(typeof rawEntry === "string"){
+          rel = normalizeBuilderPipelineName(String(rawEntry || ""));
+        } else if(rawEntry && typeof rawEntry === "object"){
+          rel = normalizeBuilderPipelineName(String(rawEntry.pipeline || rawEntry.relpath || rawEntry.path || ""));
+        }
+        if(rel && rel === target){
+          return true;
+        }
+      }
+      return false;
+    }
+    function renderBuilderCreateMode(){
+      const createBtn = document.getElementById("btn_builder_create");
+      const saveBtn = document.getElementById("btn_builder_save");
+      const runBtn = document.getElementById("btn_builder_run");
+      const validateBtn = document.getElementById("btn_builder_validate");
+      const pathInput = document.getElementById("b_pipeline_path");
+      if(createBtn){
+        createBtn.style.display = builderCreateMode ? "" : "none";
+      }
+      if(saveBtn){
+        saveBtn.disabled = !!builderCreateMode;
+      }
+      if(runBtn){
+        runBtn.disabled = !!builderCreateMode || !!builderPipelineRunning;
+      }
+      if(validateBtn){
+        validateBtn.disabled = !!builderCreateMode;
+      }
+      if(pathInput){
+        // Keep browser history suggestions off; enable only curated dir suggestions in create mode.
+        pathInput.setAttribute("autocomplete", "off");
+        if(builderCreateMode){
+          pathInput.setAttribute("list", "b_pipeline_path_suggestions");
+        } else {
+          pathInput.removeAttribute("list");
+        }
+      }
+      updateBuilderPipelinePathSuggestions();
+    }
+    function updateBuilderPipelinePathSuggestions(){
+      const dl = document.getElementById("b_pipeline_path_suggestions");
+      if(!dl) return;
+      if(!builderCreateMode){
+        dl.innerHTML = "";
+        return;
+      }
+      const sourceSel = document.getElementById("b_pipeline_source");
+      const selectedSource = String(sourceSel && sourceSel.value ? sourceSel.value : builderSelectedPipelineSource).trim();
+      const sources = Array.isArray(builderPipelineSources) ? builderPipelineSources.map(s => String(s || "").trim()).filter(Boolean) : [];
+      const dirs = Array.isArray(builderTreeDirs) ? builderTreeDirs.map(d => String(d || "").replaceAll("\\\\","/").trim()).filter(Boolean) : [];
+      const opts = new Set();
+      for(const raw of dirs){
+        const parts = raw.split("/").filter(Boolean);
+        if(!parts.length) continue;
+        if(sources.length > 1){
+          // External multi-source tree prefixes dirs with source label.
+          const label = parts[0];
+          if(selectedSource && label !== selectedSource) continue;
+          const rel = parts.slice(1).join("/");
+          if(rel) opts.add(rel.endsWith("/") ? rel : `${rel}/`);
+          continue;
+        }
+        opts.add(raw.endsWith("/") ? raw : `${raw}/`);
+      }
+      const sorted = Array.from(opts).sort((a, b) => a.localeCompare(b));
+      dl.innerHTML = sorted.map(v => `<option value="${esc(v)}"></option>`).join("");
+    }
+    function applyBuilderPathSuggestionFromPrefix(){
+      const input = document.getElementById("b_pipeline_path");
+      const dl = document.getElementById("b_pipeline_path_suggestions");
+      if(!input || !dl) return;
+      const raw = String(input.value || "");
+      const prefix = raw.trim().toLowerCase();
+      if(!prefix) return;
+      const options = Array.from(dl.querySelectorAll("option"))
+        .map(o => String(o.getAttribute("value") || "").trim())
+        .filter(Boolean);
+      const exact = options.find(v => v.toLowerCase() === prefix);
+      if(exact){
+        input.value = exact;
+        return;
+      }
+      const match = options.find(v => v.toLowerCase().startsWith(prefix));
+      if(match){
+        input.value = match;
+      }
+    }
+    function enterBuilderCreateMode(){
+      builderCreateMode = true;
+      renderBuilderCreateMode();
+      const input = document.getElementById("b_pipeline_path");
+      if(input){
+        input.value = "";
+        input.focus();
+      }
+      builderTreeFileSelection = "";
+      builderLoaded = true;
+      document.getElementById("builder_msg").textContent = "New pipeline mode: enter pipeline path, then click Create.";
+      hideBuilderTreeDropdown();
+    }
+    function exitBuilderCreateMode(){
+      builderCreateMode = false;
+      renderBuilderCreateMode();
+      document.getElementById("builder_msg").textContent = "";
     }
     function applyBuilderTreeSelectionFromPipeline(pipeline){
       const p = normalizeBuilderPipelineName(String(pipeline || "").trim());
@@ -2481,6 +2628,49 @@ INDEX_HTML = """<!doctype html>
         return;
       }
       builderTreeFileSelection = p;
+    }
+    function syncBuilderPipelineSourceSelect(sources, preferred){
+      const sel = document.getElementById("b_pipeline_source");
+      if(!sel) return;
+      const list = Array.isArray(sources) ? sources.map(s => String(s || "").trim()).filter(Boolean) : [];
+      const incoming = Array.from(new Set(list));
+      if(incoming.length){
+        builderPipelineSources = incoming.slice();
+      }
+      const current = String(sel.value || "").trim();
+      const target = String(preferred || "").trim() || builderSelectedPipelineSource || current;
+      const renderList = incoming.length ? incoming : (Array.isArray(builderPipelineSources) ? builderPipelineSources : []);
+      if(renderList.length){
+        sel.innerHTML = `<option value="">repo (auto)</option>` + renderList.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+      }
+      const available = Array.from(sel.options || [])
+        .map(o => String(o.value || "").trim())
+        .filter(Boolean);
+      if(target && available.includes(target)){
+        sel.value = target;
+      } else if(current && available.includes(current)){
+        sel.value = current;
+      } else if(available.length === 1){
+        sel.value = available[0];
+      } else {
+        sel.value = "";
+      }
+      builderSelectedPipelineSource = String(sel.value || "").trim();
+    }
+    function setBuilderPipelineSourceValue(value){
+      const sel = document.getElementById("b_pipeline_source");
+      if(!sel) return;
+      const target = String(value || "").trim();
+      if(!target){
+        sel.value = "";
+        builderSelectedPipelineSource = "";
+        return;
+      }
+      const has = Array.from(sel.options || []).some(o => String(o.value || "").trim() === target);
+      if(has){
+        sel.value = target;
+      }
+      builderSelectedPipelineSource = String(sel.value || target).trim();
     }
     function renderBuilderJsTree(files, dirs){
       const holder = document.getElementById("b_pipeline_tree");
@@ -2504,6 +2694,8 @@ INDEX_HTML = """<!doctype html>
           const nb = this.get_node(b);
           const ta = na?.original?.type || "";
           const tb = nb?.original?.type || "";
+          if(ta === "new" && tb !== "new") return 1;
+          if(tb === "new" && ta !== "new") return -1;
           if(ta !== tb) return ta === "dir" ? -1 : 1;
           return String(na?.text || "").localeCompare(String(nb?.text || ""));
         },
@@ -2520,10 +2712,16 @@ INDEX_HTML = """<!doctype html>
           }
           return;
         }
+        if(ntype === "new"){
+          enterBuilderCreateMode();
+          return;
+        }
         if(ntype !== "file") return;
         const rel = String(node.original.relpath || "").trim();
         if(!rel) return;
+        exitBuilderCreateMode();
         builderSelectedPipelineSource = String(node.original.source || "").trim();
+        setBuilderPipelineSourceValue(builderSelectedPipelineSource);
         builderTreeFileSelection = rel;
         document.getElementById("b_pipeline_path").value = normalizeBuilderPipelineName(rel);
         hideBuilderTreeDropdown();
@@ -2543,10 +2741,36 @@ INDEX_HTML = """<!doctype html>
       const payload = await res.json();
       const files = Array.isArray(payload.files) ? payload.files : [];
       const dirs = Array.isArray(payload.dirs) ? payload.dirs : [];
+      const sources = Array.isArray(payload.sources) ? payload.sources : [];
       builderTreeFiles = files;
       builderTreeDirs = dirs;
+      builderPipelineSources = sources.map(s => String(s || "").trim()).filter(Boolean);
+      syncBuilderPipelineSourceSelect(sources, builderSelectedPipelineSource);
+      updateBuilderPipelinePathSuggestions();
       applyBuilderTreeSelectionFromPipeline(document.getElementById("b_pipeline_path").value.trim());
       renderBuilderJsTree(files, dirs);
+      const currentPipeline = normalizeBuilderPipelineName(document.getElementById("b_pipeline_path").value.trim());
+      if(!currentPipeline && Array.isArray(files) && files.length){
+        const first = files[0];
+        let rel = "";
+        if(typeof first === "string"){
+          rel = normalizeBuilderPipelineName(first);
+        } else if(first && typeof first === "object"){
+          rel = normalizeBuilderPipelineName(String(first.pipeline || first.relpath || first.path || ""));
+          const src = String(first.source || "").trim();
+          if(src){
+            builderSelectedPipelineSource = src;
+            setBuilderPipelineSourceValue(src);
+          }
+        }
+        if(rel){
+          document.getElementById("b_pipeline_path").value = rel;
+          applyBuilderTreeSelectionFromPipeline(rel);
+          renderBuilderJsTree(files, dirs);
+          builderLoaded = false;
+          await loadBuilderSource();
+        }
+      }
     }
     function showBuilderTreeDropdown(){
       const combo = document.getElementById("b_pipeline_combo");
@@ -2575,18 +2799,31 @@ INDEX_HTML = """<!doctype html>
       const combo = document.getElementById("b_pipeline_combo");
       if(!input || !combo) return;
       input.addEventListener("focus", async () => {
+        if(builderCreateMode){
+          hideBuilderTreeDropdown();
+          return;
+        }
         if(!builderTreeFiles.length){
           await refreshBuilderTreeFiles();
         }
         showBuilderTreeDropdown();
-        filterBuilderTreeByInput();
       });
       input.addEventListener("input", async () => {
-        if(!builderTreeFiles.length){
-          await refreshBuilderTreeFiles();
+        if(builderCreateMode){
+          hideBuilderTreeDropdown();
+          return;
         }
-        showBuilderTreeDropdown();
-        filterBuilderTreeByInput();
+      });
+      input.addEventListener("keydown", async (ev) => {
+        if(!builderCreateMode) return;
+        if(ev.key === "Tab"){
+          applyBuilderPathSuggestionFromPrefix();
+          return;
+        }
+        if(ev.key === "Enter"){
+          ev.preventDefault();
+          await createBuilderPipeline();
+        }
       });
       document.addEventListener("mousedown", (ev) => {
         const t = ev.target;
@@ -2625,8 +2862,8 @@ INDEX_HTML = """<!doctype html>
       if(!isBuilderView || builderLoaded) return;
       let pipeline = normalizeBuilderPipelineName(document.getElementById("b_pipeline_path").value.trim());
       if(!pipeline){
-        pipeline = await suggestNewPipelineName();
-        document.getElementById("b_pipeline_path").value = pipeline;
+        exitBuilderCreateMode();
+        document.getElementById("b_pipeline_path").value = "";
         builderModel = normalizeBuilderModelPlugins(
           ensureBuilderDefaultDirs({ project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] })
         );
@@ -2638,18 +2875,22 @@ INDEX_HTML = """<!doctype html>
         await loadBuilderPlugins();
         renderBuilderModel();
         syncYamlPreview();
+        document.getElementById("builder_msg").textContent = "Select a pipeline from the tree, or choose [new pipeline].";
         builderLoaded = true;
         return;
       }
+      exitBuilderCreateMode();
       document.getElementById("b_pipeline_path").value = pipeline;
       applyBuilderTreeSelectionFromPipeline(pipeline);
       renderBuilderJsTree(builderTreeFiles, builderTreeDirs);
       const projectSel = document.getElementById("b_project_id");
+      const sourceSel = document.getElementById("b_pipeline_source");
       const qp = new URLSearchParams();
       qp.set("pipeline", pipeline);
       const pid = String(projectSel && projectSel.value ? projectSel.value : "").trim();
       if(pid) qp.set("project_id", pid);
-      if(builderSelectedPipelineSource) qp.set("pipeline_source", builderSelectedPipelineSource);
+      const source = String(sourceSel && sourceSel.value ? sourceSel.value : builderSelectedPipelineSource).trim();
+      if(source) qp.set("pipeline_source", source);
       const res = await fetch(`/api/builder/source?${qp.toString()}`);
       if(!res.ok){
         document.getElementById("builder_msg").textContent = await readMessage(res);
@@ -2663,6 +2904,7 @@ INDEX_HTML = """<!doctype html>
       } else {
         const payload = await res.json();
         builderSelectedPipelineSource = String(payload.pipeline_source || builderSelectedPipelineSource || "").trim();
+        setBuilderPipelineSourceValue(builderSelectedPipelineSource);
         builderModel = normalizeBuilderModelPlugins(
           ensureBuilderDefaultDirs(payload.model || { project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] })
         );
@@ -2685,6 +2927,10 @@ INDEX_HTML = """<!doctype html>
       const msg = document.getElementById("builder_msg");
       const out = document.getElementById("builder_output");
       const payload = builderPayload();
+      if(builderCreateMode){
+        msg.textContent = "Use Create to create a new pipeline first.";
+        return;
+      }
       if (!payload.pipeline){
         msg.textContent = "pipeline path is required to save.";
         return;
@@ -2703,23 +2949,7 @@ INDEX_HTML = """<!doctype html>
         }),
       });
       if(update.status === 404){
-        const create = await fetch(`/api/pipelines`, {
-          method:"POST",
-          headers: {"Content-Type":"application/json"},
-          body: JSON.stringify({
-            pipeline: payload.pipeline,
-            yaml_text: payload.yaml_text,
-            project_id: payload.project_id || "",
-            pipeline_source: payload.pipeline_source || "",
-          }),
-        });
-        if(!create.ok){
-          msg.textContent = await readMessage(create);
-          return;
-        }
-        const data = await create.json();
-        msg.textContent = `Saved ${data.pipeline}`;
-        out.textContent = JSON.stringify(data, null, 2);
+        msg.textContent = "Pipeline does not exist yet. Click Create first.";
         return;
       }
       if(!update.ok){
@@ -2730,10 +2960,69 @@ INDEX_HTML = """<!doctype html>
       msg.textContent = `Updated ${data.pipeline}`;
       out.textContent = JSON.stringify(data, null, 2);
     }
+    async function createBuilderPipeline(){
+      const msg = document.getElementById("builder_msg");
+      const out = document.getElementById("builder_output");
+      const pathEl = document.getElementById("b_pipeline_path");
+      const pipeline = normalizeBuilderPipelineName(pathEl ? pathEl.value : "");
+      if(!pipeline){
+        msg.textContent = "pipeline path is required to create.";
+        if(pathEl) pathEl.focus();
+        return;
+      }
+      const projectId = String(document.getElementById("b_project_id").value || "").trim();
+      if(!projectId){
+        msg.textContent = "project_id is required before creating a new pipeline.";
+        document.getElementById("b_project_id").focus();
+        return;
+      }
+      if(builderKnownPipelineExists(pipeline)){
+        if(pathEl){
+          pathEl.value = pipeline;
+        }
+        builderLoaded = false;
+        exitBuilderCreateMode();
+        await loadBuilderSource();
+        msg.textContent = `Pipeline already exists: ${pipeline}`;
+        return;
+      }
+      msg.textContent = "Creating pipeline...";
+      const payload = builderPayload();
+      const sourceSel = document.getElementById("b_pipeline_source");
+      const pipelineSource = String(sourceSel && sourceSel.value ? sourceSel.value : builderSelectedPipelineSource).trim();
+      const create = await fetch(`/api/pipelines`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          pipeline,
+          yaml_text: payload.yaml_text,
+          project_id: projectId,
+          pipeline_source: pipelineSource || "",
+        }),
+      });
+      if(!create.ok){
+        msg.textContent = await readMessage(create);
+        return;
+      }
+      const data = await create.json();
+      if(pathEl){
+        pathEl.value = normalizeBuilderPipelineName(data.pipeline || pipeline);
+      }
+      builderLoaded = false;
+      await refreshBuilderTreeFiles();
+      await loadBuilderSource();
+      exitBuilderCreateMode();
+      msg.textContent = `Created ${data.pipeline}`;
+      out.textContent = JSON.stringify(data, null, 2);
+    }
     async function runBuilderPipeline(){
       const msg = document.getElementById("builder_msg");
       const out = document.getElementById("builder_output");
       const payload = builderPayload();
+      if(builderCreateMode){
+        msg.textContent = "Use Create to create a new pipeline first.";
+        return;
+      }
       if (!payload.pipeline){
         msg.textContent = "pipeline path is required to run.";
         return;
@@ -2757,23 +3046,11 @@ INDEX_HTML = """<!doctype html>
         }),
       });
       if(update.status === 404){
-        const create = await fetch(`/api/pipelines`, {
-          method:"POST",
-          headers: {"Content-Type":"application/json"},
-          body: JSON.stringify({
-            pipeline: payload.pipeline,
-            yaml_text: payload.yaml_text,
-            project_id: payload.project_id || "",
-            pipeline_source: payload.pipeline_source || "",
-          }),
-        });
-        if(!create.ok){
-          builderPipelineRunState = "failed";
-          builderPipelineRunning = false;
-          renderBuilderPipelineStatus();
-          msg.textContent = await readMessage(create);
-          return;
-        }
+        builderPipelineRunState = "failed";
+        builderPipelineRunning = false;
+        renderBuilderPipelineStatus();
+        msg.textContent = "Pipeline does not exist yet. Click Create first.";
+        return;
       } else if(!update.ok){
         builderPipelineRunState = "failed";
         builderPipelineRunning = false;
@@ -3921,6 +4198,7 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("btn_builder_add_var").onclick = addBuilderVar;
     document.getElementById("btn_builder_add_dir").onclick = addBuilderDir;
     document.getElementById("btn_builder_add_step").onclick = addBuilderStep;
+    document.getElementById("btn_builder_create").onclick = createBuilderPipeline;
     document.getElementById("btn_builder_save").onclick = saveBuilderDraft;
     document.getElementById("btn_builder_generate").onclick = generateBuilderDraft;
     document.getElementById("btn_builder_validate").onclick = validateBuilderDraft;
@@ -3928,6 +4206,14 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("btn_builder_terminate").onclick = terminateBuilderPipeline;
     document.getElementById("btn_plugins_refresh").onclick = tick;
     document.getElementById("plugins_env").onchange = tick;
+    document.getElementById("b_pipeline_source").onchange = () => {
+      builderSelectedPipelineSource = String(document.getElementById("b_pipeline_source").value || "").trim();
+      updateBuilderPipelinePathSuggestions();
+    };
+    document.getElementById("b_pipeline_path").addEventListener("input", () => {
+      if(!builderCreateMode) return;
+      renderBuilderCreateMode();
+    });
     document.getElementById("b_project_id").onchange = async () => {
       const next = String(document.getElementById("b_project_id").value || "").trim();
       builderModel.project_id = next;
@@ -3965,6 +4251,7 @@ INDEX_HTML = """<!doctype html>
       await loadBuilderProjects();
       if(isBuilderView){
         await refreshBuilderProjectVars(builderModel.project_id || currentProjectId());
+        await refreshBuilderTreeFiles();
       }
     });
     loadBuilderEnvironments().then(async () => {
@@ -3973,7 +4260,9 @@ INDEX_HTML = """<!doctype html>
         renderBuilderModel();
       }
     });
-    refreshBuilderTreeFiles();
+    if(!isBuilderView){
+      refreshBuilderTreeFiles();
+    }
     tick();
     if(isBuilderView){
       setTimeout(() => {
