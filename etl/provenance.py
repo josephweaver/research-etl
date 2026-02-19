@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 
 from .pipeline import Pipeline
 from .git_checkout import infer_repo_name
+from .source_control import SourceControlError, make_git_source_provider
 
 
 def _sha256_file(path: Optional[Path]) -> Optional[str]:
@@ -85,14 +86,44 @@ def collect_run_provenance(
     cli_command: Optional[str],
 ) -> Dict[str, Any]:
     plugin_checksums = _collect_plugin_checksums(plugin_dir, pipeline)
-    origin_url = _git_origin_url(repo_root)
+    provider = make_git_source_provider()
+    source_provider = provider.name
+    source_revision: Optional[str] = None
+    source_origin_url: Optional[str] = None
+    source_repo_name: Optional[str] = None
+    source_is_dirty: Optional[bool] = None
+
+    try:
+        spec = provider.resolve_execution_spec(
+            repo_root=repo_root,
+            provenance={},
+            require_clean=False,
+            require_origin=False,
+        )
+        source_revision = spec.revision or None
+        source_origin_url = spec.origin_url
+        source_repo_name = spec.repo_name or None
+        source_is_dirty = spec.is_dirty
+    except SourceControlError:
+        # Preserve historical behavior: provenance should still return with best-effort fields.
+        source_revision = _git_out(["rev-parse", "HEAD"], repo_root)
+        source_origin_url = _git_origin_url(repo_root)
+        source_repo_name = infer_repo_name(source_origin_url or "")
+        source_is_dirty = _git_is_dirty(repo_root)
+
+    origin_url = source_origin_url
     return {
-        "git_commit_sha": _git_out(["rev-parse", "HEAD"], repo_root),
+        "source_provider": source_provider,
+        "source_revision": source_revision,
+        "source_origin_url": source_origin_url,
+        "source_repo_name": source_repo_name,
+        "source_is_dirty": source_is_dirty,
+        "git_commit_sha": source_revision,
         "git_branch": _git_out(["rev-parse", "--abbrev-ref", "HEAD"], repo_root),
         "git_tag": _git_out(["describe", "--tags", "--exact-match"], repo_root),
         "git_origin_url": origin_url,
-        "git_repo_name": infer_repo_name(origin_url or ""),
-        "git_is_dirty": _git_is_dirty(repo_root),
+        "git_repo_name": source_repo_name or infer_repo_name(origin_url or ""),
+        "git_is_dirty": source_is_dirty,
         "cli_command": cli_command,
         "pipeline_checksum": _sha256_file(pipeline_path),
         "global_config_checksum": _sha256_file(global_config_path),

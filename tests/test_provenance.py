@@ -35,6 +35,11 @@ def test_collect_run_provenance_returns_expected_keys(tmp_path: Path) -> None:
     )
 
     expected_keys = {
+        "source_provider",
+        "source_revision",
+        "source_origin_url",
+        "source_repo_name",
+        "source_is_dirty",
         "git_commit_sha",
         "git_branch",
         "git_tag",

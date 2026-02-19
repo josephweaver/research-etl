@@ -24,7 +24,7 @@ Introduce a provider interface so execution/provenance can support multiple sour
 
 - [ ] Add provider factory/registry (`provider=git` default).
 - [x] Update executors (`local/slurm/hpcc_direct`) to use provider interface (Git provider shim, compatibility preserved).
-- [ ] Update provenance collection to consume provider metadata.
+- [x] Update provenance collection to consume provider metadata (backward-compatible `git_*` fields retained).
 - [ ] Preserve existing CLI/config behavior and outputs.
 
 ## Phase 3: Add Second Provider (Proof)

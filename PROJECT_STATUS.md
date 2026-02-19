@@ -1,4 +1,4 @@
-# Project Status (2026-02-18)
+# Project Status (2026-02-19)
 
 ## Current state
 - CLI/package baseline is in place (`pyproject.toml`, `etl` entrypoint, editable install flow, GitHub Actions tests).
@@ -103,6 +103,39 @@
     - explicit args: `key` + `op` (`eq|ne|in|not_in`) + `value/values`,
     - lightweight `where` expressions: `COL in (...)`, `COL == ...`, `COL != ...`.
   - Designed for TIGER state filtering use cases (for example `STUSPS in (...)`) as a reusable pre-step.
+- Expression engine update:
+  - added `expr.daterange(...)` for date list expansion in vars/templates (`step`, `unit`, `fmt`, `inclusive`).
+- Geo aggregation update:
+  - `plugins/geo/geo_county_raster_aggregate.py` now supports `min,p5,q1,med,avg,q3,p95,max` aggregations.
+- New PRISM county pipeline pair:
+  - `pipelines/prism/county_daily_aggregate_child.yml`:
+    - `sequential_foreach: days` with `expr.daterange(expr.date(year,1,1),expr.date(year,12,31))`
+    - daily input pattern `prism_ppt_us_30s_{YYYYMMDD}.tif`
+    - yearly combined county CSV output
+  - `pipelines/prism/county_daily_aggregate_parent.yml`:
+    - year-level fanout
+    - child pipeline call per year via `pipeline_execute.py`
+- New orchestration plugin:
+  - `plugins/pipeline_execute.py` supports:
+    - `mode=synchronized`
+    - `mode=fire_and_forget`
+  - intended for parent/child pipeline orchestration and foreach-parallel child submission patterns.
+- Dataset location aliases:
+  - added `config/data_locations.yml` (+ example file) with aliases such as `LC_GDrive`.
+  - wired through dataset service, dataset plugins, and CLI (`datasets store/get --location-alias`).
+- Source control abstraction progress:
+  - added provider scaffold:
+    - `etl/source_control/base.py`
+    - `etl/source_control/git_provider.py`
+  - executors now use provider-backed compatibility shims for source resolution/path mapping.
+  - provenance now includes provider-neutral source fields while preserving existing `git_*` keys.
+- Pipeline asset source resolution (2026-02-19 update):
+  - added `etl/pipeline_assets.py` with ordered multi-source support via `pipeline_asset_sources` and backward-compatible legacy keys.
+  - CLI run/validate now resolve pipeline YAML from configured project asset repos when the local path is missing.
+  - Web API run/validate now follows the same project-aware resolution flow and parses with resolved `project_vars`.
+  - remote executors (`slurm`, `hpcc_direct`) currently enforce repo-local pipeline paths; externally resolved asset paths are allowed for local executor only.
+- SLURM path fix:
+  - workspace-mode checkout root/path resolution corrected to prevent doubled repo-name path joins and to consistently honor configured `remote_repo`.
 
 ## Web UI/API status
 - Web server: `etl web --host 127.0.0.1 --port 8000 --reload`
@@ -146,6 +179,9 @@
   - additional targeted resolver/workdir/logging suites passed during this update cycle.
   - New plugin tests added: `tests/test_plugin_geo_vector_filter.py` (attribute filter behavior and validation).
     - Note: currently skips in local `.venv` if `geopandas`/`shapely` are unavailable.
+  - pipeline asset/source-resolution regressions:
+    - `tests/test_pipeline_assets.py`
+    - targeted web API action tests for external pipeline resolution + remote-executor guard behavior.
 - Coverage includes:
   - DB migration bootstrap
   - tracking write paths
@@ -154,6 +190,12 @@
   - retry attempts with `attempt_no > 1`
   - run_batch event payload checks
   - web route/API coverage for operations, pipeline detail, live run, builder, and draft save/update flows.
+  - new targeted coverage:
+    - `tests/test_plugin_pipeline_execute.py`
+    - `tests/test_datasets_locations.py`
+    - dataset alias integration updates in CLI/service/plugin tests
+    - `tests/test_source_control_git_provider.py`
+    - provenance source-provider field coverage.
 
 ## Known gaps / risks
 - Web resume currently supports `local` executor only (SLURM resume still via CLI).
@@ -229,6 +271,3 @@
 - Start web UI: `etl web --host 127.0.0.1 --port 8000 --reload`
 - Open builder: `http://127.0.0.1:8000/pipelines/new`
 - Test suite: `python -m pytest -q`
-
-# next
-Ok, now I want to do use my new plugin to extract min,p5,q1,med,avg,q3,p95,max ppt from the prism/raw using tiger counties as a csv.  There are 365 tif images in that directory so I need to create a range over day in a year.  I think we need to add a expr.daterange function.

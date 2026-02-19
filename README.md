@@ -4,7 +4,61 @@
 
 A lightweight ETL tool to construct new pipelines from modular Python "plugin" scripts and to track runs and validation. In the future this may also call ChatGPT to write data dictionary entries.
 
-## Latest updates (2026-02-18)
+## Latest updates (2026-02-19)
+
+- Pipeline asset source resolution is now integrated end-to-end for run/validate paths:
+  - Added `etl/pipeline_assets.py` to support ordered `pipeline_asset_sources` plus backward-compatible single-source keys.
+  - CLI run/validate now resolves missing local pipeline paths from configured project asset repos.
+  - Web API run/validate now uses the same resolver flow (project-aware resolution + parse with project vars).
+  - Remote executors (`slurm`, `hpcc_direct`) now explicitly reject external resolved pipeline paths; external asset execution is currently local-only.
+  - Added tests:
+    - `tests/test_pipeline_assets.py`
+    - web API coverage for resolved external pipeline validation/run guard paths in `tests/test_web_api.py`.
+
+- Added `expr.daterange(...)` to expression evaluation for date-list generation in templates/vars.
+  - Supports `step`, `unit` (`Y|M|W|D|H|MIN|S`), format (`fmt`), and inclusive bounds.
+  - Enables day-list patterns like:
+    - `"{expr.daterange(expr.date(year,1,1),expr.date(year,12,31))}"`
+
+- Extended county raster aggregation plugin for PRISM summaries:
+  - `plugins/geo/geo_county_raster_aggregate.py` now supports:
+    - `min,p5,q1,med,avg,q3,p95,max`
+  - Existing stats remain available (`sum,mean,median,std,count`).
+
+- Added PRISM county aggregation pipeline set:
+  - `pipelines/prism/county_daily_aggregate_child.yml`
+    - uses `sequential_foreach: days` with `expr.daterange(...)`
+    - processes `prism_ppt_us_30s_{YYYYMMDD}.tif` day-by-day
+    - writes per-day county CSVs + combined yearly CSV
+  - `pipelines/prism/county_daily_aggregate_parent.yml`
+    - fans out years
+    - calls child pipeline per year via `pipeline_execute.py`
+
+- Added child pipeline execution plugin:
+  - `plugins/pipeline_execute.py`
+  - Modes:
+    - `synchronized` (wait for child completion)
+    - `fire_and_forget` (submit and return)
+  - Designed to be parallelizable under parent `foreach` fanout.
+
+- Added data location alias registry for datasets:
+  - `config/data_locations.yml` and `config/data_locations.example.yml`
+  - supports aliases like `LC_GDrive`, `LC_HPCC`, `LC_Local`
+  - wired to:
+    - CLI: `etl datasets store|get --location-alias ... [--locations-config ...]`
+    - plugins: `dataset_store.py`, `dataset_get.py`
+    - service: alias resolution/merge in `store_data` and `get_data`
+
+- Source-control abstraction work started:
+  - Added provider scaffold:
+    - `etl/source_control/base.py`
+    - `etl/source_control/git_provider.py`
+  - Executors (`local`, `slurm`, `hpcc_direct`) now route source-resolution/path mapping via `GitSourceProvider` compatibility shims.
+  - Provenance now emits provider-neutral source fields while keeping existing git fields:
+    - `source_provider`, `source_revision`, `source_origin_url`, `source_repo_name`, `source_is_dirty`
+
+- SLURM workspace-path correction:
+  - fixed workspace-mode checkout root/path resolution to avoid incorrect doubled repo-name paths and to honor configured `remote_repo` root consistently in script path mapping.
 
 - Added reusable geospatial attribute filter plugin: `plugins/geo_vector_filter.py`.
   - Purpose: select polygons/features from a vector file into a new output file (for example TIGER states by `STUSPS`).
