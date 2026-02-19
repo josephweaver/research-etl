@@ -1,26 +1,33 @@
 project_id: land_core
-
 vars:
-  dataset_id: "raw.prism_ppt_monthly_800m_download_v1"
+  dataset_id: raw.prism_ppt_monthly_800m_download_v1
   name: prism_download
-  prism_base_url: "ftp://prism.oregonstate.edu/time_series/us/an/800m/ppt/monthly"
-  years: "{expr.range(2000, 2019)}"
+  prism_base_url: ftp://prism.oregonstate.edu/time_series/us/an/800m/ppt/monthly
+  years: "{expr.range(2018, 2019)}"
   prism_filename_glob: "*"
-
 dirs:
   workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
   logdir: "{workdir}/logs"
-  rawdir: "{env.basedir}/data/prism/ppt/monthly"
-
+  rawdir: "{env.basedir}/data/prism/ppt/daily"
+  archivedir: "{rawdir}/archive"
+  extractdir: "{rawdir}/raw"
 steps:
   - name: "{sys.step.NN}_stage_prism_ftp"
-    foreach: years
-    plugin: ftp_download_tree.py
+    plugin: ftp_download_tree
     args:
       url: "{prism_base_url}/{item}"
-      out: "{rawdir}/{item}/raw"
+      out: "{archivedir}/{item}"
       recursive: true
       filename_glob: "{prism_filename_glob}"
       overwrite: false
       timeout_seconds: 120
+    foreach: years
     output_var: staged_raw
+  - name: "{sys.step.NN}_extract_prism_archives"
+    plugin: archive_extract.py
+    args:
+      archive_glob: "{archivedir}/{item}/**/*.zip"
+      out: "{extractdir}/{item}"
+      overwrite: true
+    foreach: years
+    output_var: extracted_raw

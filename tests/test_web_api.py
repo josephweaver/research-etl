@@ -1443,6 +1443,52 @@ def test_web_api_builder_test_step_uses_hpcc_direct_executor_when_env_requests_i
     assert payload["run_id"] == "remote_step_1"
     assert payload["success"] is True
     assert seen["submit_context"]["execution_env"]["executor"] == "hpcc_direct"
+    assert seen["submit_context"]["allow_dirty_git"] is True
+
+
+def test_web_api_builder_test_step_remote_preserves_foreach_fields(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.pipeline import Pipeline, Step
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(
+        web_api,
+        "_parse_pipeline_from_yaml_text",
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
+            dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
+            vars={"years": [2018, 2019]},
+            steps=[
+                Step(
+                    name="s1",
+                    script="ftp_download_tree.py url={base}/{item}",
+                    foreach="years",
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(web_api, "_resolve_global_vars", lambda *_a, **_k: {})
+    monkeypatch.setattr(web_api, "_resolve_builder_env_vars", lambda **_k: {"executor": "hpcc_direct"})
+
+    seen = {}
+
+    class _FakeHpccDirectExecutor:
+        def __init__(self, **kwargs):
+            pass
+
+        def submit(self, pipeline_path, context=None):
+            pipeline_text = Path(str(pipeline_path)).read_text(encoding="utf-8")
+            seen["pipeline_text"] = pipeline_text
+            return type("Sub", (), {"run_id": "remote_step_2", "message": "submitted"})()
+
+        def status(self, run_id):
+            return type("St", (), {"state": type("State", (), {"value": "succeeded"})(), "message": "ok"})()
+
+    monkeypatch.setattr(web_api, "HpccDirectExecutor", _FakeHpccDirectExecutor)
+    client = TestClient(web_api.app)
+    r = client.post("/api/builder/test-step", json={"yaml_text": "steps: []", "env": "hpcc_msu_direct"})
+    assert r.status_code == 200
+    assert "foreach: years" in seen["pipeline_text"]
 
 
 def test_web_api_404(monkeypatch):

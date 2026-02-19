@@ -1,0 +1,37 @@
+project_id: land_core
+vars:
+  dataset_id: raw.prism_ppt_monthly_800m_download_v1
+  name: prism_download
+  prism_base_url: ftp://prism.oregonstate.edu/time_series/us/an/800m/ppt/monthly
+  years:
+  - 2000
+  - 2001
+  - 2002
+  - 2003
+  - 2004
+  - 2005
+  - 2006
+  - 2007
+  - 2008
+  - 2009
+  - 2010
+  - 2011
+  - 2012
+  - 2013
+  - 2014
+  - 2015
+  - 2016
+  - 2017
+  - 2018
+  - 2019
+  prism_filename_glob: '*'
+dirs:
+  workdir: /mnt/scratch/weave151/work/prism_download/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}
+  logdir: /mnt/scratch/weave151/work/prism_download/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}/logs
+  rawdir: /mnt/scratch/weave151/data/prism/ppt/monthly
+steps:
+- name: 01_stage_prism_ftp
+  script: ftp_download_tree 'url=ftp://prism.oregonstate.edu/time_series/us/an/800m/ppt/monthly/{item}'
+    'out=/mnt/scratch/weave151/data/prism/ppt/monthly/{item}/raw' recursive=true 'filename_glob=*'
+    overwrite=false timeout_seconds=120
+  output_var: staged_raw

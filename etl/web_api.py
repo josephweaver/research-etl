@@ -629,15 +629,6 @@ INDEX_HTML = """<!doctype html>
                     <pre id="builder_namespace">Loading...</pre>
                   </div>
                 </section>
-                <section class="builder-subsection" id="builder_section_plugins">
-                  <div class="builder-subsection-head">
-                    <h4>Plugin Stats</h4>
-                    <button id="btn_builder_toggle_plugins" type="button">Collapse</button>
-                  </div>
-                  <div class="builder-subsection-body">
-                    <div id="builder_plugin_stats">Loading plugin stats...</div>
-                  </div>
-                </section>
               </div>
             </div>
           </div>
@@ -731,7 +722,7 @@ INDEX_HTML = """<!doctype html>
     let builderPipelineRunState = "not-run";
     let builderPipelineRunning = false;
     let builderPreviewCollapsed = false;
-    let builderPreviewSectionCollapsed = { yaml: false, output: false, vars: false, plugins: false };
+    let builderPreviewSectionCollapsed = { yaml: true, output: true, vars: true };
     let builderTreeFiles = [];
     let builderTreeFileSelection = "";
     let builderNamespaceTimer = null;
@@ -804,10 +795,10 @@ INDEX_HTML = """<!doctype html>
         const next = String(sel.value || "").trim();
         localStorage.setItem(ENV_STORAGE_KEY, next);
         if(isBuilderView){
-          await loadBuilderPluginStats();
-          renderBuilderPluginStats();
           renderBuilderModel();
-          await refreshBuilderNamespace();
+          if(!builderPreviewSectionCollapsed.vars){
+            await refreshBuilderNamespace();
+          }
         }
       };
     }
@@ -1236,7 +1227,9 @@ INDEX_HTML = """<!doctype html>
       if (builderNamespaceTimer) {
         clearTimeout(builderNamespaceTimer);
       }
-      builderNamespaceTimer = setTimeout(() => { refreshBuilderNamespace(); }, 120);
+      if(!builderPreviewSectionCollapsed.vars){
+        builderNamespaceTimer = setTimeout(() => { refreshBuilderNamespace(); }, 220);
+      }
     }
     function builderPipelineStatusMeta(){
       if(builderPipelineRunState === "failed"){
@@ -1283,7 +1276,6 @@ INDEX_HTML = """<!doctype html>
         { key: "yaml", sectionId: "builder_section_yaml", btnId: "btn_builder_toggle_yaml", title: "YAML" },
         { key: "output", sectionId: "builder_section_output", btnId: "btn_builder_toggle_output", title: "Output" },
         { key: "vars", sectionId: "builder_section_vars", btnId: "btn_builder_toggle_vars", title: "Variables" },
-        { key: "plugins", sectionId: "builder_section_plugins", btnId: "btn_builder_toggle_plugins", title: "Plugins" },
       ];
       for(const d of defs){
         const section = document.getElementById(d.sectionId);
@@ -1382,8 +1374,6 @@ INDEX_HTML = """<!doctype html>
       builderPlugins = payload.plugins || [];
       builderPluginMeta = {};
       for(const p of builderPlugins){ builderPluginMeta[p.path] = p; }
-      await loadBuilderPluginStats();
-      renderBuilderPluginStats();
       renderBuilderModel();
     }
     function stripPySuffix(path){
@@ -1426,23 +1416,6 @@ INDEX_HTML = """<!doctype html>
       const canonical = canonicalPluginPath(path);
       const st = builderPluginStats[String(canonical || "")] || {};
       return st.recommendation || {};
-    }
-    async function loadBuilderPluginStats(){
-      if(!isBuilderView) return;
-      const qp = new URLSearchParams();
-      const envName = currentEnvName();
-      if(envName) qp.set("env", envName);
-      const res = await fetch(`/api/plugins/stats?${qp.toString()}`);
-      if(!res.ok){
-        builderPluginStats = {};
-        return;
-      }
-      const payload = await res.json();
-      const statsMap = {};
-      for(const p of (payload.plugins || [])){
-        statsMap[String(p.path || "")] = p;
-      }
-      builderPluginStats = statsMap;
     }
     async function loadPluginsPage(){
       if(!isPluginsView) return;
@@ -1505,48 +1478,6 @@ INDEX_HTML = """<!doctype html>
       if(current && envs.includes(current)){
         sel.value = current;
       }
-    }
-    function renderBuilderPluginStats(){
-      const el = document.getElementById("builder_plugin_stats");
-      if(!el) return;
-      const rows = (builderPlugins || []).map((p) => {
-        const path = String(p.path || "");
-        const stat = builderPluginStats[path] || {};
-        const rec = stat.recommendation || {};
-        const samples = Number(rec.samples || 0);
-        const cpu = rec.cpu_cores === null || rec.cpu_cores === undefined ? "" : Number(rec.cpu_cores).toFixed(2);
-        const mem = rec.memory_gb === null || rec.memory_gb === undefined ? "" : Number(rec.memory_gb).toFixed(2);
-        const wall = rec.wall_minutes === null || rec.wall_minutes === undefined ? "" : Number(rec.wall_minutes).toFixed(2);
-        return `
-          <tr>
-            <td>${esc(path)}</td>
-            <td>${esc(String(p.version || stat.version || ""))}</td>
-            <td>${esc(String(samples || 0))}</td>
-            <td>${esc(cpu)}</td>
-            <td>${esc(mem)}</td>
-            <td>${esc(wall)}</td>
-          </tr>
-        `;
-      }).join("");
-      if(!rows){
-        el.innerHTML = `<span class="muted">No plugins loaded.</span>`;
-        return;
-      }
-      el.innerHTML = `
-        <table>
-          <thead>
-            <tr>
-              <th>Plugin</th>
-              <th>Version</th>
-              <th>Samples</th>
-              <th>Rec CPU</th>
-              <th>Rec Mem GB</th>
-              <th>Rec Wall Min</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      `;
     }
     function addBuilderRequire(){
       builderModel.requires_pipelines = builderModel.requires_pipelines || [];
@@ -2872,6 +2803,8 @@ INDEX_HTML = """<!doctype html>
       payload.run_id = seed.run_id;
       payload.run_started_at = seed.run_started_at;
       payload.step_index = idx;
+      const runMode = String((document.getElementById("b_run_mode") || {}).value || "draft").trim().toLowerCase();
+      payload.allow_dirty_git = runMode !== "repro";
       const startRes = await fetch(`/api/builder/test-step/start`, {
         method:"POST",
         headers: {"Content-Type":"application/json"},
@@ -3698,10 +3631,9 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("btn_builder_toggle_vars").onclick = () => {
       builderPreviewSectionCollapsed.vars = !builderPreviewSectionCollapsed.vars;
       renderBuilderPreviewSections();
-    };
-    document.getElementById("btn_builder_toggle_plugins").onclick = () => {
-      builderPreviewSectionCollapsed.plugins = !builderPreviewSectionCollapsed.plugins;
-      renderBuilderPreviewSections();
+      if(!builderPreviewSectionCollapsed.vars){
+        refreshBuilderNamespace();
+      }
     };
     document.getElementById("btn_builder_add_req").onclick = addBuilderRequire;
     document.getElementById("btn_builder_add_var").onclick = addBuilderVar;
@@ -3742,14 +3674,19 @@ INDEX_HTML = """<!doctype html>
     loadBuilderProjects();
     loadBuilderEnvironments().then(async () => {
       if(isBuilderView){
-        await loadBuilderPluginStats();
-        renderBuilderPluginStats();
         renderBuilderModel();
       }
-      await refreshBuilderNamespace();
     });
     refreshBuilderTreeFiles();
-    tick(); setInterval(tick, 12000);
+    tick();
+    if(isBuilderView){
+      setTimeout(() => {
+        if(!builderPreviewSectionCollapsed.vars){
+          refreshBuilderNamespace();
+        }
+      }, 0);
+    }
+    setInterval(tick, 12000);
   </script>
 </body>
 </html>
@@ -5748,9 +5685,6 @@ def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
     # Non-local single-step tests are executed through the selected executor.
     # We materialize a tiny temp pipeline file containing only the selected step.
     import yaml
-
-    temp_pipeline_dir = Path(tempfile.mkdtemp(prefix="etl_builder_step_test_"))
-    temp_pipeline_path = temp_pipeline_dir / "step_test.yml"
     step_payload = {
         "name": str(target_step.name),
         "script": str(target_step.script),
@@ -5759,6 +5693,9 @@ def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
         "resources": dict(target_step.resources or {}),
         "when": target_step.when,
         "parallel_with": target_step.parallel_with,
+        "foreach": getattr(target_step, "foreach", None),
+        "foreach_glob": getattr(target_step, "foreach_glob", None),
+        "foreach_kind": getattr(target_step, "foreach_kind", None),
     }
     step_payload = {k: v for k, v in step_payload.items() if v not in (None, "", {}, [])}
     temp_pipeline_doc = {
@@ -5769,10 +5706,14 @@ def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if not temp_pipeline_doc["project_id"]:
         temp_pipeline_doc.pop("project_id", None)
-    temp_pipeline_path.write_text(yaml.safe_dump(temp_pipeline_doc, sort_keys=False), encoding="utf-8")
+    allow_dirty_git = _parse_bool(payload.get("allow_dirty_git"), default=True)
 
     try:
         repo_root = Path(".").resolve()
+        temp_pipeline_dir = (repo_root / "pipelines" / ".builder_step_tests").resolve()
+        temp_pipeline_dir.mkdir(parents=True, exist_ok=True)
+        temp_pipeline_path = temp_pipeline_dir / f"step_test_{uuid.uuid4().hex}.yml"
+        temp_pipeline_path.write_text(yaml.safe_dump(temp_pipeline_doc, sort_keys=False), encoding="utf-8")
         run_id = run_id_seed or uuid.uuid4().hex
         run_started_at = run_started_seed or (datetime.utcnow().isoformat() + "Z")
         if executor_name == "hpcc_direct":
@@ -5800,6 +5741,7 @@ def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
                 env_name=env_name,
                 dry_run=dry_run,
                 verbose=_parse_bool(payload.get("verbose"), default=False),
+                require_clean_git=not allow_dirty_git,
             )
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported executor for step test: {executor_name}")
@@ -5812,6 +5754,7 @@ def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
                 "execution_env": env_vars,
                 "global_vars": global_vars,
                 "project_vars": project_vars,
+                "allow_dirty_git": allow_dirty_git,
                 "project_id": normalize_project_id(str(payload.get("project_id") or getattr(pipeline, "project_id", "") or "").strip() or None),
             },
         )
@@ -5838,7 +5781,7 @@ def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Step test failed: {exc}") from exc
     finally:
         try:
-            shutil.rmtree(temp_pipeline_dir, ignore_errors=True)
+            temp_pipeline_path.unlink(missing_ok=True)
         except Exception:
             pass
 
