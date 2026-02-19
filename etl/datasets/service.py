@@ -17,6 +17,7 @@ from etl.datasets.routing import (
     infer_transport,
     validate_target,
 )
+from etl.datasets.locations import DataLocationConfigError, resolve_data_location_alias
 from etl.datasets.transports import DatasetTransportError, transfer_via_transport
 from etl.datasets.transports.base import fetch_via_transport
 
@@ -361,6 +362,8 @@ def store_data(
     data_class: Optional[str] = None,
     dry_run: bool = False,
     transport_options: Optional[Dict[str, Any]] = None,
+    location_alias: Optional[str] = None,
+    locations_config_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     trace: List[str] = []
     ds_id = str(dataset_id or "").strip()
@@ -373,13 +376,41 @@ def store_data(
 
     stage_text = _normalize_stage(stage)
     ver = str(version_label or "").strip() or _default_version_label()
+    alias_name = str(location_alias or "").strip()
+    alias_spec: Dict[str, Any] = {}
+    if alias_name:
+        try:
+            alias_spec = resolve_data_location_alias(
+                alias_name,
+                config_path=Path(str(locations_config_path).strip()) if str(locations_config_path or "").strip() else None,
+            )
+            _log_step(trace, f"store_data:location_alias_resolved alias={alias_name}")
+        except DataLocationConfigError as exc:
+            _log_step(trace, f"store_data:location_alias_error alias={alias_name} error={exc}")
+            raise DatasetServiceError(str(exc), details={"operation_log": trace}) from exc
+
+    alias_location_type = str(alias_spec.get("location_type") or "").strip()
+    alias_target_uri = str(alias_spec.get("target_uri") or "").strip()
+    alias_transport = str(alias_spec.get("transport") or "").strip()
+    alias_environment = str(alias_spec.get("environment") or "").strip()
+    alias_options = alias_spec.get("options")
+    merged_transport_options: Dict[str, Any] = {}
+    if isinstance(alias_options, dict):
+        merged_transport_options.update(alias_options)
+    if isinstance(transport_options, dict):
+        merged_transport_options.update(transport_options)
+
     policy = _load_policy_or_none()
-    loc_type = str(location_type or "").strip().lower() or default_location_type(
+    loc_type = (
+        str(location_type or "").strip().lower()
+        or alias_location_type.strip().lower()
+        or default_location_type(
         stage=stage_text,
         runtime_context=runtime_context,
         policy=policy,
+        )
     )
-    tgt = str(target_uri or "").strip() or build_default_target_uri(
+    tgt = str(target_uri or "").strip() or alias_target_uri or build_default_target_uri(
         policy=policy,
         location_type=loc_type,
         dataset_id=ds_id,
@@ -402,7 +433,7 @@ def store_data(
             runtime_context=runtime_context,
             target_location_type=loc_type,
             policy=policy,
-            explicit_transport=transport,
+            explicit_transport=(str(transport or "").strip() or alias_transport or None),
         )
         _log_step(trace, f"store_data:transport_selected transport={chosen_transport}")
     except DatasetRoutingError as exc:
@@ -416,7 +447,7 @@ def store_data(
             source_path=str(src),
             target_uri=tgt,
             dry_run=bool(dry_run),
-            options=transport_options or {},
+            options=merged_transport_options,
         )
         _log_step(trace, f"store_data:transfer_complete target={transfer_receipt.get('target_uri') or tgt}")
     except (DatasetTransportError, FileNotFoundError, ValueError, RuntimeError) as exc:
@@ -428,7 +459,7 @@ def store_data(
 
     persisted_uri = str(transfer_receipt.get("target_uri") or tgt)
     size_bytes, checksum = _file_stats(str(src))
-    env_name = str(environment or runtime_context or "").strip().lower() or None
+    env_name = str(environment or alias_environment or runtime_context or "").strip().lower() or None
     canonical = stage_text == "published"
     data_class_text = str(data_class or "").strip() or None
     owner_user_text = str(owner_user or "").strip() or None
@@ -503,6 +534,7 @@ def store_data(
                                 "transport": chosen_transport,
                                 "environment": env_name,
                                 "location_type": loc_type,
+                                "location_alias": alias_name or None,
                                 "dry_run": bool(dry_run),
                             }
                         ),
@@ -530,6 +562,7 @@ def store_data(
         "checksum": checksum,
         "size_bytes": size_bytes,
         "dry_run": bool(dry_run),
+        "location_alias": alias_name or None,
         "operation_log": trace,
     }
 
@@ -546,6 +579,8 @@ def get_data(
     dry_run: bool = False,
     prefer_direct_local: bool = True,
     transport_options: Optional[Dict[str, Any]] = None,
+    location_alias: Optional[str] = None,
+    locations_config_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     trace: List[str] = []
     ds_id = str(dataset_id or "").strip()
@@ -553,7 +588,29 @@ def get_data(
         raise DatasetServiceError("dataset_id is required", details={"operation_log": trace})
     _log_step(trace, f"get_data:start dataset_id={ds_id} version={version}")
     ver_req = str(version or "latest").strip() or "latest"
-    env_name = str(environment or runtime_context or "").strip().lower() or None
+    alias_name = str(location_alias or "").strip()
+    alias_spec: Dict[str, Any] = {}
+    if alias_name:
+        try:
+            alias_spec = resolve_data_location_alias(
+                alias_name,
+                config_path=Path(str(locations_config_path).strip()) if str(locations_config_path or "").strip() else None,
+            )
+            _log_step(trace, f"get_data:location_alias_resolved alias={alias_name}")
+        except DataLocationConfigError as exc:
+            _log_step(trace, f"get_data:location_alias_error alias={alias_name} error={exc}")
+            raise DatasetServiceError(str(exc), details={"operation_log": trace}) from exc
+    alias_location_type = str(alias_spec.get("location_type") or "").strip().lower() or None
+    alias_environment = str(alias_spec.get("environment") or "").strip().lower() or None
+    alias_transport = str(alias_spec.get("transport") or "").strip() or None
+    alias_options = alias_spec.get("options")
+    merged_transport_options: Dict[str, Any] = {}
+    if isinstance(alias_options, dict):
+        merged_transport_options.update(alias_options)
+    if isinstance(transport_options, dict):
+        merged_transport_options.update(transport_options)
+
+    env_name = str(environment or alias_environment or runtime_context or "").strip().lower() or None
     policy = _load_policy_or_none()
     resolved_version = ver_req
 
@@ -595,9 +652,10 @@ def get_data(
 
                 where_loc = "dataset_version_id = %s"
                 params: list[Any] = [dataset_version_id]
-                if location_type:
+                location_type_filter = str(location_type or "").strip().lower() or alias_location_type
+                if location_type_filter:
                     where_loc += " AND location_type = %s"
-                    params.append(str(location_type).strip().lower())
+                    params.append(location_type_filter)
                 cur.execute(
                     f"""
                     SELECT
@@ -659,7 +717,11 @@ def get_data(
             receipt = {"transport": "none", "target_path": str(local_target), "dry_run": bool(dry_run)}
             _log_step(trace, "get_data:direct_local_hit no_transfer")
         else:
-            chosen_transport = _infer_fetch_transport(location_type=src_loc_type, policy=policy, explicit=transport)
+            chosen_transport = _infer_fetch_transport(
+                location_type=src_loc_type,
+                policy=policy,
+                explicit=(str(transport or "").strip() or alias_transport or None),
+            )
             try:
                 _log_step(trace, f"get_data:fetch_begin transport={chosen_transport}")
                 receipt = fetch_via_transport(
@@ -667,7 +729,7 @@ def get_data(
                     source_uri=src_uri,
                     target_path=str(local_target),
                     dry_run=bool(dry_run),
-                    options=transport_options or {},
+                    options=merged_transport_options,
                 )
                 _log_step(trace, "get_data:fetch_complete")
             except (DatasetTransportError, FileNotFoundError, ValueError, RuntimeError) as exc:
@@ -678,7 +740,11 @@ def get_data(
                 ) from exc
             fetched = True
     else:
-        chosen_transport = _infer_fetch_transport(location_type=src_loc_type, policy=policy, explicit=transport)
+        chosen_transport = _infer_fetch_transport(
+            location_type=src_loc_type,
+            policy=policy,
+            explicit=(str(transport or "").strip() or alias_transport or None),
+        )
         try:
             _log_step(trace, f"get_data:fetch_begin transport={chosen_transport}")
             receipt = fetch_via_transport(
@@ -686,7 +752,7 @@ def get_data(
                 source_uri=src_uri,
                 target_path=str(local_target),
                 dry_run=bool(dry_run),
-                options=transport_options or {},
+                options=merged_transport_options,
             )
             _log_step(trace, "get_data:fetch_complete")
         except (DatasetTransportError, FileNotFoundError, ValueError, RuntimeError) as exc:
@@ -724,6 +790,7 @@ def get_data(
                                 "target_path": result_path,
                                 "fetched": bool(fetched),
                                 "dry_run": bool(dry_run),
+                                "location_alias": alias_name or None,
                             }
                         ),
                     ),
@@ -747,6 +814,7 @@ def get_data(
         "checksum": src_checksum,
         "size_bytes": src_size_bytes,
         "dry_run": bool(dry_run),
+        "location_alias": alias_name or None,
         "operation_log": trace,
     }
 

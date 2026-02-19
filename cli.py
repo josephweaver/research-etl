@@ -820,6 +820,8 @@ def cmd_datasets_store(args: argparse.Namespace) -> int:
             version_label=args.version,
             environment=args.environment,
             runtime_context=args.runtime_context,
+            location_alias=args.location_alias,
+            locations_config_path=args.locations_config,
             location_type=args.location_type,
             target_uri=args.target_uri,
             transport=args.transport,
@@ -856,6 +858,8 @@ def cmd_datasets_get(args: argparse.Namespace) -> int:
             version=args.version,
             environment=args.environment,
             runtime_context=args.runtime_context,
+            location_alias=args.location_alias,
+            locations_config_path=args.locations_config,
             location_type=args.location_type,
             cache_dir=args.cache_dir,
             transport=args.transport,
@@ -1255,6 +1259,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_datasets_store.add_argument("--version", default=None, help="Version label (default generated UTC label)")
     p_datasets_store.add_argument("--environment", default=None, help="Target environment name")
     p_datasets_store.add_argument("--runtime-context", default="local", help="Current runtime context (local|slurm)")
+    p_datasets_store.add_argument("--location-alias", default=None, help="Named data location alias (for example LC_GDrive)")
+    p_datasets_store.add_argument("--locations-config", default=None, help="Path to data locations config YAML")
     p_datasets_store.add_argument("--location-type", default=None, help="Target location type (policy key)")
     p_datasets_store.add_argument("--target-uri", default=None, help="Explicit target URI/path")
     p_datasets_store.add_argument("--transport", default=None, help="Transport override (local_fs|rclone|rsync)")
@@ -1270,6 +1276,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_datasets_get.add_argument("--version", default="latest", help="Version label or 'latest'")
     p_datasets_get.add_argument("--environment", default=None, help="Preferred source environment")
     p_datasets_get.add_argument("--runtime-context", default="local", help="Current runtime context (local|slurm)")
+    p_datasets_get.add_argument("--location-alias", default=None, help="Named data location alias (for example LC_GDrive)")
+    p_datasets_get.add_argument("--locations-config", default=None, help="Path to data locations config YAML")
     p_datasets_get.add_argument("--location-type", default=None, help="Optional location type filter")
     p_datasets_get.add_argument("--cache-dir", default=".runs/datasets_cache", help="Local cache root for fetched data")
     p_datasets_get.add_argument("--transport", default=None, help="Transport override (local_fs|rclone|rsync)")

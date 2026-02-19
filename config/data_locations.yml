@@ -1,0 +1,20 @@
+locations:
+  LC_GDrive:
+    location_type: gdrive
+    transport: rclone
+    target_uri: "gdrive://Land Core Risk Model Development/ETL"
+    options:
+      rclone_bin: rclone
+      shared_drive: "Land Core Risk Model Development"
+
+  LC_HPCC:
+    location_type: hpcc_cache
+    transport: local_fs
+    target_uri: "/mnt/scratch/land_core/etl/datasets"
+    environment: hpcc
+
+  LC_Local:
+    location_type: local_cache
+    transport: local_fs
+    target_uri: ".runs/datasets_cache"
+    environment: local

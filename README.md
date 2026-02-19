@@ -434,6 +434,8 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
 - `etl web [--host 127.0.0.1 --port 8000 --reload]` - run minimal FastAPI UI/API for runs and details.
 - `etl artifacts enforce [--config config/artifacts.yml --dry-run --limit 2000]` - enforce artifact policies (canonical-location checks + retention cleanup for filesystem-backed locations).
 - `etl ai research --dataset-id <id> [--data-class SERVE --title ... --artifact-uri ... --sample-file path --schema-file path --supplemental-url <url> --supplemental-urls-file <txt> --notes ... --model ... --output path]` - ask ChatGPT to draft dataset explanations/usage/quality notes as structured JSON for catalog docs.
+- `etl datasets store|get ... [--location-alias LC_GDrive --locations-config config/data_locations.yml]` - use named data-location aliases instead of repeating transport/location config.
+- Data location aliases are configured in `config/data_locations.yml` (starter template: `config/data_locations.example.yml`).
 
 ### Error reports
 

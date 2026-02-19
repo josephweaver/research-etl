@@ -174,3 +174,84 @@ def test_cmd_datasets_dictionary_pr(monkeypatch, capsys, tmp_path):
     assert "Dictionary workflow dataset=serve.demo repo=catalog" in captured.out
     assert "PR: https://github.com/org/repo/pull/1" in captured.out
     assert "[trace] start" in captured.out
+
+
+def test_cmd_datasets_store_passes_location_alias(monkeypatch, capsys, tmp_path):
+    parser = cli.build_parser()
+    src = tmp_path / "payload.txt"
+    src.write_text("x", encoding="utf-8")
+    args = parser.parse_args(
+        [
+            "datasets",
+            "store",
+            "serve.demo",
+            "--path",
+            str(src),
+            "--location-alias",
+            "LC_GDrive",
+            "--locations-config",
+            "config/data_locations.yml",
+        ]
+    )
+    captured_kwargs = {}
+
+    def _fake_store_data(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "dataset_id": "serve.demo",
+            "version_label": "v1",
+            "stage": "staging",
+            "location_type": "gdrive",
+            "target_uri": "gdrive://LandCore/ETL",
+            "transport": "rclone",
+            "dry_run": False,
+            "checksum": "abc",
+            "size_bytes": 1,
+            "operation_log": [],
+        }
+
+    monkeypatch.setattr(cli, "store_data", _fake_store_data)
+    rc = cli.cmd_datasets_store(args)
+    assert rc == 0
+    assert captured_kwargs["location_alias"] == "LC_GDrive"
+    assert captured_kwargs["locations_config_path"] == "config/data_locations.yml"
+    _ = capsys.readouterr()
+
+
+def test_cmd_datasets_get_passes_location_alias(monkeypatch, capsys):
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "datasets",
+            "get",
+            "serve.demo",
+            "--location-alias",
+            "LC_GDrive",
+            "--locations-config",
+            "config/data_locations.yml",
+        ]
+    )
+    captured_kwargs = {}
+
+    def _fake_get_data(**kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "dataset_id": "serve.demo",
+            "version_label": "v2",
+            "location_type": "gdrive",
+            "source_uri": "gdrive://LandCore/ETL/demo",
+            "local_path": "C:/tmp/demo/file.txt",
+            "transport": "rclone",
+            "fetched": True,
+            "dry_run": False,
+            "checksum": "abc",
+            "size_bytes": 12,
+            "operation_log": [],
+        }
+
+    monkeypatch.setattr(cli, "get_data", _fake_get_data)
+    rc = cli.cmd_datasets_get(args)
+    assert rc == 0
+    assert captured_kwargs["location_alias"] == "LC_GDrive"
+    assert captured_kwargs["locations_config_path"] == "config/data_locations.yml"
+    _ = capsys.readouterr()

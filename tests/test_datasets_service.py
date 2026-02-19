@@ -175,6 +175,52 @@ def test_store_data_persists_records(monkeypatch, tmp_path):
     assert any("INSERT INTO etl_dataset_events" in sql for sql, _ in conn.executed)
 
 
+def test_store_data_resolves_location_alias(monkeypatch, tmp_path):
+    conn = _FakeConn()
+    src = tmp_path / "payload.txt"
+    src.write_text("hello", encoding="utf-8")
+    captured = {}
+
+    def _fake_transfer(**kwargs):
+        captured.update(kwargs)
+        return {
+            "transport": kwargs["transport"],
+            "target_uri": kwargs["target_uri"],
+            "dry_run": False,
+        }
+
+    monkeypatch.setattr(ds, "_connect", lambda: conn)
+    monkeypatch.setattr(ds, "_load_policy_or_none", lambda: None)
+    monkeypatch.setattr(
+        ds,
+        "resolve_data_location_alias",
+        lambda alias, config_path=None: {
+            "alias": alias,
+            "location_type": "gdrive",
+            "transport": "rclone",
+            "target_uri": "gdrive://LandCore/ETL",
+            "options": {"rclone_bin": "bin/rclone"},
+        },
+    )
+    monkeypatch.setattr(ds, "transfer_via_transport", _fake_transfer)
+
+    out = ds.store_data(
+        dataset_id="serve.demo",
+        source_path=str(src),
+        stage="published",
+        runtime_context="local",
+        version_label="v1",
+        location_alias="LC_GDrive",
+        transport_options={"shared_drive_id": "team123"},
+    )
+    assert out["location_alias"] == "LC_GDrive"
+    assert out["location_type"] == "gdrive"
+    assert out["transport"] == "rclone"
+    assert captured["target_uri"] == "gdrive://LandCore/ETL"
+    assert captured["options"]["rclone_bin"] == "bin/rclone"
+    assert captured["options"]["shared_drive_id"] == "team123"
+
+
 def test_store_data_policy_violation_raises(monkeypatch, tmp_path):
     src = tmp_path / "payload.txt"
     src.write_text("hello", encoding="utf-8")
@@ -247,6 +293,51 @@ def test_get_data_fetches_when_no_direct(monkeypatch, tmp_path):
     assert out["transport"] == "rclone"
     assert out["fetched"] is True
     assert captured["source_uri"] == src_uri
+
+
+def test_get_data_applies_alias_location_type_filter(monkeypatch, tmp_path):
+    src_uri = "gdrive://data/etl/serve/demo/v2/file.txt"
+    captured = {}
+
+    class _Cursor(_FakeCursor):
+        def fetchall(self):
+            if "dataset_version_id = %s" in self._last_sql:
+                return [
+                    (11, "local", "gdrive", src_uri, True, "abc", 5, datetime(2026, 2, 17, 1, 3, 4)),
+                ]
+            return super().fetchall()
+
+    class _Conn(_FakeConn):
+        def cursor(self):
+            return _Cursor(self)
+
+    def _fake_fetch(**kwargs):
+        captured.update(kwargs)
+        return {"target_path": str(tmp_path / "cache" / "file.txt"), "transport": kwargs["transport"], "dry_run": False}
+
+    monkeypatch.setattr(ds, "_connect", lambda: _Conn())
+    monkeypatch.setattr(ds, "fetch_via_transport", _fake_fetch)
+    monkeypatch.setattr(
+        ds,
+        "resolve_data_location_alias",
+        lambda alias, config_path=None: {
+            "alias": alias,
+            "location_type": "gdrive",
+            "transport": "rclone",
+            "options": {"rclone_bin": "bin/rclone"},
+        },
+    )
+
+    out = ds.get_data(
+        dataset_id="serve.demo",
+        version="latest",
+        runtime_context="local",
+        cache_dir=str(tmp_path / "cache"),
+        location_alias="LC_GDrive",
+    )
+    assert out["location_alias"] == "LC_GDrive"
+    assert captured["transport"] == "rclone"
+    assert captured["options"]["rclone_bin"] == "bin/rclone"
 
 
 def test_get_data_missing_version_raises(monkeypatch):
