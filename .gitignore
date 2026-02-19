@@ -6,8 +6,8 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-/.out
+.out/
 /bin
 /.runs_dep_demo
-/.pipeline_assets_cache
+.pipeline_assets_cache
 /.tmp
