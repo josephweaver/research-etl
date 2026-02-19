@@ -46,7 +46,9 @@ from .pipeline import (
 )
 from .pipeline_assets import (
     PipelineAssetError,
+    pipeline_asset_sources_from_project_vars,
     resolve_pipeline_path_from_project_sources,
+    sync_pipeline_asset_source,
 )
 from .provenance import collect_run_provenance
 from .projects import (
@@ -456,6 +458,10 @@ INDEX_HTML = """<!doctype html>
             <option value="land-core">land-core</option>
             <option value="gee-lee">gee-lee</option>
           </select>
+          <label for="nav_project">Project</label>
+          <select id="nav_project">
+            <option value="">project (all)</option>
+          </select>
           <label for="nav_env">Env</label>
           <select id="nav_env">
             <option value="">env (optional)</option>
@@ -734,7 +740,10 @@ INDEX_HTML = """<!doctype html>
     let builderPreviewCollapsed = false;
     let builderPreviewSectionCollapsed = { yaml: true, output: true, vars: true };
     let builderTreeFiles = [];
+    let builderTreeDirs = [];
     let builderTreeFileSelection = "";
+    let builderSelectedPipelineSource = "";
+    let builderProjectInjectedVarValues = {};
     let builderNamespaceTimer = null;
     let builderLastTextTarget = null;
     let builderAutoValidateTimer = null;
@@ -746,6 +755,7 @@ INDEX_HTML = """<!doctype html>
     let builderEnvironmentsConfig = "";
     let builderEnvExecutorMap = {};
     const USER_STORAGE_KEY = "etl_ui_user";
+    const PROJECT_STORAGE_KEY = "etl_ui_project";
     const ENV_STORAGE_KEY = "etl_ui_env";
     const VALID_UI_USERS = new Set(["admin", "land-core", "gee-lee"]);
     const _nativeFetch = window.fetch.bind(window);
@@ -759,6 +769,10 @@ INDEX_HTML = """<!doctype html>
       const el = document.getElementById("nav_env");
       return el ? String(el.value || "").trim() : "";
     }
+    function currentProjectId(){
+      const el = document.getElementById("nav_project");
+      return el ? String(el.value || "").trim() : "";
+    }
     function withAsUserUrl(inputUrl){
       const txt = String(inputUrl || "");
       if(!txt.startsWith("/api/")){
@@ -767,6 +781,12 @@ INDEX_HTML = """<!doctype html>
       const u = new URL(txt, window.location.origin);
       if(!u.searchParams.get("as_user")){
         u.searchParams.set("as_user", currentAsUser());
+      }
+      if(!u.searchParams.get("project_id")){
+        const pid = currentProjectId();
+        if(pid){
+          u.searchParams.set("project_id", pid);
+        }
       }
       return u.pathname + (u.search || "") + (u.hash || "");
     }
@@ -810,6 +830,46 @@ INDEX_HTML = """<!doctype html>
             await refreshBuilderNamespace();
           }
         }
+      };
+    }
+    async function loadNavProjects(){
+      const sel = document.getElementById("nav_project");
+      if(!sel) return;
+      let fromQuery = "";
+      try {
+        const qp = new URLSearchParams(window.location.search);
+        fromQuery = String(qp.get("project_id") || "").trim();
+      } catch {}
+      const stored = String(localStorage.getItem(PROJECT_STORAGE_KEY) || "").trim();
+      const preferred = fromQuery || stored;
+      const res = await fetch(`/api/builder/projects`);
+      if(!res.ok){
+        sel.innerHTML = `<option value="">project (all)</option>`;
+        return;
+      }
+      const payload = await res.json();
+      const projects = Array.isArray(payload.projects) ? payload.projects : [];
+      sel.innerHTML = `<option value="">project (all)</option>` + projects.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+      if(preferred && projects.includes(preferred)){
+        sel.value = preferred;
+      } else {
+        sel.value = "";
+      }
+      localStorage.setItem(PROJECT_STORAGE_KEY, String(sel.value || "").trim());
+      sel.onchange = async () => {
+        const next = String(sel.value || "").trim();
+        localStorage.setItem(PROJECT_STORAGE_KEY, next);
+        if(isBuilderView){
+          const bSel = document.getElementById("b_project_id");
+          if(bSel){
+            bSel.value = next;
+          }
+          builderModel.project_id = next;
+          syncYamlPreview();
+          await refreshBuilderProjectVars(next);
+          await refreshBuilderTreeFiles();
+        }
+        await tick();
       };
     }
     function defaultBuilderDirs(){
@@ -1314,6 +1374,7 @@ INDEX_HTML = """<!doctype html>
       if (intent) body.intent = intent;
       if (constraints) body.constraints = constraints;
       if (projectId) body.project_id = projectId;
+      if (builderSelectedPipelineSource) body.pipeline_source = builderSelectedPipelineSource;
       if (envName) body.env = envName;
       if (builderEnvironmentsConfig) body.environments_config = builderEnvironmentsConfig;
       if (workdir) body.workdir = workdir;
@@ -1339,11 +1400,73 @@ INDEX_HTML = """<!doctype html>
       const projects = Array.isArray(payload.projects) ? payload.projects : [];
       sel.innerHTML = `<option value="">project (optional)</option>` + projects.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
       const modelProject = String((builderModel && builderModel.project_id) || "").trim();
+      const navProject = currentProjectId();
       if(current && projects.includes(current)){
         sel.value = current;
+      } else if(navProject && projects.includes(navProject)){
+        sel.value = navProject;
       } else if(modelProject && projects.includes(modelProject)){
         sel.value = modelProject;
       }
+      builderModel.project_id = String(sel.value || "").trim();
+    }
+    function flattenBuilderProjectVars(value, prefix = ""){
+      const out = {};
+      if(!value || typeof value !== "object" || Array.isArray(value)){
+        return out;
+      }
+      for(const [k, v] of Object.entries(value)){
+        const key = String(k || "").trim();
+        if(!key) continue;
+        const dotted = prefix ? `${prefix}.${key}` : key;
+        if(v && typeof v === "object" && !Array.isArray(v)){
+          Object.assign(out, flattenBuilderProjectVars(v, dotted));
+        } else {
+          out[dotted] = v;
+        }
+      }
+      return out;
+    }
+    async function refreshBuilderProjectVars(projectId){
+      if(!isBuilderView) return;
+      const pid = String(projectId || "").trim();
+      if(!builderModel || typeof builderModel !== "object"){
+        return;
+      }
+      builderModel.vars = builderModel.vars || {};
+      // Remove previously injected project vars only when unchanged by user edits.
+      for(const [k, injectedVal] of Object.entries(builderProjectInjectedVarValues || {})){
+        if(Object.prototype.hasOwnProperty.call(builderModel.vars, k) && String(builderModel.vars[k]) === String(injectedVal)){
+          delete builderModel.vars[k];
+        }
+      }
+      builderProjectInjectedVarValues = {};
+      if(!pid){
+        renderBuilderModel();
+        syncYamlPreview();
+        return;
+      }
+      const res = await fetch(`/api/builder/project-vars?project_id=${encodeURIComponent(pid)}`);
+      if(!res.ok){
+        document.getElementById("builder_msg").textContent = await readMessage(res);
+        renderBuilderModel();
+        syncYamlPreview();
+        return;
+      }
+      const payload = await res.json();
+      const projectVars = flattenBuilderProjectVars(payload.project_vars || {});
+      for(const [k, rawVal] of Object.entries(projectVars)){
+        const value =
+          rawVal === null || rawVal === undefined
+            ? ""
+            : (typeof rawVal === "string" || typeof rawVal === "number" || typeof rawVal === "boolean")
+              ? String(rawVal)
+              : JSON.stringify(rawVal);
+        builderModel.vars[k] = value;
+        builderProjectInjectedVarValues[k] = value;
+      }
+      renderBuilderModel();
+      syncYamlPreview();
     }
     async function refreshBuilderGitStatus(){
       if(!isBuilderView) return;
@@ -2298,12 +2421,41 @@ INDEX_HTML = """<!doctype html>
       if(inPicker) return;
       hideBuilderStepPluginPickers();
     }
-    function buildBuilderJsTreeData(files){
+    function buildBuilderJsTreeData(files, dirs){
       const nodes = [];
       const seenDirs = new Set();
-      const all = Array.isArray(files) ? files.map(x => String(x || "").replaceAll("\\\\", "/").trim()).filter(Boolean) : [];
-      for(const rel of all){
-        const parts = rel.split("/").filter(Boolean);
+      const onlyDirs = Array.isArray(dirs) ? dirs.map(x => String(x || "").replaceAll("\\\\", "/").trim()).filter(Boolean) : [];
+      for(const drel of onlyDirs){
+        const dparts = drel.split("/").filter(Boolean);
+        if(!dparts.length) continue;
+        let parentId = "#";
+        for(let i=0; i<dparts.length; i++){
+          const seg = dparts[i];
+          const dpath = dparts.slice(0, i + 1).join("/");
+          const did = `d:${dpath}`;
+          if(!seenDirs.has(did)){
+            seenDirs.add(did);
+            nodes.push({ id: did, parent: parentId, text: seg, type: "dir", icon: "jstree-folder" });
+          }
+          parentId = did;
+        }
+      }
+      const all = Array.isArray(files) ? files : [];
+      for(const rawEntry of all){
+        let treePath = "";
+        let pipelinePath = "";
+        let sourceLabel = "";
+        if(typeof rawEntry === "string"){
+          treePath = String(rawEntry || "").replaceAll("\\\\", "/").trim();
+          pipelinePath = treePath;
+        } else if(rawEntry && typeof rawEntry === "object"){
+          treePath = String(rawEntry.tree_path || rawEntry.path || "").replaceAll("\\\\", "/").trim();
+          pipelinePath = String(rawEntry.pipeline || rawEntry.relpath || treePath).replaceAll("\\\\", "/").trim();
+          sourceLabel = String(rawEntry.source || "").trim();
+        }
+        if(!treePath) continue;
+        if(!pipelinePath) pipelinePath = treePath;
+        const parts = treePath.split("/").filter(Boolean);
         if(!parts.length) continue;
         let parentId = "#";
         for(let i=0; i<parts.length - 1; i++){
@@ -2317,7 +2469,7 @@ INDEX_HTML = """<!doctype html>
           parentId = did;
         }
         const fname = parts[parts.length - 1];
-        nodes.push({ id: `f:${rel}`, parent: parentId, text: fname, type: "file", icon: "jstree-file", relpath: rel });
+        nodes.push({ id: `f:${treePath}`, parent: parentId, text: fname, type: "file", icon: "jstree-file", relpath: pipelinePath, treepath: treePath, source: sourceLabel });
       }
       return nodes;
     }
@@ -2325,11 +2477,12 @@ INDEX_HTML = """<!doctype html>
       const p = normalizeBuilderPipelineName(String(pipeline || "").trim());
       if(!p){
         builderTreeFileSelection = "";
+        builderSelectedPipelineSource = "";
         return;
       }
       builderTreeFileSelection = p;
     }
-    function renderBuilderJsTree(files){
+    function renderBuilderJsTree(files, dirs){
       const holder = document.getElementById("b_pipeline_tree");
       if(!holder) return;
       const $ = window.jQuery;
@@ -2337,7 +2490,7 @@ INDEX_HTML = """<!doctype html>
         holder.innerHTML = `<span class="muted">jsTree not available in this browser context.</span>`;
         return;
       }
-      const data = buildBuilderJsTreeData(files);
+      const data = buildBuilderJsTreeData(files, dirs);
       holder.innerHTML = "";
       const $holder = $(holder);
       try { $holder.jstree("destroy"); } catch {}
@@ -2370,6 +2523,7 @@ INDEX_HTML = """<!doctype html>
         if(ntype !== "file") return;
         const rel = String(node.original.relpath || "").trim();
         if(!rel) return;
+        builderSelectedPipelineSource = String(node.original.source || "").trim();
         builderTreeFileSelection = rel;
         document.getElementById("b_pipeline_path").value = normalizeBuilderPipelineName(rel);
         hideBuilderTreeDropdown();
@@ -2388,9 +2542,11 @@ INDEX_HTML = """<!doctype html>
       }
       const payload = await res.json();
       const files = Array.isArray(payload.files) ? payload.files : [];
+      const dirs = Array.isArray(payload.dirs) ? payload.dirs : [];
       builderTreeFiles = files;
+      builderTreeDirs = dirs;
       applyBuilderTreeSelectionFromPipeline(document.getElementById("b_pipeline_path").value.trim());
-      renderBuilderJsTree(files);
+      renderBuilderJsTree(files, dirs);
     }
     function showBuilderTreeDropdown(){
       const combo = document.getElementById("b_pipeline_combo");
@@ -2461,7 +2617,7 @@ INDEX_HTML = """<!doctype html>
       }
       document.getElementById("b_pipeline_path").value = v;
       applyBuilderTreeSelectionFromPipeline(v);
-      renderBuilderJsTree(builderTreeFiles);
+      renderBuilderJsTree(builderTreeFiles, builderTreeDirs);
       builderLoaded = false;
       await loadBuilderSource();
     }
@@ -2487,24 +2643,29 @@ INDEX_HTML = """<!doctype html>
       }
       document.getElementById("b_pipeline_path").value = pipeline;
       applyBuilderTreeSelectionFromPipeline(pipeline);
-      renderBuilderJsTree(builderTreeFiles);
-      const res = await fetch(`/api/builder/source?pipeline=${encodeURIComponent(pipeline)}`);
+      renderBuilderJsTree(builderTreeFiles, builderTreeDirs);
+      const projectSel = document.getElementById("b_project_id");
+      const qp = new URLSearchParams();
+      qp.set("pipeline", pipeline);
+      const pid = String(projectSel && projectSel.value ? projectSel.value : "").trim();
+      if(pid) qp.set("project_id", pid);
+      if(builderSelectedPipelineSource) qp.set("pipeline_source", builderSelectedPipelineSource);
+      const res = await fetch(`/api/builder/source?${qp.toString()}`);
       if(!res.ok){
         document.getElementById("builder_msg").textContent = await readMessage(res);
         builderModel = normalizeBuilderModelPlugins(
           ensureBuilderDefaultDirs({ project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] })
         );
-        const projectSel = document.getElementById("b_project_id");
         if(projectSel){
           builderModel.project_id = String(projectSel.value || "").trim();
         }
         builderRunSeed = null;
       } else {
         const payload = await res.json();
+        builderSelectedPipelineSource = String(payload.pipeline_source || builderSelectedPipelineSource || "").trim();
         builderModel = normalizeBuilderModelPlugins(
           ensureBuilderDefaultDirs(payload.model || { project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] })
         );
-        const projectSel = document.getElementById("b_project_id");
         if(projectSel){
           const pid = String((builderModel && builderModel.project_id) || "").trim();
           if(pid){
@@ -2535,13 +2696,22 @@ INDEX_HTML = """<!doctype html>
       const update = await fetch(`/api/pipelines/${encoded}`, {
         method:"PUT",
         headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({ yaml_text: payload.yaml_text }),
+        body: JSON.stringify({
+          yaml_text: payload.yaml_text,
+          project_id: payload.project_id || "",
+          pipeline_source: payload.pipeline_source || "",
+        }),
       });
       if(update.status === 404){
         const create = await fetch(`/api/pipelines`, {
           method:"POST",
           headers: {"Content-Type":"application/json"},
-          body: JSON.stringify({ pipeline: payload.pipeline, yaml_text: payload.yaml_text }),
+          body: JSON.stringify({
+            pipeline: payload.pipeline,
+            yaml_text: payload.yaml_text,
+            project_id: payload.project_id || "",
+            pipeline_source: payload.pipeline_source || "",
+          }),
         });
         if(!create.ok){
           msg.textContent = await readMessage(create);
@@ -2580,13 +2750,22 @@ INDEX_HTML = """<!doctype html>
       const update = await fetch(`/api/pipelines/${encoded}`, {
         method:"PUT",
         headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({ yaml_text: payload.yaml_text }),
+        body: JSON.stringify({
+          yaml_text: payload.yaml_text,
+          project_id: payload.project_id || "",
+          pipeline_source: payload.pipeline_source || "",
+        }),
       });
       if(update.status === 404){
         const create = await fetch(`/api/pipelines`, {
           method:"POST",
           headers: {"Content-Type":"application/json"},
-          body: JSON.stringify({ pipeline: payload.pipeline, yaml_text: payload.yaml_text }),
+          body: JSON.stringify({
+            pipeline: payload.pipeline,
+            yaml_text: payload.yaml_text,
+            project_id: payload.project_id || "",
+            pipeline_source: payload.pipeline_source || "",
+          }),
         });
         if(!create.ok){
           builderPipelineRunState = "failed";
@@ -3749,9 +3928,17 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("btn_builder_terminate").onclick = terminateBuilderPipeline;
     document.getElementById("btn_plugins_refresh").onclick = tick;
     document.getElementById("plugins_env").onchange = tick;
-    document.getElementById("b_project_id").onchange = () => {
-      builderModel.project_id = String(document.getElementById("b_project_id").value || "").trim();
+    document.getElementById("b_project_id").onchange = async () => {
+      const next = String(document.getElementById("b_project_id").value || "").trim();
+      builderModel.project_id = next;
+      const navSel = document.getElementById("nav_project");
+      if(navSel && String(navSel.value || "").trim() !== next){
+        navSel.value = next;
+        localStorage.setItem(PROJECT_STORAGE_KEY, next);
+      }
       syncYamlPreview();
+      await refreshBuilderProjectVars(next);
+      await refreshBuilderTreeFiles();
     };
     document.getElementById("b_requires").addEventListener("input", handleBuilderInput);
     document.getElementById("b_vars").addEventListener("input", handleBuilderInput);
@@ -3774,7 +3961,12 @@ INDEX_HTML = """<!doctype html>
     initBuilderTreeComboBehavior();
     initBuilderTooltipResolution();
     loadPluginEnvOptions();
-    loadBuilderProjects();
+    loadNavProjects().then(async () => {
+      await loadBuilderProjects();
+      if(isBuilderView){
+        await refreshBuilderProjectVars(builderModel.project_id || currentProjectId());
+      }
+    });
     loadBuilderEnvironments().then(async () => {
       if(isBuilderView){
         await refreshBuilderGitStatus();
@@ -5258,13 +5450,188 @@ def _resolve_repo_relative_pipeline_path(pipeline: str) -> Path:
     return resolved
 
 
+def _is_local_repo_pipeline_path(path: Path) -> bool:
+    repo_root = Path(".").resolve()
+    local_pipelines_root = (repo_root / "pipelines").resolve()
+    try:
+        Path(path).resolve().relative_to(local_pipelines_root)
+        return True
+    except Exception:
+        return False
+
+
+def _normalize_pipeline_relpath(raw_pipeline: str) -> Path:
+    raw = str(raw_pipeline or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="`pipeline` is required.")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        parts = list(path.parts)
+        if parts and str(parts[0]).lower() == "pipelines":
+            path = Path(*parts[1:]) if len(parts) > 1 else Path("")
+    if path.suffix.lower() not in {".yml", ".yaml"}:
+        path = path.with_suffix(".yml")
+    return path
+
+
+def _builder_project_context(
+    *,
+    project_id: Optional[str],
+    projects_config: Optional[str],
+) -> tuple[Optional[str], dict[str, Any], Optional[Path]]:
+    raw_cfg = str(projects_config or "").strip()
+    cfg_path = Path(raw_cfg).expanduser() if raw_cfg else None
+    try:
+        resolved = resolve_projects_config_path(cfg_path)
+    except ProjectConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+    pid = normalize_project_id(project_id)
+    if not pid:
+        return None, {}, resolved
+    try:
+        project_vars = load_project_vars(project_id=pid, projects_config_path=resolved)
+    except ProjectConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+    return pid, project_vars, resolved
+
+
+def _normalize_tree_label(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "repo"
+    text = text.replace("_", "-").replace("\\", "/").strip("/")
+    return text or "repo"
+
+
+def _builder_pipeline_source_views(
+    *,
+    project_vars: dict[str, Any],
+    repo_root: Path,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    views: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    sources = pipeline_asset_sources_from_project_vars(project_vars)
+    if not sources:
+        return views, warnings
+
+    raw_sources = project_vars.get("pipeline_asset_sources")
+    raw_list = raw_sources if isinstance(raw_sources, list) else []
+    legacy_key = str(project_vars.get("pipeline_assets_project_key") or "").strip()
+    cache_root = (repo_root / ".pipeline_assets_cache").resolve()
+    used_labels: dict[str, int] = {}
+
+    for idx, src in enumerate(sources):
+        label = ""
+        if len(sources) == 1 and legacy_key:
+            label = legacy_key
+        elif idx < len(raw_list):
+            raw = raw_list[idx]
+            if isinstance(raw, dict):
+                label = str(raw.get("project_key") or raw.get("key") or raw.get("name") or "").strip()
+        if not label:
+            label = infer_repo_name(src.repo_url)
+        label = _normalize_tree_label(label)
+        seen = used_labels.get(label, 0) + 1
+        used_labels[label] = seen
+        if seen > 1:
+            label = f"{label}-{seen}"
+
+        try:
+            repo_dir = sync_pipeline_asset_source(src, cache_root=cache_root)
+        except PipelineAssetError as exc:
+            warnings.append(f"{label}: {exc}")
+            continue
+        root = (repo_dir / src.pipelines_dir).resolve()
+        if not root.exists() or not root.is_dir():
+            warnings.append(f"{label}: pipelines dir not found: {root}")
+            continue
+        views.append({"label": label, "pipelines_root": root})
+    return views, warnings
+
+
+def _resolve_project_writable_pipeline_path(
+    *,
+    pipeline: str,
+    project_id: Optional[str],
+    projects_config: Optional[str],
+    pipeline_source: Optional[str],
+) -> Path:
+    repo_root = Path(".").resolve()
+    pid, project_vars, _resolved_cfg = _builder_project_context(project_id=project_id, projects_config=projects_config)
+    if not pid:
+        return _resolve_repo_relative_pipeline_path(pipeline)
+
+    views, _warnings = _builder_pipeline_source_views(project_vars=project_vars, repo_root=repo_root)
+    if not views:
+        return _resolve_repo_relative_pipeline_path(pipeline)
+
+    view_by_label = {str(v["label"]): v for v in views}
+    rel = _normalize_pipeline_relpath(pipeline)
+    rel_parts = [p for p in rel.as_posix().split("/") if p]
+    inline_source = rel_parts[0] if rel_parts and rel_parts[0] in view_by_label else ""
+    if inline_source:
+        rel = Path("/".join(rel_parts[1:])) if len(rel_parts) > 1 else Path("")
+        if rel.suffix.lower() not in {".yml", ".yaml"}:
+            rel = rel.with_suffix(".yml")
+
+    requested_source = str(pipeline_source or "").strip() or inline_source
+    target_view = None
+    if requested_source:
+        target_view = view_by_label.get(requested_source)
+        if target_view is None:
+            raise HTTPException(status_code=400, detail=f"Unknown pipeline_source '{requested_source}'.")
+    elif len(views) == 1:
+        target_view = views[0]
+    else:
+        existing_matches: list[dict[str, Any]] = []
+        for view in views:
+            root = Path(view["pipelines_root"]).resolve()
+            cand = (root / rel).resolve()
+            try:
+                cand.relative_to(root)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid pipeline path '{pipeline}'.") from exc
+            if cand.exists() and cand.is_file():
+                existing_matches.append(view)
+        if len(existing_matches) == 1:
+            target_view = existing_matches[0]
+        elif len(existing_matches) > 1:
+            labels = [str(v["label"]) for v in existing_matches]
+            raise HTTPException(
+                status_code=409,
+                detail=f"Ambiguous pipeline path '{pipeline}' across sources {labels}. Pass pipeline_source.",
+            )
+        else:
+            labels = [str(v["label"]) for v in views]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Multiple project pipeline sources available {labels}. Pass pipeline_source.",
+            )
+
+    root = Path(target_view["pipelines_root"]).resolve()
+    candidate = (root / rel).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid pipeline path '{pipeline}'.") from exc
+    if candidate.suffix.lower() not in {".yml", ".yaml"}:
+        candidate = candidate.with_suffix(".yml")
+    return candidate
+
+
 @app.post("/api/pipelines")
 def api_pipelines_create(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     scope = _resolve_user_scope(request)
     payload = payload or {}
-    pipeline_path = _resolve_repo_relative_pipeline_path(str(payload.get("pipeline") or ""))
     req_project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
-    path_project_id = infer_project_id_from_pipeline_path(pipeline_path)
+    pipeline_source = str(payload.get("pipeline_source") or "").strip() or None
+    pipeline_path = _resolve_project_writable_pipeline_path(
+        pipeline=str(payload.get("pipeline") or ""),
+        project_id=req_project_id,
+        projects_config=str(payload.get("projects_config") or "").strip() or None,
+        pipeline_source=pipeline_source,
+    )
+    path_project_id = infer_project_id_from_pipeline_path(pipeline_path) if _is_local_repo_pipeline_path(pipeline_path) else None
     if req_project_id and path_project_id and req_project_id != path_project_id:
         raise HTTPException(
             status_code=400,
@@ -5287,9 +5654,15 @@ def api_pipelines_update(request: Request, pipeline_id: str, payload: Optional[d
     payload = payload or {}
     if "pipeline" in payload and str(payload.get("pipeline") or "").strip() not in {"", pipeline_id}:
         raise HTTPException(status_code=400, detail="Payload pipeline does not match URL pipeline_id.")
-    pipeline_path = _resolve_repo_relative_pipeline_path(pipeline_id)
     req_project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
-    path_project_id = infer_project_id_from_pipeline_path(pipeline_path)
+    pipeline_source = str(payload.get("pipeline_source") or "").strip() or None
+    pipeline_path = _resolve_project_writable_pipeline_path(
+        pipeline=pipeline_id,
+        project_id=req_project_id,
+        projects_config=str(payload.get("projects_config") or "").strip() or None,
+        pipeline_source=pipeline_source,
+    )
+    path_project_id = infer_project_id_from_pipeline_path(pipeline_path) if _is_local_repo_pipeline_path(pipeline_path) else None
     if req_project_id and path_project_id and req_project_id != path_project_id:
         raise HTTPException(
             status_code=400,
@@ -5306,7 +5679,12 @@ def api_pipelines_update(request: Request, pipeline_id: str, payload: Optional[d
 
 
 @app.get("/api/builder/source")
-def api_builder_source(pipeline: str = Query(default="")) -> dict:
+def api_builder_source(
+    pipeline: str = Query(default=""),
+    project_id: Optional[str] = Query(default=None),
+    projects_config: Optional[str] = Query(default=None),
+    pipeline_source: Optional[str] = Query(default=None),
+) -> dict:
     raw = (pipeline or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="`pipeline` query param is required.")
@@ -5352,22 +5730,156 @@ def api_builder_source(pipeline: str = Query(default="")) -> dict:
                             f"Matches: {rels}. Pass a relative path like 'yanroy/{raw_name}'."
                         ),
                     )
+    selected_source_label = str(pipeline_source or "").strip()
+    if (not path.exists() or not path.is_file()) and normalize_project_id(project_id):
+        _pid, project_vars, _cfg = _builder_project_context(project_id=project_id, projects_config=projects_config)
+        source_views, _warnings = _builder_pipeline_source_views(project_vars=project_vars, repo_root=repo_root)
+        view_by_label = {str(v["label"]): v for v in source_views}
+        if selected_source_label and selected_source_label not in view_by_label:
+            raise HTTPException(status_code=400, detail=f"Unknown pipeline_source '{selected_source_label}'.")
+        source_label = selected_source_label
+        source_rel = raw.replace("\\", "/").strip()
+        source_parts = [p for p in source_rel.split("/") if p]
+        if source_parts and source_parts[0] in view_by_label and len(source_parts) > 1:
+            source_label = source_parts[0]
+            source_rel = "/".join(source_parts[1:])
+
+        def _candidates(rel_text: str) -> list[Path]:
+            rel = Path(rel_text)
+            out = [rel]
+            if rel.suffix.lower() not in {".yml", ".yaml"}:
+                out.append(rel.with_suffix(".yml"))
+                out.append(rel.with_suffix(".yaml"))
+            return out
+
+        selected_views = [view_by_label[source_label]] if source_label and source_label in view_by_label else list(source_views)
+        matches: list[tuple[str, Path]] = []
+        has_path_hint = ("/" in source_rel) or ("\\" in source_rel)
+        if has_path_hint:
+            for view in selected_views:
+                root = Path(view["pipelines_root"]).resolve()
+                for rel_candidate in _candidates(source_rel):
+                    cand = (root / rel_candidate).resolve()
+                    if cand.exists() and cand.is_file():
+                        matches.append((str(view["label"]), cand))
+        else:
+            raw_name = Path(source_rel).name
+            candidate_names = [raw_name]
+            if Path(raw_name).suffix.lower() not in {".yml", ".yaml"}:
+                candidate_names.extend([f"{raw_name}.yml", f"{raw_name}.yaml"])
+            for view in selected_views:
+                root = Path(view["pipelines_root"]).resolve()
+                for name in candidate_names:
+                    for cand in sorted(root.rglob(name)):
+                        if cand.is_file():
+                            matches.append((str(view["label"]), cand.resolve()))
+        uniq: list[tuple[str, Path]] = []
+        seen: set[str] = set()
+        for label, m in matches:
+            key = f"{label}|{m.as_posix().lower()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append((label, m))
+        if len(uniq) == 1:
+            selected_source_label = str(uniq[0][0])
+            path = uniq[0][1]
+        elif len(uniq) > 1:
+            rels: list[str] = []
+            for label, m in uniq[:10]:
+                try:
+                    root = Path(view_by_label[label]["pipelines_root"]).resolve()
+                    rels.append(f"{label}/{m.relative_to(root).as_posix()}")
+                except Exception:
+                    rels.append(f"{label}/{m.name}")
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Ambiguous pipeline filename '{raw}'. "
+                    f"Matches: {rels}. Pass a relative path like '{rels[0]}' if desired."
+                ),
+            )
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"Pipeline file not found: {path}")
     try:
         text = path.read_text(encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Failed to read pipeline file: {exc}") from exc
-    return {"pipeline": str(path), "yaml_text": text, "model": _pipeline_to_builder_model_from_yaml(text)}
+    return {
+        "pipeline": str(path),
+        "pipeline_source": selected_source_label or None,
+        "yaml_text": text,
+        "model": _pipeline_to_builder_model_from_yaml(text),
+    }
 
 
 @app.get("/api/builder/files")
-def api_builder_files() -> dict:
+def api_builder_files(
+    project_id: Optional[str] = Query(default=None),
+    projects_config: Optional[str] = Query(default=None),
+) -> dict:
     repo_root = Path(".").resolve()
+    pid, project_vars, resolved_projects_cfg = _builder_project_context(
+        project_id=project_id,
+        projects_config=projects_config,
+    )
+    if pid:
+        views, warnings = _builder_pipeline_source_views(project_vars=project_vars, repo_root=repo_root)
+        if views:
+            files_obj: list[dict[str, str]] = []
+            dirs_set: set[str] = set()
+            for view in views:
+                label = str(view["label"])
+                root = Path(view["pipelines_root"]).resolve()
+                dirs_set.add(label)
+                for pat in ("*.yml", "*.yaml"):
+                    for p in root.rglob(pat):
+                        if not p.is_file():
+                            continue
+                        rel = p.relative_to(root).as_posix()
+                        tree_path = f"{label}/{rel}" if rel else label
+                        files_obj.append({"tree_path": tree_path, "pipeline": rel, "source": label})
+                for d in root.rglob("*"):
+                    if not d.is_dir():
+                        continue
+                    rel_d = d.relative_to(root).as_posix()
+                    if rel_d and rel_d != ".":
+                        dirs_set.add(f"{label}/{rel_d}")
+            files_obj.sort(key=lambda x: str(x.get("tree_path") or "").lower())
+            return {
+                "project_id": pid,
+                "projects_config": str(resolved_projects_cfg) if resolved_projects_cfg else None,
+                "pipelines_root": None,
+                "files": files_obj,
+                "dirs": sorted(dirs_set),
+                "sources": [str(v["label"]) for v in views],
+                "warnings": warnings,
+            }
+
     pipelines_root = (repo_root / "pipelines").resolve()
     pipelines_root.mkdir(parents=True, exist_ok=True)
-    files = sorted(p.relative_to(pipelines_root).as_posix() for p in pipelines_root.rglob("*.yml"))
-    return {"pipelines_root": str(pipelines_root), "files": files}
+    files_set: set[str] = set()
+    for pat in ("*.yml", "*.yaml"):
+        for p in pipelines_root.rglob(pat):
+            if not p.is_file():
+                continue
+            files_set.add(p.relative_to(pipelines_root).as_posix())
+    dirs_set: set[str] = set()
+    for d in pipelines_root.rglob("*"):
+        if not d.is_dir():
+            continue
+        rel = d.relative_to(pipelines_root).as_posix()
+        if rel and rel != ".":
+            dirs_set.add(rel)
+    return {
+        "project_id": pid,
+        "projects_config": str(resolved_projects_cfg) if resolved_projects_cfg else None,
+        "pipelines_root": str(pipelines_root),
+        "files": sorted(files_set),
+        "dirs": sorted(dirs_set),
+        "sources": ["local"],
+        "warnings": [],
+    }
 
 
 @app.get("/api/builder/plugins")
@@ -5549,7 +6061,6 @@ def api_builder_environments(
 
 @app.get("/api/builder/projects")
 def api_builder_projects(request: Request, projects_config: Optional[str] = Query(default=None)) -> dict:
-    _ = _resolve_user_scope(request)
     raw = str(projects_config or "").strip()
     cfg_path = Path(raw).expanduser() if raw else None
     try:
@@ -5577,6 +6088,32 @@ def api_builder_projects(request: Request, projects_config: Optional[str] = Quer
             continue
         project_ids.append(pid)
     return {"projects_config": str(resolved), "projects": sorted(set(project_ids))}
+
+
+@app.get("/api/builder/project-vars")
+def api_builder_project_vars(
+    request: Request,
+    project_id: Optional[str] = Query(default=None),
+    projects_config: Optional[str] = Query(default=None),
+) -> dict:
+    raw = str(projects_config or "").strip()
+    cfg_path = Path(raw).expanduser() if raw else None
+    try:
+        resolved = resolve_projects_config_path(cfg_path)
+    except ProjectConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+    pid = normalize_project_id(project_id)
+    if not pid:
+        return {"project_id": None, "projects_config": str(resolved) if resolved else None, "project_vars": {}}
+    try:
+        project_vars = load_project_vars(project_id=pid, projects_config_path=resolved)
+    except ProjectConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+    return {
+        "project_id": pid,
+        "projects_config": str(resolved) if resolved else None,
+        "project_vars": project_vars,
+    }
 
 
 @app.get("/api/builder/git-status")
