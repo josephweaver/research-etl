@@ -119,8 +119,39 @@ def test_geo_county_raster_aggregate_rejects_bad_agg(tmp_path: Path) -> None:
             {
                 "raster_path": str(raster_path),
                 "county_path": str(county_path),
-                "aggregations": "sum,p95",
+                "aggregations": "sum,p97",
             },
             _ctx(tmp_path),
         )
+
+
+def test_geo_county_raster_aggregate_quantile_aliases(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo/geo_county_raster_aggregate.py"))
+
+    raster_path = tmp_path / "PRISM_ppt_stable_4kmD2_20260115_bil.tif"
+    county_path = tmp_path / "counties.gpkg"
+    output_path = tmp_path / "county_quantiles.csv"
+    _write_raster(raster_path)
+    _write_counties(county_path)
+
+    outputs = plugin.run(
+        {
+            "raster_path": str(raster_path),
+            "county_path": str(county_path),
+            "output_path": str(output_path),
+            "county_id_field": "GEOID",
+            "county_name_field": "NAME",
+            "aggregations": "min,p5,q1,med,avg,q3,p95,max",
+            "value_prefix": "ppt",
+            "day_from_filename_regex": r"(\d{8})",
+        },
+        _ctx(tmp_path),
+    )
+
+    assert outputs["row_count"] == 2
+    with output_path.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+    expected_cols = {"ppt_min", "ppt_p5", "ppt_q1", "ppt_med", "ppt_avg", "ppt_q3", "ppt_p95", "ppt_max"}
+    assert expected_cols.issubset(set(rows[0].keys()))
 

@@ -24,7 +24,7 @@ steps:
     foreach: years
     output_var: staged_raw
   - name: "{sys.step.NN}_extract_prism_archives"
-    plugin: archive_extract.py
+    plugin: archive_extract
     args:
       archive_glob: "{archivedir}/{item}/**/*.zip"
       out: "{extractdir}/{item}"

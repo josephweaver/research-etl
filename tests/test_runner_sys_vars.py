@@ -199,3 +199,25 @@ def test_runner_resolves_expr_dateformat_with_sys_now(tmp_path: Path) -> None:
     tag = result.steps[0].outputs["args"]["tag"]
     assert len(tag) == 15
     assert "-" in tag
+
+
+def test_runner_foreach_can_use_expr_daterange_in_vars(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_capture_plugin(plugin_dir / "capture.py")
+
+    pipeline = Pipeline(
+        vars={"days": "{expr.daterange(expr.date(2025,1,1), expr.date(2025,1,3))}"},
+        steps=[
+            Step(
+                name="s_day",
+                script="capture.py day={item}",
+                foreach="days",
+                output_var="out",
+            )
+        ],
+    )
+    result = run_pipeline(pipeline, plugin_dir=plugin_dir, workdir=tmp_path / ".runs")
+    assert result.success is True
+    days = sorted(str(r.outputs["args"]["day"]) for r in result.steps)
+    assert days == ["20250101", "20250102", "20250103"]

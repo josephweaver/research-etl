@@ -230,3 +230,5 @@
 - Open builder: `http://127.0.0.1:8000/pipelines/new`
 - Test suite: `python -m pytest -q`
 
+# next
+Ok, now I want to do use my new plugin to extract min,p5,q1,med,avg,q3,p95,max ppt from the prism/raw using tiger counties as a csv.  There are 365 tif images in that directory so I need to create a range over day in a year.  I think we need to add a expr.daterange function.

@@ -85,3 +85,10 @@ def test_variable_solver_expr_dateformat_accepts_sys_now_dict() -> None:
     solver.with_sys({"now": {"iso_utc": "2026-02-19T15:04:05Z"}})
     out = solver.resolve("{expr.dateformat(sys.now, '%Y%m%d-%H%M%S')}")
     assert out == datetime(2026, 2, 19, 15, 4, 5).strftime("%Y%m%d-%H%M%S")
+
+
+def test_variable_solver_expr_daterange_returns_daily_strings() -> None:
+    solver = VariableSolver(max_passes=20)
+    payload = {"days": "{expr.daterange(expr.date(2025,1,1), expr.date(2025,1,3))}"}
+    resolved = solver.resolve(payload)
+    assert resolved["days"] == ["20250101", "20250102", "20250103"]

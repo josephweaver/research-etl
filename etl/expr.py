@@ -179,6 +179,44 @@ def _fn_dateformat(value: Any, fmt: str) -> str:
     return dt.strftime(_normalize_format(str(fmt or "")))
 
 
+def _fn_daterange(
+    start: Any,
+    end: Any,
+    step: Any = 1,
+    unit: str = "D",
+    fmt: str = "%Y%m%d",
+    inclusive: bool = True,
+) -> List[str]:
+    start_dt = _normalize_datetime(start)
+    end_dt = _normalize_datetime(end)
+    delta = _coerce_int(step, name="step")
+    if delta == 0:
+        raise ExprEvalError("step must not be 0")
+    code = str(unit or "D").strip().upper()
+    if code not in {"Y", "M", "W", "D", "H", "MIN", "S"}:
+        raise ExprEvalError("unit must be one of: Y, M, W, D, H, MIN, S")
+
+    def _in_bounds(cur: datetime) -> bool:
+        if delta > 0:
+            return cur <= end_dt if inclusive else cur < end_dt
+        return cur >= end_dt if inclusive else cur > end_dt
+
+    if delta > 0 and start_dt > end_dt:
+        return []
+    if delta < 0 and start_dt < end_dt:
+        return []
+
+    out: List[str] = []
+    current = start_dt
+    max_items = 200000
+    while _in_bounds(current):
+        out.append(current.strftime(_normalize_format(fmt)))
+        current = _fn_datediff(current, delta, code)
+        if len(out) > max_items:
+            raise ExprEvalError("expr.daterange exceeded max generated items")
+    return out
+
+
 _EXPR_FUNCS = {
     "range": _fn_range,
     "join": _fn_join,
@@ -186,6 +224,7 @@ _EXPR_FUNCS = {
     "date": _fn_date,
     "datediff": _fn_datediff,
     "dateformat": _fn_dateformat,
+    "daterange": _fn_daterange,
 }
 
 

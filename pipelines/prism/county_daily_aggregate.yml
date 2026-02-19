@@ -1,0 +1,44 @@
+project_id: land_core
+
+vars:
+  name: prism_county_daily_aggregate
+  year: 2025
+  start_day: "{expr.date(year, 1, 1)}"
+  end_day: "{expr.date(year, 12, 31)}"
+  days: "{expr.daterange(start_day, end_day)}"
+  prism_filename_prefix: "PRISM_ppt_stable_4kmD2_"
+  prism_filename_suffix: "_bil.tif"
+  county_path: "{env.basedir}/data/tiger/county/extract/tl_2025_us_county.shp"
+  county_id_field: GEOID
+  county_name_field: NAME
+  value_prefix: ppt
+  aggregations: "min,p5,q1,med,avg,q3,p95,max"
+
+dirs:
+  workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  logdir: "{workdir}/logs"
+  prism_rawdir: "{env.basedir}/data/prism/ppt/daily/raw"
+  outdir: "{workdir}/county_daily"
+
+steps:
+  - name: "{sys.step.NN}_county_daily_stats"
+    plugin: geo/geo_county_raster_aggregate.py
+    args:
+      raster_path: "{dirs.prism_rawdir}/{prism_filename_prefix}{item}{prism_filename_suffix}"
+      county_path: "{county_path}"
+      output_path: "{dirs.outdir}/county_ppt_{item}.csv"
+      county_id_field: "{county_id_field}"
+      county_name_field: "{county_name_field}"
+      aggregations: "{aggregations}"
+      value_prefix: "{value_prefix}"
+      day: "{item}"
+    foreach: days
+    output_var: county_day
+
+  - name: "{sys.step.NN}_combine_county_daily_stats"
+    plugin: combine_files.py
+    args:
+      input_glob: "{dirs.outdir}/county_ppt_*.csv"
+      output_file: "{dirs.outdir}/county_ppt_{year}_daily.csv"
+      format: csv
+    output_var: county_daily_table

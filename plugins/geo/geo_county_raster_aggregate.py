@@ -65,9 +65,15 @@ meta = {
 _ALLOWED_AGGS = {
     "sum",
     "mean",
+    "avg",
     "min",
     "max",
     "median",
+    "med",
+    "p5",
+    "q1",
+    "q3",
+    "p95",
     "std",
     "count",
 }
@@ -141,14 +147,22 @@ def _compute_aggs(values: Any, agg_list: list[str]) -> dict[str, Any]:
     for agg in agg_list:
         if agg == "sum":
             out[agg] = float(np.sum(arr))
-        elif agg == "mean":
+        elif agg in {"mean", "avg"}:
             out[agg] = float(np.mean(arr))
         elif agg == "min":
             out[agg] = float(np.min(arr))
         elif agg == "max":
             out[agg] = float(np.max(arr))
-        elif agg == "median":
+        elif agg in {"median", "med"}:
             out[agg] = float(np.median(arr))
+        elif agg == "p5":
+            out[agg] = float(np.percentile(arr, 5))
+        elif agg == "q1":
+            out[agg] = float(np.percentile(arr, 25))
+        elif agg == "q3":
+            out[agg] = float(np.percentile(arr, 75))
+        elif agg == "p95":
+            out[agg] = float(np.percentile(arr, 95))
         elif agg == "std":
             out[agg] = float(np.std(arr))
         elif agg == "count":
