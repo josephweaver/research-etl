@@ -560,6 +560,7 @@ INDEX_HTML = """<!doctype html>
                   <option value="repro">Repro Mode (auto/git-pinned)</option>
                 </select>
                 <label class="muted"><input type="checkbox" id="b_dry_run" /> dry_run</label>
+                <label class="muted"><input type="checkbox" id="b_verbose" checked /> verbose</label>
               </div>
               <div class="controls">
                 <input id="b_max_retries" placeholder="max_retries (default: 0)" />
@@ -1309,6 +1310,7 @@ INDEX_HTML = """<!doctype html>
       if (retries) body.max_retries = Number(retries);
       if (delay) body.retry_delay_seconds = Number(delay);
       body.dry_run = document.getElementById("b_dry_run").checked;
+      body.verbose = document.getElementById("b_verbose").checked;
       return body;
     }
     async function loadBuilderProjects(){
@@ -2604,6 +2606,7 @@ INDEX_HTML = """<!doctype html>
       if(payload.max_retries !== undefined) runBody.max_retries = payload.max_retries;
       if(payload.retry_delay_seconds !== undefined) runBody.retry_delay_seconds = payload.retry_delay_seconds;
       runBody.dry_run = !!payload.dry_run;
+      runBody.verbose = !!payload.verbose;
       if(runMode === "repro"){
         runBody.execution_source = "auto";
         runBody.allow_workspace_source = false;

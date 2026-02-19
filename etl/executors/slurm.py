@@ -696,12 +696,16 @@ class SlurmExecutor(Executor):
             elif source_mode == "workspace":
                 selected_source_mode = "workspace"
                 checkout_root = (
-                    (self.remote_base / self.local_repo_name).as_posix() if self.env.ssh_host else source_repo_root.as_posix()
+                    (Path(self.env.remote_repo).as_posix() if (self.env.ssh_host and self.env.remote_repo) else (self.remote_base / self.local_repo_name).as_posix())
+                    if self.env.ssh_host
+                    else source_repo_root.as_posix()
                 )
             elif source_mode == "auto":
                 selected_source_mode = "auto"
                 checkout_root = (
-                    (self.remote_base / self.local_repo_name).as_posix() if self.env.ssh_host else source_repo_root.as_posix()
+                    (Path(self.env.remote_repo).as_posix() if (self.env.ssh_host and self.env.remote_repo) else (self.remote_base / self.local_repo_name).as_posix())
+                    if self.env.ssh_host
+                    else source_repo_root.as_posix()
                 )
             provenance["source_mode"] = selected_source_mode
 
@@ -714,6 +718,8 @@ class SlurmExecutor(Executor):
         python_bin = self.env.python or "python3"
         # resolve pipeline and plugins dir to POSIX paths on remote checkout
         use_repo_relative_paths = self.enforce_git_checkout and selected_source_mode != "workspace"
+        workspace_repo_root = Path(checkout_root)
+
         if use_repo_relative_paths:
             pipeline_rel = repo_relative_path(pipeline_input, source_repo_root, "pipeline")
             pipeline_remote = (Path(checkout_root) / pipeline_rel).as_posix()
@@ -721,14 +727,16 @@ class SlurmExecutor(Executor):
             if Path(pipeline_path).is_absolute():
                 pipeline_remote = Path(pipeline_path).as_posix()
             else:
-                pipeline_remote = (self.repo_root / Path(pipeline_path)).as_posix()
+                pipeline_remote = (workspace_repo_root / Path(pipeline_path)).as_posix()
 
         if use_repo_relative_paths:
             plugins_rel = repo_relative_path(self.plugins_dir, source_repo_root, "plugins_dir")
             plugins_remote = (Path(checkout_root) / plugins_rel).as_posix()
         else:
             plugins_remote = (
-                (self.repo_root / self.plugins_dir).as_posix() if not self.plugins_dir.is_absolute() else self.plugins_dir.as_posix()
+                (workspace_repo_root / self.plugins_dir).as_posix()
+                if not self.plugins_dir.is_absolute()
+                else self.plugins_dir.as_posix()
             )
 
         global_config_remote = None

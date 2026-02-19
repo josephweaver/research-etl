@@ -1,0 +1,22 @@
+project_id: land_core
+
+vars:
+  name: prism_county_daily_aggregate_parent
+  start_year: 2006
+  end_year: 2025
+  years: "{expr.range(start_year, end_year)}"
+
+dirs:
+  workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  logdir: "{workdir}/logs"
+
+steps:
+  - name: "{sys.step.NN}_run_child_year"
+    plugin: pipeline_execute.py
+    args:
+      pipeline_path: "pipelines/prism/county_daily_aggregate_child.yml"
+      mode: synchronized
+      vars_kv: "year={item}"
+    foreach: years
+    parallel_with: year_children
+    output_var: child_run
