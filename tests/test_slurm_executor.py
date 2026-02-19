@@ -620,6 +620,57 @@ def test_slurm_can_disable_loading_remote_secrets_file(monkeypatch, tmp_path: Pa
     assert "$HOME/.secrets/etl" not in batch_script
 
 
+def test_slurm_includes_db_tunnel_command_in_setup_and_batch_scripts(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(steps=[Step(name="s1", script="echo.py")])
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    tunnel_cmd = "ssh -f -N -L 6543:db.host:5432 weave151@hpcc.msu.edu"
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/work", "logdir": "/tmp/logs", "db_tunnel_command": tunnel_cmd},
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+    ex.submit("pipelines/sample.yml", {"run_id": "runabc1234"})
+
+    setup_script = calls[0]["script_text"]
+    batch_script = calls[1]["script_text"]
+    assert tunnel_cmd in setup_script
+    assert tunnel_cmd in batch_script
+
+
+def test_slurm_prefers_database_url_from_env_config(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ETL_DATABASE_URL", "postgresql://env_user:env_pass@env_host:5432/env_db")
+    ex = SlurmExecutor(
+        {
+            "workdir": "/tmp/work",
+            "logdir": "/tmp/logs",
+            "database_url": "postgresql://cfg_user:cfg_pass@cfg_host:5432/cfg_db",
+        },
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=True,
+    )
+    assert ex.database_url == "postgresql://cfg_user:cfg_pass@cfg_host:5432/cfg_db"
+
+
 def test_slurm_workdir_prefers_pipeline_dirs_workdir_over_env_defaults(monkeypatch, tmp_path: Path) -> None:
     pipeline = Pipeline(
         vars={"name": "yanroy.extract_fields"},

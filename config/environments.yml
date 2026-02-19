@@ -45,6 +45,10 @@ environments:
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
     propagate_db_secret: false
     load_secrets_file: false
+    # Optional tunneled DB connectivity (set db_mode accordingly):
+    # db_mode: online
+    # database_url: "postgresql://USER:TOKEN@localhost:6543/DB?sslmode=require&options=endpoint%3Dep-sweet-sunset-ai8t67lb"
+    # db_tunnel_command: "ssh -f -N -L 6543:ep-sweet-sunset-ai8t67lb.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
     sync: true
     db_mode: offline
 
@@ -65,3 +69,7 @@ environments:
     workdir: "{basedir}/work"
     logdir: "{workdir}/logs"
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
+    # Optional tunneled DB connectivity:
+    # db_mode: online
+    # database_url: "postgresql://USER:TOKEN@localhost:6543/DB?sslmode=require&options=endpoint%3Dep-sweet-sunset-ai8t67lb"
+    # db_tunnel_command: "ssh -f -N -L 6543:ep-sweet-sunset-ai8t67lb.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"

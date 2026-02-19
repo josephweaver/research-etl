@@ -68,6 +68,30 @@ def _write_item_plugin(path: Path) -> None:
     )
 
 
+def _write_serial_guard_plugin(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "import time",
+                "meta = {'name': 'serial_guard', 'version': '0.1.0', 'description': 'test'}",
+                "_ACTIVE = 0",
+                "def run(args, ctx):",
+                "    global _ACTIVE",
+                "    _ACTIVE += 1",
+                "    if _ACTIVE > 1:",
+                "        _ACTIVE -= 1",
+                "        raise RuntimeError('concurrent execution detected')",
+                "    try:",
+                "        time.sleep(0.02)",
+                "        return {'item': str(args.get('item') or '')}",
+                "    finally:",
+                "        _ACTIVE -= 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_runner_retries_foreach_parallel_group(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -107,6 +131,34 @@ def test_runner_retries_foreach_parallel_group(tmp_path: Path) -> None:
     assert [a["success"] for a in by_name["fan_0"].attempts] == [False, True]
     assert [a["success"] for a in by_name["fan_1"].attempts] == [False, True]
     assert by_name["gate"].success is True
+
+
+def test_runner_sequential_foreach_forces_serial_item_execution(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_serial_guard_plugin(plugin_dir / "serial_guard.py")
+
+    pipeline = Pipeline(
+        vars={"items": ["a", "b", "c"]},
+        steps=[
+            Step(
+                name="fan",
+                script="serial_guard.py item={item}",
+                sequential_foreach="items",
+                # Even if set on input Step, sequential_foreach expansion should
+                # clear parallel grouping for expanded item steps.
+                parallel_with="g1",
+                output_var="out",
+            ),
+        ],
+    )
+    result = run_pipeline(
+        pipeline,
+        plugin_dir=plugin_dir,
+        workdir=tmp_path / ".runs",
+    )
+    assert result.success is True
+    assert [s.step.name for s in result.steps] == ["fan_0", "fan_1", "fan_2"]
 
 
 def test_runner_expands_foreach_glob_after_prior_step_outputs(tmp_path: Path) -> None:

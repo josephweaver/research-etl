@@ -48,6 +48,7 @@ class Step:
     when: Optional[str] = None  # simple expression string, evaluated later
     parallel_with: Optional[str] = None  # group key for parallel batches
     foreach: Optional[str] = None  # name of list variable to fan out over
+    sequential_foreach: Optional[str] = None  # name of list variable to fan out over sequentially
     foreach_glob: Optional[str] = None  # glob pattern to fan out over filesystem paths
     foreach_kind: Optional[str] = None  # any|files|dirs (applies to foreach_glob)
     enabled: bool = True
@@ -458,11 +459,20 @@ def parse_pipeline(
         foreach = step_map.get("foreach")
         if foreach is not None and not isinstance(foreach, str):
             raise PipelineError(f"Step {idx} `foreach` must be a string if provided")
+        sequential_foreach = step_map.get("sequential_foreach")
+        if sequential_foreach is not None and not isinstance(sequential_foreach, str):
+            raise PipelineError(f"Step {idx} `sequential_foreach` must be a string if provided")
         foreach_glob = step_map.get("foreach_glob")
         if foreach_glob is not None and not isinstance(foreach_glob, str):
             raise PipelineError(f"Step {idx} `foreach_glob` must be a string if provided")
         if foreach and foreach_glob:
             raise PipelineError(f"Step {idx} may not define both `foreach` and `foreach_glob`.")
+        if foreach and sequential_foreach:
+            raise PipelineError(f"Step {idx} may not define both `foreach` and `sequential_foreach`.")
+        if sequential_foreach and foreach_glob:
+            raise PipelineError(f"Step {idx} may not define both `sequential_foreach` and `foreach_glob`.")
+        if sequential_foreach and parallel_with:
+            raise PipelineError(f"Step {idx} `sequential_foreach` may not be combined with `parallel_with`.")
         foreach_kind = step_map.get("foreach_kind")
         if foreach_kind is not None and not isinstance(foreach_kind, str):
             raise PipelineError(f"Step {idx} `foreach_kind` must be a string if provided")
@@ -507,6 +517,7 @@ def parse_pipeline(
                 "when": when,
                 "parallel_with": parallel_with,
                 "foreach": foreach,
+                "sequential_foreach": sequential_foreach,
                 "foreach_glob": foreach_glob,
                 "foreach_kind": foreach_kind_norm,
             }
@@ -539,6 +550,7 @@ def parse_pipeline(
                 when=spec["when"],
                 parallel_with=spec["parallel_with"],
                 foreach=spec["foreach"],
+                sequential_foreach=spec["sequential_foreach"],
                 foreach_glob=foreach_glob_interp,
                 foreach_kind=spec["foreach_kind"],
                 enabled=True,
@@ -600,6 +612,9 @@ def validate_pipeline(p: Pipeline) -> None:
             if active_parallel_group is not None:
                 closed_parallel_groups.add(active_parallel_group)
                 active_parallel_group = None
+
+        if step.sequential_foreach and step.parallel_with:
+            errors.append(f"Step {idx} may not combine `sequential_foreach` with `parallel_with`.")
 
     if errors:
         raise PipelineError("; ".join(errors))

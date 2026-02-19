@@ -247,6 +247,7 @@ def run(args, ctx):
   - `env` (optional mapping, templated)
   - `when` (optional string condition; evaluated later)
   - `foreach` (optional list var name; fans out one step per item)
+  - `sequential_foreach` (optional list var name; fans out one step per item in strict sequence)
   - `foreach_glob` (optional glob pattern; fans out one step per matched path)
   - `foreach_kind` (optional filter for `foreach_glob`: `any`, `files`, `dirs`)
   - `parallel_with` (optional string; consecutive steps with the same value run in parallel)
@@ -509,6 +510,7 @@ Artifact browsing uses executor-specific retrieval methods. `local` reads local 
 - Step `env` entries are applied to process env for the step only.  
 - `when` expressions run in a restricted eval against the pipeline vars/dirs and previously stored outputs; falsey â†’ step skipped (recorded as skipped).  
 - `foreach` fans out a step over a list variable (supports dotted paths like `step_out.items`) and is expanded at runtime, so it can use outputs from earlier steps.
+- `sequential_foreach` fans out a step over a list variable like `foreach`, but forces per-item execution in order (no parallel batching for expanded items).
 - `foreach_glob` fans out a step over filesystem matches (for example extracted tile directories), with optional `foreach_kind` filtering (`any|files|dirs`).
 - Each fan-out item gets its own step instance. `{item}` placeholders in script/env are filled per item, along with `{item_index}`, `{item_name}`, `{item_stem}`; `output_var` is suffixed with the item index.
 - `parallel_with`: consecutive steps sharing the same value are executed in parallel within a batch.  
@@ -558,6 +560,10 @@ etl run pipelines/sample.yml --executor slurm --environments-config config/envir
 ```
 
 On remote submissions, the SLURM executor ensures `~/.secrets/etl` exists on the login host with `chmod 600`, writes/updates `export ETL_DATABASE_URL=...` in that file when local `ETL_DATABASE_URL` is available, and generated batch scripts source `~/.secrets/etl` so jobs inherit the DB URL. If the current shell does not contain the variable, Windows `setx` values are also checked from User/Machine environment entries. If neither local nor remote secret value exists, submission fails with a clear error.
+
+For HPCC/network-restricted DB access, execution environments also support:
+- `database_url`: optional explicit DB URL override (used instead of local `ETL_DATABASE_URL`).
+- `db_tunnel_command`: optional shell command executed before run stages (for example SSH local-port forwarding to Neon).
 
 ### SLURM setup (quick notes)
 - Ensure `sbatch`/`sacct` available on the submission host (login node).

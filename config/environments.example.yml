@@ -28,6 +28,11 @@ environments:
     source_snapshot: C:/path/to/repo_snapshot.tar.gz
     # Workspace mode is last-resort and least reproducible.
     allow_workspace_source: false
+    # Optional DB connectivity for clusters that must tunnel via SSH.
+    # If set, this overrides ETL_DATABASE_URL from local shell/setx.
+    # database_url: "postgresql://USER:TOKEN@localhost:6543/DB?sslmode=require&options=endpoint%3Dep-xxxx"
+    # Optional tunnel command executed in setup/batch scripts before loading secrets.
+    # db_tunnel_command: "ssh -f -N -L 6543:ep-xxxx.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
   hpcc_beta:
     executor: slurm
     name: beta

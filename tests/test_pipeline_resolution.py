@@ -435,6 +435,43 @@ def test_parse_pipeline_rejects_both_foreach_and_foreach_glob(tmp_path: Path) ->
         parse_pipeline(p)
 
 
+def test_parse_pipeline_supports_sequential_foreach_field(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+                "    sequential_foreach: years",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    step = pipeline.steps[0]
+    assert step.sequential_foreach == "years"
+    assert step.foreach is None
+
+
+def test_parse_pipeline_rejects_foreach_with_sequential_foreach(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+                "    foreach: items",
+                "    sequential_foreach: items",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="both `foreach` and `sequential_foreach`"):
+        parse_pipeline(p)
+
+
 def test_parse_pipeline_rejects_foreach_kind_without_foreach_glob(tmp_path: Path) -> None:
     p = tmp_path / "p.yml"
     p.write_text(

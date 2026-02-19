@@ -526,11 +526,13 @@ def _expand_step(
     resolve_max_passes: int,
     foreach_item_index: Optional[int] = None,
 ) -> List[Step]:
-    if not step.foreach and not step.foreach_glob:
+    if not step.foreach and not step.sequential_foreach and not step.foreach_glob:
         return [step]
 
-    if step.foreach:
-        items: List[Any] = _foreach_items_from_var(step.foreach, ctx_vars)
+    sequential_fanout = bool(step.sequential_foreach)
+    if step.foreach or step.sequential_foreach:
+        foreach_var = str(step.foreach or step.sequential_foreach or "")
+        items: List[Any] = _foreach_items_from_var(foreach_var, ctx_vars)
     else:
         items = _foreach_items_from_glob(
             str(step.foreach_glob or ""),
@@ -571,8 +573,9 @@ def _expand_step(
             env=_resolve_with_ctx(step.env, local_ctx, max_passes=resolve_max_passes),
             resources=dict(step.resources or {}),
             when=step.when,
-            parallel_with=step.parallel_with,
+            parallel_with=None if sequential_fanout else step.parallel_with,
             foreach=None,
+            sequential_foreach=None,
             foreach_glob=None,
             foreach_kind=None,
         )

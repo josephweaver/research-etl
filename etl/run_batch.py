@@ -431,7 +431,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 step.name: int(args.foreach_item_index)
                 for step in pipeline.steps
-                if (step.foreach or step.foreach_glob) and args.foreach_item_index is not None
+                if (step.foreach or step.sequential_foreach or step.foreach_glob) and args.foreach_item_index is not None
             }
             if args.foreach_item_index is not None
             else None

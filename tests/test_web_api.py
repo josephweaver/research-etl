@@ -916,6 +916,34 @@ def test_web_api_builder_source_parses_foreach_glob_model(tmp_path: Path) -> Non
     assert step["foreach_kind"] == "dirs"
 
 
+def test_web_api_builder_source_parses_sequential_foreach_model(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    p = tmp_path / "draft_seq_foreach.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - plugin: echo.py",
+                "    sequential_foreach: days",
+                "    args:",
+                "      msg: \"{item}\"",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    s = client.get("/api/builder/source", params={"pipeline": str(p)})
+    assert s.status_code == 200
+    model = s.json()["model"]
+    step = model["steps"][0]
+    assert step["type"] == "sequential_foreach"
+    assert step["sequential_foreach"] == "days"
+
+
 def test_web_api_builder_validate_allows_foreach_glob_item_tokens() -> None:
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

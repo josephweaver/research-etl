@@ -122,6 +122,8 @@ class HpccDirectExecutor(Executor):
         self.stream_run_batch_output = bool(self.env_config.get("stream_run_batch_output", True))
         self.propagate_secrets = bool(self.env_config.get("propagate_secrets", True))
         self.load_secrets_file = bool(self.env_config.get("load_secrets_file", True))
+        self.database_url = str(self.env_config.get("database_url") or "").strip() or None
+        self.db_tunnel_command = str(self.env_config.get("db_tunnel_command") or "").strip()
         self.secret_env_keys = _parse_str_list(self.env_config.get("secret_env_keys")) or list(DEFAULT_SECRET_ENV_KEYS)
         self.required_secret_keys = _parse_str_list(self.env_config.get("required_secret_keys"))
         self._statuses: Dict[str, RunStatus] = {}
@@ -366,6 +368,8 @@ class HpccDirectExecutor(Executor):
             if not text:
                 continue
             out[key] = text
+        if self.database_url:
+            out["ETL_DATABASE_URL"] = self.database_url
         missing_required = [k for k in required if k not in out]
         if missing_required:
             raise RuntimeError(
@@ -605,6 +609,8 @@ class HpccDirectExecutor(Executor):
             run_lines.append(f"source {shlex.quote(self.remote_venv)}/bin/activate")
         else:
             run_lines.append("source \"$CHECKOUT_ROOT/.venv/bin/activate\"")
+        if self.db_tunnel_command:
+            run_lines.append(self.db_tunnel_command)
         if self.load_secrets_file:
             run_lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
         db_mode = str(exec_env.get("db_mode") or "").strip()

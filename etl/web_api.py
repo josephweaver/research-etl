@@ -1187,6 +1187,9 @@ INDEX_HTML = """<!doctype html>
               lines.push(`    foreach: ${_yamlEsc(st.foreach)}`);
             }
           }
+          if ((st.type || "sequential") === "sequential_foreach" && (st.sequential_foreach || "").trim()) {
+            lines.push(`    sequential_foreach: ${_yamlEsc(st.sequential_foreach)}`);
+          }
           const rentries = Object.entries(st.resources || {}).filter(([_, v]) => {
             if (v === null || v === undefined) return false;
             if (typeof v === "string") return String(v).trim().length > 0;
@@ -1538,6 +1541,7 @@ INDEX_HTML = """<!doctype html>
         when:"",
         parallel_with:"",
         foreach:"",
+        sequential_foreach:"",
         foreach_mode:"var",
         foreach_glob:"",
         foreach_kind:"dirs",
@@ -1560,6 +1564,7 @@ INDEX_HTML = """<!doctype html>
         when:"",
         parallel_with:"",
         foreach:"",
+        sequential_foreach:"",
         foreach_mode:"var",
         foreach_glob:"",
         foreach_kind:"dirs",
@@ -1799,6 +1804,12 @@ INDEX_HTML = """<!doctype html>
               }
             </div>
           `;
+        } else if (type === "sequential_foreach"){
+          typeSpecificHtml = `
+            <div class="controls">
+              <input data-kind="step-sequential-foreach" data-idx="${idx}" value="${esc(st.sequential_foreach || "")}" placeholder="sequential_foreach var name (e.g. days)" />
+            </div>
+          `;
         }
         card.innerHTML = `
           <div class="step-head">
@@ -1814,6 +1825,7 @@ INDEX_HTML = """<!doctype html>
               <option value="sequential" ${type==="sequential"?"selected":""}>sequential</option>
               <option value="parallel" ${type==="parallel"?"selected":""}>parallel</option>
               <option value="foreach" ${type==="foreach"?"selected":""}>foreach</option>
+              <option value="sequential_foreach" ${type==="sequential_foreach"?"selected":""}>sequential_foreach</option>
             </select>
             <div class="combo-picker step-plugin-picker" data-idx="${idx}">
               <input data-kind="step-plugin-input" data-idx="${idx}" value="${esc(pluginPath)}" placeholder="plugin path (browse tree or type exact path)" autocomplete="off" />
@@ -1945,6 +1957,9 @@ INDEX_HTML = """<!doctype html>
               st.foreach_kind = "dirs";
             }
           }
+          if(st.type === "sequential_foreach" && !String(st.sequential_foreach || "").trim()){
+            st.sequential_foreach = "items";
+          }
           renderBuilderModel();
           changed = true;
         }
@@ -1957,6 +1972,7 @@ INDEX_HTML = """<!doctype html>
         if(kind === "step-when"){ st.when = t.value; changed = true; }
         if(kind === "step-parallel"){ st.parallel_with = t.value; changed = true; }
         if(kind === "step-foreach"){ st.foreach = t.value; changed = true; }
+        if(kind === "step-sequential-foreach"){ st.sequential_foreach = t.value; changed = true; }
         if(kind === "step-foreach-mode"){
           st.foreach_mode = String(t.value || "var").trim().toLowerCase() === "glob" ? "glob" : "var";
           renderBuilderModel();
@@ -2584,6 +2600,7 @@ INDEX_HTML = """<!doctype html>
       if(payload.executor) runBody.executor = payload.executor;
       if(payload.plugins_dir) runBody.plugins_dir = payload.plugins_dir;
       if(payload.workdir) runBody.workdir = payload.workdir;
+      if(payload.project_id) runBody.project_id = payload.project_id;
       if(payload.max_retries !== undefined) runBody.max_retries = payload.max_retries;
       if(payload.retry_delay_seconds !== undefined) runBody.retry_delay_seconds = payload.retry_delay_seconds;
       runBody.dry_run = !!payload.dry_run;
@@ -4500,12 +4517,15 @@ def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
                     resources[str(k)] = v
             stype = "sequential"
             foreach_raw = str(step_map.get("foreach") or "")
+            sequential_foreach_raw = str(step_map.get("sequential_foreach") or "")
             foreach_glob_raw = str(step_map.get("foreach_glob") or "")
             foreach_kind_raw = str(step_map.get("foreach_kind") or "")
             foreach_mode = "var"
             if foreach_glob_raw.strip():
                 foreach_mode = "glob"
-            if step_map.get("foreach") or step_map.get("foreach_glob"):
+            if step_map.get("sequential_foreach"):
+                stype = "sequential_foreach"
+            elif step_map.get("foreach") or step_map.get("foreach_glob"):
                 stype = "foreach"
             elif step_map.get("parallel_with"):
                 stype = "parallel"
@@ -4532,6 +4552,7 @@ def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
                     "when": str(step_map.get("when") or ""),
                     "parallel_with": str(step_map.get("parallel_with") or ""),
                     "foreach": foreach_raw,
+                    "sequential_foreach": sequential_foreach_raw,
                     "foreach_mode": foreach_mode,
                     "foreach_glob": foreach_glob_raw,
                     "foreach_kind": foreach_kind_raw or "dirs",
@@ -5694,6 +5715,7 @@ def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
         "when": target_step.when,
         "parallel_with": target_step.parallel_with,
         "foreach": getattr(target_step, "foreach", None),
+        "sequential_foreach": getattr(target_step, "sequential_foreach", None),
         "foreach_glob": getattr(target_step, "foreach_glob", None),
         "foreach_kind": getattr(target_step, "foreach_kind", None),
     }
@@ -5947,10 +5969,7 @@ def _payload_with_pipeline(payload: Optional[dict[str, Any]], pipeline_id: str) 
 def api_action_validate(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     scope = _resolve_user_scope(request)
     args = _parse_action_payload(payload)
-    requested_project_id = (
-        normalize_project_id(args.get("project_id"))
-        or normalize_project_id(infer_project_id_from_pipeline_path(args["pipeline_path"]))
-    )
+    requested_project_id = normalize_project_id(args.get("project_id"))
     _require_project_access(scope, requested_project_id)
     global_vars = _resolve_global_vars(args["global_config_path"])
     execution_env, environments_config_path, env_name = _resolve_execution_env(
@@ -5977,6 +5996,7 @@ def api_action_validate(request: Request, payload: Optional[dict[str, Any]] = Bo
         pipeline_project_id=getattr(pipeline, "project_id", None),
         pipeline_path=args["pipeline_path"],
     )
+    _require_project_access(scope, project_id)
     _record_pipeline_validation(
         pipeline=str(args["pipeline_path"]),
         project_id=project_id,
@@ -5998,10 +6018,7 @@ def api_action_validate(request: Request, payload: Optional[dict[str, Any]] = Bo
 def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     scope = _resolve_user_scope(request)
     args = _parse_action_payload(payload)
-    requested_project_id = (
-        normalize_project_id(args.get("project_id"))
-        or normalize_project_id(infer_project_id_from_pipeline_path(args["pipeline_path"]))
-    )
+    requested_project_id = normalize_project_id(args.get("project_id"))
     _require_project_access(scope, requested_project_id)
     global_vars = _resolve_global_vars(args["global_config_path"])
     execution_env, environments_config_path, env_name = _resolve_execution_env(
@@ -6033,6 +6050,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
         pipeline_project_id=getattr(pipeline, "project_id", None),
         pipeline_path=args["pipeline_path"],
     )
+    _require_project_access(scope, project_id)
     workdir_candidates = [
         str(args.get("workdir_raw") or "").strip(),
         str(getattr(pipeline, "workdir", None) or "").strip(),

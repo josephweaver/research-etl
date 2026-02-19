@@ -164,6 +164,8 @@ class SlurmEnv:
     git_remote_url: Optional[str] = None
     propagate_db_secret: Optional[bool] = True
     load_secrets_file: Optional[bool] = True
+    database_url: Optional[str] = None
+    db_tunnel_command: Optional[str] = None
     ssh_retries: Optional[int] = None
     scp_retries: Optional[int] = None
     remote_retry_delay_seconds: Optional[float] = None
@@ -203,6 +205,7 @@ class SlurmExecutor(Executor):
             "max_time", "max_cpus_per_task", "max_mem", "setup_time",
             "execution_source", "source_bundle", "source_snapshot", "allow_workspace_source",
             "git_remote_url", "propagate_db_secret", "load_secrets_file",
+            "database_url", "db_tunnel_command",
             "ssh_retries", "scp_retries", "remote_retry_delay_seconds",
             "ssh_connect_timeout", "ssh_strict_host_key_checking",
         }}
@@ -250,8 +253,17 @@ class SlurmExecutor(Executor):
             self.allow_workspace_source = bool(env_config.get("allow_workspace_source", False))
         else:
             self.allow_workspace_source = bool(allow_workspace_source)
-        self.database_url = self._load_database_url()
+        config_database_url = str(env_config.get("database_url") or "").strip()
+        self.database_url = config_database_url or self._load_database_url()
+        self.db_tunnel_command = str(env_config.get("db_tunnel_command") or "").strip()
         self._statuses: Dict[str, RunStatus] = {}
+
+    def _append_db_tunnel_lines(self, lines: list[str]) -> None:
+        if not self.db_tunnel_command:
+            return
+        if self.verbose:
+            lines.append("log_step 'starting DB SSH tunnel'")
+        lines.append(f"{self.db_tunnel_command}")
 
     def _run_cmd_with_retries(
         self,
@@ -1220,6 +1232,7 @@ class SlurmExecutor(Executor):
         lines.append(f"PYTHON={python_bin}")
         lines.append(f"VENV={venv_path}")
         lines.append(f"export ETL_REPO_ROOT={checkout_root}")
+        self._append_db_tunnel_lines(lines)
         if child_jobs_file:
             lines.append(f"export ETL_CHILD_JOBS_FILE={child_jobs_file}")
         if self.load_secrets_file:
@@ -1501,6 +1514,7 @@ class SlurmExecutor(Executor):
         lines.append(f"PYTHON={python_bin}")
         lines.append(f"VENV={venv_path}")
         lines.append(f"export ETL_REPO_ROOT={checkout_root}")
+        self._append_db_tunnel_lines(lines)
         if self.load_secrets_file:
             if self.verbose:
                 lines.append("log_step 'loading optional secrets file (values hidden)'")
