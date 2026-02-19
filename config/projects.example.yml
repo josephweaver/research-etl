@@ -3,6 +3,10 @@ projects:
     vars:
       basedir: "/data/default"
       owner: "core"
+      pipeline_assets_repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
+      pipeline_assets_project_key: "shared"
+      pipeline_assets_pipelines_dir: "pipelines"
+      pipeline_assets_scripts_dir: "scripts"
 
   land_core:
     vars:
@@ -10,7 +14,15 @@ projects:
       owner: "land-core"
       data_dictionary_repo_url: "https://github.com/land-core/landcore-data-catalog.git"
       states_of_interest: [ 'IL', 'MN', 'WI', 'OH', 'SD', 'IA', 'IN', 'MI', 'MO' ]
+      pipeline_assets_repo_url: "https://github.com/josephweaver/landcore-etl-pipelines.git"
+      pipeline_assets_project_key: "land_core"
+      pipeline_assets_pipelines_dir: "pipelines"
+      pipeline_assets_scripts_dir: "scripts"
   gee_lee:
     vars:
       basedir: "/data/gee_lee"
       owner: "gee-lee"
+      pipeline_assets_repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
+      pipeline_assets_project_key: "shared"
+      pipeline_assets_pipelines_dir: "pipelines"
+      pipeline_assets_scripts_dir: "scripts"

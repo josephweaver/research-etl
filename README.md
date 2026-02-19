@@ -407,6 +407,27 @@ Detailed platform install steps: `docs/install.md`.
 
 Defaults: plugins in `plugins/`, run artifacts in `.runs/`, run records in `.runs/runs.jsonl`.
 
+### Shared pipeline assets repo pattern
+
+To separate execution assets from the engine codebase, project vars can declare shared-repo routing keys:
+
+- `project.pipeline_assets_repo_url`
+- `project.pipeline_assets_project_key`
+- `project.pipeline_assets_pipelines_dir`
+- `project.pipeline_assets_scripts_dir`
+
+Current shared repo: `https://github.com/josephweaver/shared-etl-pipelines.git`
+with assets under:
+
+- `pipelines`
+- `scripts`
+
+LandCore repo: `https://github.com/josephweaver/landcore-etl-pipelines.git`
+with the same top-level asset layout:
+
+- `pipelines`
+- `scripts`
+
 Windows note: if `etl` is not found, use `python -m cli ...` or add your user scripts path (for example `%APPDATA%\Python\Python310\Scripts`) to `PATH`.
 
 ## Database DDL bootstrap
@@ -467,6 +488,9 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
    - `max_retries`
    - `retry_delay_seconds`
    - executor override (`local`/`slurm`)
+8) Builder git sync options:
+   - pipeline-level `git_sync` can auto-create/switch a branch, commit staged `pipelines/`, `plugins/`, `scripts/` changes, and push to origin before run/step-test.
+   - optional branch input allows forcing a specific branch name.
 
 API endpoints:
 - `GET /api/health`
@@ -484,6 +508,8 @@ API endpoints:
 - `POST /api/pipelines`
 - `PUT /api/pipelines/{pipeline_id}`
 - `GET /api/builder/source`
+- `GET /api/builder/git-status`
+- `POST /api/builder/git-sync`
 - `POST /api/builder/validate`
 - `POST /api/builder/test-step`
 - `POST /api/builder/generate`

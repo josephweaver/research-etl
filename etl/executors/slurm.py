@@ -24,12 +24,36 @@ from typing import Any, Dict, Optional, List, Tuple
 from urllib.parse import urlparse
 
 from .base import Executor, RunState, RunStatus, SubmissionResult
-from ..git_checkout import repo_relative_path, resolve_execution_spec
+from ..git_checkout import GitExecutionSpec
 from ..pipeline import Pipeline
 from ..pipeline import parse_pipeline
 from ..plugins.base import load_plugin
+from ..source_control import SourceExecutionSpec, make_git_source_provider
 from ..tracking import fetch_plugin_resource_stats, upsert_run_status
 from ..variable_solver import VariableSolver
+
+_SOURCE_PROVIDER = make_git_source_provider()
+
+
+def _to_source_spec(spec: SourceExecutionSpec | GitExecutionSpec) -> SourceExecutionSpec:
+    if isinstance(spec, SourceExecutionSpec):
+        return spec
+    return SourceExecutionSpec(
+        provider="git",
+        revision=str(spec.commit_sha or ""),
+        origin_url=spec.origin_url,
+        repo_name=spec.repo_name,
+        is_dirty=spec.git_is_dirty,
+        extra={"commit_sha": str(spec.commit_sha or "")},
+    )
+
+
+def resolve_execution_spec(**kwargs) -> SourceExecutionSpec:
+    return _SOURCE_PROVIDER.resolve_execution_spec(**kwargs)
+
+
+def repo_relative_path(path: Path, repo_root: Path, label: str) -> Path:
+    return _SOURCE_PROVIDER.repo_relative_path(path, repo_root, label)
 
 
 class SlurmSubmitError(RuntimeError):

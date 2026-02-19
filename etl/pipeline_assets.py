@@ -1,0 +1,166 @@
+from __future__ import annotations
+
+import hashlib
+import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from .git_checkout import infer_repo_name
+
+
+class PipelineAssetError(RuntimeError):
+    """Raised when pipeline asset source resolution fails."""
+
+
+@dataclass(frozen=True)
+class PipelineAssetSource:
+    repo_url: str
+    pipelines_dir: str = "pipelines"
+    scripts_dir: str = "scripts"
+    ref: str = "main"
+    priority: int = 100
+
+
+_SYNCED_REPOS: set[Tuple[str, str]] = set()
+
+
+def _slug(text: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", str(text or "").strip())
+    return cleaned.strip("-") or "repo"
+
+
+def _repo_cache_dir(cache_root: Path, repo_url: str) -> Path:
+    repo_name = _slug(infer_repo_name(repo_url))
+    digest = hashlib.sha1(str(repo_url).encode("utf-8")).hexdigest()[:10]
+    return cache_root / f"{repo_name}-{digest}"
+
+
+def _run_git(args: List[str], *, cwd: Optional[Path] = None) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd) if cwd else None,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise PipelineAssetError(detail or f"git {' '.join(args)} failed")
+    return str(proc.stdout or "").strip()
+
+
+def _normalize_pipeline_input(raw: Path) -> List[Path]:
+    text = raw.as_posix()
+    if text.lower().startswith("pipelines/"):
+        text = text[len("pipelines/") :]
+    base = Path(text)
+    candidates = [base]
+    if base.suffix.lower() not in {".yml", ".yaml"}:
+        candidates.append(base.with_suffix(".yml"))
+        candidates.append(base.with_suffix(".yaml"))
+    return candidates
+
+
+def pipeline_asset_sources_from_project_vars(project_vars: Dict[str, Any]) -> List[PipelineAssetSource]:
+    vars_map = dict(project_vars or {})
+    out: List[PipelineAssetSource] = []
+
+    raw_sources = vars_map.get("pipeline_asset_sources")
+    if isinstance(raw_sources, list):
+        for idx, raw in enumerate(raw_sources):
+            if not isinstance(raw, dict):
+                raise PipelineAssetError(f"pipeline_asset_sources[{idx}] must be a mapping")
+            repo_url = str(raw.get("repo_url") or raw.get("url") or "").strip()
+            if not repo_url:
+                raise PipelineAssetError(f"pipeline_asset_sources[{idx}] missing repo_url")
+            out.append(
+                PipelineAssetSource(
+                    repo_url=repo_url,
+                    pipelines_dir=str(raw.get("pipelines_dir") or "pipelines").strip() or "pipelines",
+                    scripts_dir=str(raw.get("scripts_dir") or "scripts").strip() or "scripts",
+                    ref=str(raw.get("ref") or "main").strip() or "main",
+                    priority=int(raw.get("priority", 100) or 100),
+                )
+            )
+
+    # Backward-compatible single-source keys.
+    legacy_repo = str(vars_map.get("pipeline_assets_repo_url") or "").strip()
+    if legacy_repo:
+        out.append(
+            PipelineAssetSource(
+                repo_url=legacy_repo,
+                pipelines_dir=str(vars_map.get("pipeline_assets_pipelines_dir") or "pipelines").strip() or "pipelines",
+                scripts_dir=str(vars_map.get("pipeline_assets_scripts_dir") or "scripts").strip() or "scripts",
+                ref=str(vars_map.get("pipeline_assets_ref") or "main").strip() or "main",
+                priority=int(vars_map.get("pipeline_assets_priority", 1000) or 1000),
+            )
+        )
+
+    # De-duplicate by (repo, ref, pipelines_dir, scripts_dir); preserve priority.
+    uniq: Dict[Tuple[str, str, str, str], PipelineAssetSource] = {}
+    for src in out:
+        key = (src.repo_url, src.ref, src.pipelines_dir, src.scripts_dir)
+        if key in uniq:
+            continue
+        uniq[key] = src
+    return sorted(uniq.values(), key=lambda s: int(s.priority))
+
+
+def sync_pipeline_asset_source(source: PipelineAssetSource, *, cache_root: Path) -> Path:
+    cache_root = Path(cache_root).resolve()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    repo_dir = _repo_cache_dir(cache_root, source.repo_url)
+    sync_key = (str(repo_dir), str(source.ref))
+    if sync_key in _SYNCED_REPOS and repo_dir.exists():
+        return repo_dir
+    if not repo_dir.exists():
+        _run_git(["clone", source.repo_url, str(repo_dir)])
+    else:
+        _run_git(["fetch", "--all", "--tags", "--prune"], cwd=repo_dir)
+    _run_git(["checkout", source.ref], cwd=repo_dir)
+    _run_git(["pull", "--ff-only", "origin", source.ref], cwd=repo_dir)
+    _SYNCED_REPOS.add(sync_key)
+    return repo_dir
+
+
+def resolve_pipeline_path_from_project_sources(
+    pipeline_path: Path,
+    *,
+    project_vars: Dict[str, Any],
+    repo_root: Path,
+    cache_root: Optional[Path] = None,
+) -> Path:
+    original = Path(pipeline_path)
+    if original.exists():
+        return original.resolve()
+    # Resolve relative to repo root before trying external sources.
+    if not original.is_absolute():
+        local = (Path(repo_root).resolve() / original).resolve()
+        if local.exists():
+            return local
+
+    sources = pipeline_asset_sources_from_project_vars(project_vars)
+    if not sources:
+        return original
+
+    candidates = _normalize_pipeline_input(original)
+    root = Path(cache_root or (Path(repo_root).resolve() / ".pipeline_assets_cache"))
+    for src in sources:
+        repo_dir = sync_pipeline_asset_source(src, cache_root=root)
+        pipelines_root = (repo_dir / src.pipelines_dir).resolve()
+        for rel in candidates:
+            candidate = (pipelines_root / rel).resolve()
+            if candidate.exists():
+                return candidate
+    return original
+
+
+__all__ = [
+    "PipelineAssetError",
+    "PipelineAssetSource",
+    "pipeline_asset_sources_from_project_vars",
+    "resolve_pipeline_path_from_project_sources",
+    "sync_pipeline_asset_source",
+]

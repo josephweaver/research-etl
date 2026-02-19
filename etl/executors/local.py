@@ -10,18 +10,48 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .base import Executor, RunState, RunStatus, SubmissionResult
-from ..git_checkout import (
-    GitCheckoutError,
-    ensure_bundle_checkout,
-    ensure_repo_checkout,
-    ensure_snapshot_checkout,
-    map_to_checkout,
-    resolve_execution_spec,
-)
+from ..git_checkout import GitCheckoutError, GitExecutionSpec
 from ..pipeline import Pipeline, parse_pipeline, PipelineError
 from ..runner import run_pipeline, RunResult
+from ..source_control import SourceExecutionSpec, make_git_source_provider
 from ..tracking import record_run, load_run_step_states
 from ..variable_solver import VariableSolver
+
+_SOURCE_PROVIDER = make_git_source_provider()
+
+
+def _to_source_spec(spec: SourceExecutionSpec | GitExecutionSpec) -> SourceExecutionSpec:
+    if isinstance(spec, SourceExecutionSpec):
+        return spec
+    return SourceExecutionSpec(
+        provider="git",
+        revision=str(spec.commit_sha or ""),
+        origin_url=spec.origin_url,
+        repo_name=spec.repo_name,
+        is_dirty=spec.git_is_dirty,
+        extra={"commit_sha": str(spec.commit_sha or "")},
+    )
+
+
+def resolve_execution_spec(**kwargs) -> SourceExecutionSpec:
+    return _SOURCE_PROVIDER.resolve_execution_spec(**kwargs)
+
+
+def ensure_repo_checkout(base_dir: Path, spec: SourceExecutionSpec | GitExecutionSpec) -> Path:
+    return _SOURCE_PROVIDER.ensure_repo_checkout(base_dir, _to_source_spec(spec))
+
+
+def ensure_bundle_checkout(base_dir: Path, spec: SourceExecutionSpec | GitExecutionSpec, bundle_path: Path) -> Path:
+    return _SOURCE_PROVIDER.ensure_bundle_checkout(base_dir, _to_source_spec(spec), bundle_path)
+
+
+def ensure_snapshot_checkout(base_dir: Path, spec: SourceExecutionSpec | GitExecutionSpec, snapshot_path: Path) -> Path:
+    return _SOURCE_PROVIDER.ensure_snapshot_checkout(base_dir, _to_source_spec(spec), snapshot_path)
+
+
+def map_to_checkout(path: Path, repo_root: Path, checkout_root: Path, label: str) -> Path:
+    rel = _SOURCE_PROVIDER.repo_relative_path(path, repo_root, label)
+    return checkout_root / rel
 
 
 class LocalExecutor(Executor):

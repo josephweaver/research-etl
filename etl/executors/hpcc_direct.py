@@ -21,12 +21,34 @@ from typing import Any, Dict, Optional
 
 from .base import Executor, RunState, RunStatus, SubmissionResult
 from ..git_checkout import (
-    GitCheckoutError,
+    GitExecutionSpec,
     infer_repo_name,
-    repo_relative_path,
-    resolve_execution_spec,
 )
 from ..pipeline import parse_pipeline, PipelineError
+from ..source_control import SourceControlError, SourceExecutionSpec, make_git_source_provider
+
+_SOURCE_PROVIDER = make_git_source_provider()
+
+
+def _to_source_spec(spec: SourceExecutionSpec | GitExecutionSpec) -> SourceExecutionSpec:
+    if isinstance(spec, SourceExecutionSpec):
+        return spec
+    return SourceExecutionSpec(
+        provider="git",
+        revision=str(spec.commit_sha or ""),
+        origin_url=spec.origin_url,
+        repo_name=spec.repo_name,
+        is_dirty=spec.git_is_dirty,
+        extra={"commit_sha": str(spec.commit_sha or "")},
+    )
+
+
+def resolve_execution_spec(**kwargs) -> SourceExecutionSpec:
+    return _SOURCE_PROVIDER.resolve_execution_spec(**kwargs)
+
+
+def repo_relative_path(path: Path, repo_root: Path, label: str) -> Path:
+    return _SOURCE_PROVIDER.repo_relative_path(path, repo_root, label)
 
 
 DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
@@ -151,7 +173,7 @@ class HpccDirectExecutor(Executor):
         try:
             rel = repo_relative_path(path, self.repo_root, label)
             return (Path(remote_root) / rel).as_posix()
-        except GitCheckoutError:
+        except SourceControlError:
             return path.as_posix()
 
     def _run_ssh_script(self, target: str, script: str, *, stream_output: bool = False) -> subprocess.CompletedProcess:

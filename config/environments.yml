@@ -17,6 +17,8 @@ environments:
     executor: slurm
     path_style: unix
     git_remote_url: "git@github.com:josephweaver/research-etl.git"
+    execution_source: git_remote
+    allow_workspace_source: false
     host: hpcc.msu.edu
     rclone_bin: "rclone"
     # partition: scavenger # optional: specify valid

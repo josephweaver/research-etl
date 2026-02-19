@@ -38,6 +38,10 @@ from etl.diagnostics import write_error_report, find_latest_error_report
 from etl.executors import HpccDirectExecutor, LocalExecutor, SlurmExecutor
 from etl.executors.slurm import SlurmSubmitError
 from etl.pipeline import PipelineError, parse_pipeline
+from etl.pipeline_assets import (
+    PipelineAssetError,
+    resolve_pipeline_path_from_project_sources,
+)
 from etl.provenance import collect_run_provenance
 from etl.projects import (
     resolve_project_id,
@@ -252,6 +256,11 @@ def _submit_pipeline_run(
 ) -> int:
     plugins_dir_path = Path(args.plugins_dir)
     repo_root = Path(".").resolve()
+    try:
+        pipeline_path.resolve().relative_to(repo_root)
+        pipeline_inside_repo = True
+    except ValueError:
+        pipeline_inside_repo = False
     parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
     # Pre-parse without project vars to discover pipeline metadata/project_id.
     try:
@@ -320,6 +329,13 @@ def _submit_pipeline_run(
     source_bundle = args.source_bundle or exec_env.get("source_bundle")
     source_snapshot = args.source_snapshot or exec_env.get("source_snapshot")
     allow_workspace_source = bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False))
+    if args.executor in {"slurm", "hpcc_direct"} and not pipeline_inside_repo:
+        print(
+            "External pipeline asset paths are currently supported for local executor only. "
+            "Use --executor local for external repos, or place pipeline inside this repo for remote executors.",
+            file=sys.stderr,
+        )
+        return 1
     if args.executor == "slurm":
         executor = SlurmExecutor(
             env_config=exec_env,
@@ -607,6 +623,28 @@ def cmd_run(args: argparse.Namespace) -> int:
         # Keep explicit --workdir as the strongest CLI override, unified under one overlay.
         commandline_vars["workdir"] = str(args.workdir)
     parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
+    # Resolve pipeline from project asset sources when local path does not exist.
+    try:
+        tentative_project_id = resolve_project_id(
+            explicit_project_id=getattr(args, "project_id", None),
+            pipeline_project_id=None,
+            pipeline_path=pipeline_path,
+        )
+        tentative_project_vars = load_project_vars(
+            project_id=tentative_project_id,
+            projects_config_path=selected_projects_config,
+        )
+        pipeline_path = resolve_pipeline_path_from_project_sources(
+            pipeline_path,
+            project_vars=tentative_project_vars,
+            repo_root=Path(".").resolve(),
+        )
+    except (ProjectConfigError, PipelineAssetError) as exc:
+        print(f"Pipeline asset resolution error: {exc}", file=sys.stderr)
+        return 1
+    if not pipeline_path.exists():
+        print(f"Pipeline path not found: {pipeline_path}", file=sys.stderr)
+        return 1
     if bool(getattr(args, "ignore_dependencies", False)):
         print("Ignoring pipeline dependencies (--ignore-dependencies).")
         return _submit_pipeline_run(
@@ -706,6 +744,20 @@ def cmd_validate(args: argparse.Namespace) -> int:
         print(f"Projects config error: {exc}", file=sys.stderr)
         return 1
     try:
+        tentative_project_id = resolve_project_id(
+            explicit_project_id=getattr(args, "project_id", None),
+            pipeline_project_id=None,
+            pipeline_path=pipeline_path,
+        )
+        tentative_project_vars = load_project_vars(
+            project_id=tentative_project_id,
+            projects_config_path=selected_projects_config,
+        )
+        pipeline_path = resolve_pipeline_path_from_project_sources(
+            pipeline_path,
+            project_vars=tentative_project_vars,
+            repo_root=Path(".").resolve(),
+        )
         pre = parse_pipeline(pipeline_path, global_vars=global_vars, env_vars={})
         project_id = resolve_project_id(
             explicit_project_id=getattr(args, "project_id", None),
@@ -722,6 +774,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
         return 1
     except ProjectConfigError as exc:
         print(f"Projects config error: {exc}", file=sys.stderr)
+        return 1
+    except PipelineAssetError as exc:
+        print(f"Pipeline asset resolution error: {exc}", file=sys.stderr)
         return 1
     print(f"Pipeline is valid. Steps: {len(pipeline.steps)}")
     return 0

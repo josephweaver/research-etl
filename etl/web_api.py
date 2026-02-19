@@ -5,6 +5,7 @@ import shutil
 import json
 import shlex
 import re
+import subprocess
 import threading
 import multiprocessing as mp
 import uuid
@@ -34,6 +35,7 @@ from .execution_config import (
 from .executors.hpcc_direct import HpccDirectExecutor
 from .executors.local import LocalExecutor
 from .executors.slurm import SlurmExecutor
+from .git_checkout import infer_repo_name
 from .pipeline import (
     DEFAULT_RESOLVE_MAX_PASSES,
     Pipeline,
@@ -41,6 +43,10 @@ from .pipeline import (
     parse_pipeline,
     PipelineError,
     resolve_max_passes_setting,
+)
+from .pipeline_assets import (
+    PipelineAssetError,
+    resolve_pipeline_path_from_project_sources,
 )
 from .provenance import collect_run_provenance
 from .projects import (
@@ -561,6 +567,9 @@ INDEX_HTML = """<!doctype html>
                 </select>
                 <label class="muted"><input type="checkbox" id="b_dry_run" /> dry_run</label>
                 <label class="muted"><input type="checkbox" id="b_verbose" checked /> verbose</label>
+                <label class="muted"><input type="checkbox" id="b_git_sync" checked /> git_sync</label>
+                <input id="b_git_branch" placeholder="git branch (auto-create if empty)" />
+                <span id="b_git_repo_status" class="muted"></span>
               </div>
               <div class="controls">
                 <input id="b_max_retries" placeholder="max_retries (default: 0)" />
@@ -1300,6 +1309,7 @@ INDEX_HTML = """<!doctype html>
       const workdir = deriveBuilderWorkdir();
       const retries = document.getElementById("b_max_retries").value.trim();
       const delay = document.getElementById("b_retry_delay").value.trim();
+      const gitBranch = document.getElementById("b_git_branch").value.trim();
       if (pipeline) body.pipeline = pipeline;
       if (intent) body.intent = intent;
       if (constraints) body.constraints = constraints;
@@ -1311,6 +1321,8 @@ INDEX_HTML = """<!doctype html>
       if (delay) body.retry_delay_seconds = Number(delay);
       body.dry_run = document.getElementById("b_dry_run").checked;
       body.verbose = document.getElementById("b_verbose").checked;
+      body.git_sync = document.getElementById("b_git_sync").checked;
+      if (gitBranch) body.git_branch = gitBranch;
       return body;
     }
     async function loadBuilderProjects(){
@@ -1332,6 +1344,22 @@ INDEX_HTML = """<!doctype html>
       } else if(modelProject && projects.includes(modelProject)){
         sel.value = modelProject;
       }
+    }
+    async function refreshBuilderGitStatus(){
+      if(!isBuilderView) return;
+      const el = document.getElementById("b_git_repo_status");
+      if(!el) return;
+      const res = await fetch(`/api/builder/git-status`);
+      if(!res.ok){
+        el.textContent = `git: ${await readMessage(res)}`;
+        return;
+      }
+      const g = await res.json();
+      const name = String(g.repo_name || "repo");
+      const branch = String(g.branch || "");
+      const commit = String(g.commit || "").slice(0, 8);
+      const dirty = !!g.dirty;
+      el.textContent = `${name}@${branch}:${commit}${dirty ? " *dirty" : ""}`;
     }
     async function loadBuilderEnvironments(){
       const sel = document.getElementById("nav_env");
@@ -2592,6 +2620,32 @@ INDEX_HTML = """<!doctype html>
       builderValidationState = "valid";
       renderBuilderPipelineStatus();
 
+      if(payload.git_sync){
+        if(!payload.pipeline){
+          builderPipelineRunState = "failed";
+          builderPipelineRunning = false;
+          renderBuilderPipelineStatus();
+          msg.textContent = "git_sync requires a pipeline path.";
+          return;
+        }
+        msg.textContent = "Syncing git branch (commit/push)...";
+        const syncRes = await fetch(`/api/builder/git-sync`, {
+          method:"POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ pipeline: payload.pipeline, branch: payload.git_branch, push: true, create_branch: true }),
+        });
+        if(!syncRes.ok){
+          builderPipelineRunState = "failed";
+          builderPipelineRunning = false;
+          renderBuilderPipelineStatus();
+          msg.textContent = await readMessage(syncRes);
+          return;
+        }
+        const syncData = await syncRes.json();
+        await refreshBuilderGitStatus();
+        out.textContent = JSON.stringify({ sync: syncData }, null, 2);
+      }
+
       msg.textContent = "Submitting run...";
       const runBody = {};
       if(payload.env) runBody.env = payload.env;
@@ -2607,7 +2661,10 @@ INDEX_HTML = """<!doctype html>
       if(payload.retry_delay_seconds !== undefined) runBody.retry_delay_seconds = payload.retry_delay_seconds;
       runBody.dry_run = !!payload.dry_run;
       runBody.verbose = !!payload.verbose;
-      if(runMode === "repro"){
+      if(payload.git_sync){
+        runBody.execution_source = "git_remote";
+        runBody.allow_workspace_source = false;
+      } else if(runMode === "repro"){
         runBody.execution_source = "auto";
         runBody.allow_workspace_source = false;
       } else {
@@ -2825,6 +2882,32 @@ INDEX_HTML = """<!doctype html>
       payload.step_index = idx;
       const runMode = String((document.getElementById("b_run_mode") || {}).value || "draft").trim().toLowerCase();
       payload.allow_dirty_git = runMode !== "repro";
+      if(payload.git_sync){
+        if(!payload.pipeline){
+          builderStepStatus[idx] = "failed";
+          delete builderStepTesting[idx];
+          builderStepLastLog[idx] = "git_sync requires a pipeline path.";
+          renderBuilderModel();
+          msg.textContent = "git_sync requires a pipeline path.";
+          return;
+        }
+        msg.textContent = `Syncing git branch before step ${idx + 1} test...`;
+        const syncRes = await fetch(`/api/builder/git-sync`, {
+          method:"POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ pipeline: payload.pipeline, branch: payload.git_branch, push: true, create_branch: true }),
+        });
+        if(!syncRes.ok){
+          builderStepStatus[idx] = "failed";
+          delete builderStepTesting[idx];
+          const errText = await readMessage(syncRes);
+          builderStepLastLog[idx] = errText || "git sync failed.";
+          renderBuilderModel();
+          msg.textContent = errText;
+          return;
+        }
+        await refreshBuilderGitStatus();
+      }
       const startRes = await fetch(`/api/builder/test-step/start`, {
         method:"POST",
         headers: {"Content-Type":"application/json"},
@@ -3694,6 +3777,7 @@ INDEX_HTML = """<!doctype html>
     loadBuilderProjects();
     loadBuilderEnvironments().then(async () => {
       if(isBuilderView){
+        await refreshBuilderGitStatus();
         renderBuilderModel();
       }
     });
@@ -4150,20 +4234,129 @@ def _parse_optional_float(value: Any, *, field_name: str) -> Optional[float]:
         raise HTTPException(status_code=400, detail=f"Invalid {field_name}: must be a number.") from exc
 
 
+def _git_out(repo_root: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise HTTPException(status_code=400, detail=f"Git command failed: {' '.join(args)}: {detail}")
+    return str(proc.stdout or "").strip()
+
+
+def _git_repo_status(repo_root: Optional[Path] = None) -> dict[str, Any]:
+    root = (repo_root or Path(".")).resolve()
+    is_repo = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if is_repo.returncode != 0:
+        raise HTTPException(status_code=400, detail="Current workspace is not a git repository.")
+    origin = _git_out(root, "config", "--get", "remote.origin.url")
+    branch = _git_out(root, "rev-parse", "--abbrev-ref", "HEAD")
+    commit = _git_out(root, "rev-parse", "HEAD")
+    dirty_proc = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    dirty = bool(str(dirty_proc.stdout or "").strip()) if dirty_proc.returncode == 0 else False
+    return {
+        "repo_root": str(root),
+        "origin_url": origin or None,
+        "repo_name": infer_repo_name(origin or root.name),
+        "branch": branch or None,
+        "commit": commit or None,
+        "dirty": dirty,
+    }
+
+
+def _git_branch_slug(text: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._/-]+", "-", str(text or "").strip())
+    slug = re.sub(r"/{2,}", "/", slug).strip("./-")
+    return slug or "builder"
+
+
+def _builder_git_sync(
+    *,
+    pipeline: str,
+    branch: Optional[str] = None,
+    push: bool = True,
+    create_branch: bool = True,
+) -> dict[str, Any]:
+    repo_root = Path(".").resolve()
+    status_before = _git_repo_status(repo_root)
+    pipeline_rel = str(pipeline or "").strip().replace("\\", "/")
+    if not pipeline_rel:
+        raise HTTPException(status_code=400, detail="`pipeline` is required for git sync.")
+    if not pipeline_rel.lower().startswith("pipelines/"):
+        pipeline_rel = f"pipelines/{pipeline_rel.lstrip('/')}"
+    if not pipeline_rel.lower().endswith((".yml", ".yaml")):
+        pipeline_rel = f"{pipeline_rel}.yml"
+
+    if branch and str(branch).strip():
+        target_branch = _git_branch_slug(str(branch).strip())
+    else:
+        stem = _git_branch_slug(Path(pipeline_rel).with_suffix("").as_posix())
+        ts = datetime.utcnow().strftime("%y%m%d-%H%M%S")
+        target_branch = f"builder/{stem}-{ts}" if create_branch else str(status_before.get("branch") or "builder")
+    current_branch = str(status_before.get("branch") or "").strip()
+
+    if target_branch and target_branch != current_branch:
+        exists = subprocess.run(
+            ["git", "-C", str(repo_root), "show-ref", "--verify", "--quiet", f"refs/heads/{target_branch}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if exists.returncode == 0:
+            _git_out(repo_root, "checkout", target_branch)
+        else:
+            _git_out(repo_root, "checkout", "-b", target_branch)
+
+    _git_out(repo_root, "add", "--", "pipelines", "plugins", "scripts")
+    staged = _git_out(repo_root, "diff", "--cached", "--name-only")
+    staged_files = [x.strip() for x in staged.splitlines() if x.strip()]
+    committed = False
+    if staged_files:
+        msg = f"builder sync: {pipeline_rel}"
+        _git_out(repo_root, "commit", "-m", msg)
+        committed = True
+
+    if push:
+        _git_out(repo_root, "push", "-u", "origin", target_branch)
+
+    status_after = _git_repo_status(repo_root)
+    return {
+        "pipeline": pipeline_rel,
+        "branch": target_branch,
+        "committed": committed,
+        "staged_files": staged_files,
+        "pushed": bool(push),
+        "status": status_after,
+    }
+
+
 def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
     payload = payload or {}
     pipeline_raw = str(payload.get("pipeline") or "").strip()
     if not pipeline_raw:
         raise HTTPException(status_code=400, detail="`pipeline` is required.")
     pipeline_path = Path(pipeline_raw).expanduser()
-    if not pipeline_path.exists():
-        raise HTTPException(status_code=400, detail=f"Pipeline path not found: {pipeline_path}")
 
     global_config_raw = str(payload.get("global_config") or "").strip()
     environments_config_raw = str(payload.get("environments_config") or "").strip()
+    projects_config_raw = str(payload.get("projects_config") or "").strip()
     env_name_raw = str(payload.get("env") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
     environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
+    projects_config_path = Path(projects_config_raw).expanduser() if projects_config_raw else None
     env_name = env_name_raw or None
 
     executor = str(payload.get("executor") or "").strip().lower()
@@ -4221,6 +4414,7 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
         "pipeline_path": pipeline_path,
         "global_config_path": global_config_path,
         "environments_config_path": environments_config_path,
+        "projects_config_path": projects_config_path,
         "env_name": env_name,
         "executor": executor,
         "plugins_dir": Path(payload.get("plugins_dir") or "plugins"),
@@ -4288,6 +4482,64 @@ def _resolve_execution_env(
         raise
     except ExecutionConfigError as exc:
         raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
+
+
+def _resolve_action_pipeline_context(
+    *,
+    pipeline_path: Path,
+    requested_project_id: Optional[str],
+    projects_config_path: Optional[Path],
+    global_vars: dict[str, Any],
+    execution_env: dict[str, Any],
+) -> tuple[Path, str, dict[str, Any], Optional[Path]]:
+    try:
+        selected_projects_config = resolve_projects_config_path(projects_config_path)
+    except ProjectConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+
+    tentative_project_id = resolve_project_id(
+        explicit_project_id=requested_project_id,
+        pipeline_project_id=None,
+        pipeline_path=pipeline_path,
+    )
+    try:
+        tentative_project_vars = load_project_vars(
+            project_id=tentative_project_id,
+            projects_config_path=selected_projects_config,
+        )
+    except ProjectConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+
+    try:
+        resolved_pipeline_path = resolve_pipeline_path_from_project_sources(
+            pipeline_path,
+            project_vars=tentative_project_vars,
+            repo_root=Path(".").resolve(),
+        )
+    except PipelineAssetError as exc:
+        raise HTTPException(status_code=400, detail=f"Pipeline asset resolution error: {exc}") from exc
+    if not resolved_pipeline_path.exists():
+        raise HTTPException(status_code=400, detail=f"Pipeline path not found: {pipeline_path}")
+
+    try:
+        pre_pipeline = parse_pipeline(
+            resolved_pipeline_path,
+            global_vars=global_vars,
+            env_vars=execution_env,
+        )
+    except (PipelineError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid pipeline: {exc}") from exc
+
+    project_id = resolve_project_id(
+        explicit_project_id=requested_project_id,
+        pipeline_project_id=getattr(pre_pipeline, "project_id", None),
+        pipeline_path=resolved_pipeline_path,
+    )
+    try:
+        project_vars = load_project_vars(project_id=project_id, projects_config_path=selected_projects_config)
+    except ProjectConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+    return resolved_pipeline_path, project_id, project_vars, selected_projects_config
 
 
 def _resolve_builder_env_vars(
@@ -5327,6 +5579,26 @@ def api_builder_projects(request: Request, projects_config: Optional[str] = Quer
     return {"projects_config": str(resolved), "projects": sorted(set(project_ids))}
 
 
+@app.get("/api/builder/git-status")
+def api_builder_git_status() -> dict:
+    return _git_repo_status()
+
+
+@app.post("/api/builder/git-sync")
+def api_builder_git_sync(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    payload = payload or {}
+    pipeline = str(payload.get("pipeline") or "").strip()
+    branch = str(payload.get("branch") or "").strip() or None
+    push = _parse_bool(payload.get("push"), default=True)
+    create_branch = _parse_bool(payload.get("create_branch"), default=True)
+    return _builder_git_sync(
+        pipeline=pipeline,
+        branch=branch,
+        push=push,
+        create_branch=create_branch,
+    )
+
+
 @app.post("/api/builder/resolve-text")
 def api_builder_resolve_text(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     payload = payload or {}
@@ -5981,12 +6253,25 @@ def api_action_validate(request: Request, payload: Optional[dict[str, Any]] = Bo
         executor=args["executor"],
         global_vars=global_vars,
     )
+    resolved_pipeline_path, project_id, project_vars, _selected_projects_config = _resolve_action_pipeline_context(
+        pipeline_path=args["pipeline_path"],
+        requested_project_id=requested_project_id,
+        projects_config_path=args["projects_config_path"],
+        global_vars=global_vars,
+        execution_env=execution_env,
+    )
+    _require_project_access(scope, project_id)
     try:
-        pipeline = parse_pipeline(args["pipeline_path"], global_vars=global_vars, env_vars=execution_env)
+        pipeline = parse_pipeline(
+            resolved_pipeline_path,
+            global_vars=global_vars,
+            env_vars=execution_env,
+            project_vars=project_vars,
+        )
     except (PipelineError, FileNotFoundError) as exc:
         _record_pipeline_validation(
-            pipeline=str(args["pipeline_path"]),
-            project_id=requested_project_id,
+            pipeline=str(resolved_pipeline_path),
+            project_id=project_id,
             valid=False,
             step_count=0,
             step_names=[],
@@ -5994,14 +6279,8 @@ def api_action_validate(request: Request, payload: Optional[dict[str, Any]] = Bo
             source="api_validate",
         )
         raise HTTPException(status_code=400, detail=f"Invalid pipeline: {exc}") from exc
-    project_id = resolve_project_id(
-        explicit_project_id=requested_project_id,
-        pipeline_project_id=getattr(pipeline, "project_id", None),
-        pipeline_path=args["pipeline_path"],
-    )
-    _require_project_access(scope, project_id)
     _record_pipeline_validation(
-        pipeline=str(args["pipeline_path"]),
+        pipeline=str(resolved_pipeline_path),
         project_id=project_id,
         valid=True,
         step_count=len(pipeline.steps),
@@ -6011,7 +6290,7 @@ def api_action_validate(request: Request, payload: Optional[dict[str, Any]] = Bo
     )
     return {
         "valid": True,
-        "pipeline": str(args["pipeline_path"]),
+        "pipeline": str(resolved_pipeline_path),
         "steps": [s.name for s in pipeline.steps],
         "step_count": len(pipeline.steps),
     }
@@ -6044,16 +6323,37 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
     source_bundle = args["source_bundle"] or execution_env.get("source_bundle")
     source_snapshot = args["source_snapshot"] or execution_env.get("source_snapshot")
     allow_workspace_source = bool(args["allow_workspace_source"] or execution_env.get("allow_workspace_source", False))
-    try:
-        pipeline = parse_pipeline(args["pipeline_path"], global_vars=global_vars, env_vars=execution_env)
-    except (PipelineError, FileNotFoundError) as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid pipeline: {exc}") from exc
-    project_id = resolve_project_id(
-        explicit_project_id=requested_project_id,
-        pipeline_project_id=getattr(pipeline, "project_id", None),
+    resolved_pipeline_path, project_id, project_vars, selected_projects_config = _resolve_action_pipeline_context(
         pipeline_path=args["pipeline_path"],
+        requested_project_id=requested_project_id,
+        projects_config_path=args["projects_config_path"],
+        global_vars=global_vars,
+        execution_env=execution_env,
     )
     _require_project_access(scope, project_id)
+    repo_root = Path(".").resolve()
+    try:
+        resolved_pipeline_path.resolve().relative_to(repo_root)
+        pipeline_inside_repo = True
+    except ValueError:
+        pipeline_inside_repo = False
+    if args["executor"] in {"slurm", "hpcc_direct"} and not pipeline_inside_repo:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "External pipeline asset paths are currently supported for local executor only. "
+                "Use executor=local for external repos, or place pipeline inside this repo for remote executors."
+            ),
+        )
+    try:
+        pipeline = parse_pipeline(
+            resolved_pipeline_path,
+            global_vars=global_vars,
+            env_vars=execution_env,
+            project_vars=project_vars,
+        )
+    except (PipelineError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid pipeline: {exc}") from exc
     workdir_candidates = [
         str(args.get("workdir_raw") or "").strip(),
         str(getattr(pipeline, "workdir", None) or "").strip(),
@@ -6069,15 +6369,14 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
         resolved_workdir_text = candidate
         break
 
-    repo_root = Path(".").resolve()
     provenance = collect_run_provenance(
         repo_root=repo_root,
-        pipeline_path=args["pipeline_path"],
+        pipeline_path=resolved_pipeline_path,
         global_config_path=args["global_config_path"],
         environments_config_path=environments_config_path,
         plugin_dir=args["plugins_dir"],
         pipeline=pipeline,
-        cli_command=f"etl web run {args['pipeline_path']}",
+        cli_command=f"etl web run {resolved_pipeline_path}",
     )
     if args["executor"] == "slurm":
         ex = SlurmExecutor(
@@ -6086,6 +6385,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
             plugins_dir=args["plugins_dir"],
             workdir=Path(resolved_workdir_text),
             global_config=args["global_config_path"],
+            projects_config=selected_projects_config,
             environments_config=environments_config_path,
             env_name=env_name,
             dry_run=args["dry_run"],
@@ -6104,7 +6404,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
             plugins_dir=args["plugins_dir"],
             workdir=Path(resolved_workdir_text),
             global_config=args["global_config_path"],
-            projects_config=None,
+            projects_config=selected_projects_config,
             environments_config=environments_config_path,
             env_name=env_name,
             dry_run=args["dry_run"],
@@ -6113,7 +6413,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
     else:
         run_id = str(args.get("run_id") or "").strip() or uuid.uuid4().hex
         run_started_at = str(args.get("run_started_at") or "").strip() or (datetime.utcnow().isoformat() + "Z")
-        pipeline_path_resolved = Path(args["pipeline_path"]).resolve()
+        pipeline_path_resolved = resolved_pipeline_path.resolve()
         dedupe_key = _local_submission_key(
             pipeline_path=pipeline_path_resolved,
             project_id=project_id,
@@ -6135,7 +6435,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
             _ACTIVE_LOCAL_RUN_KEYS[dedupe_key] = run_id
             _LOCAL_RUN_SNAPSHOT[run_id] = {
                 "state": "queued",
-                "pipeline": str(args["pipeline_path"]),
+                "pipeline": str(resolved_pipeline_path),
                 "executor": "local",
                 "project_id": project_id,
                 "env_name": env_name,
@@ -6173,14 +6473,14 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
             run_id=run_id,
             dedupe_key=dedupe_key,
             executor=ex,
-            pipeline_path=Path(args["pipeline_path"]),
+            pipeline_path=resolved_pipeline_path,
             context=context,
             project_id=project_id,
         )
         return {
             "run_id": run_id,
             "state": "queued",
-            "pipeline": str(args["pipeline_path"]),
+            "pipeline": str(resolved_pipeline_path),
             "executor": args["executor"],
             "project_id": project_id,
             "job_ids": [],
@@ -6189,7 +6489,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
 
     try:
         submit = ex.submit(
-            str(args["pipeline_path"]),
+            str(resolved_pipeline_path),
             context={
                 "pipeline": pipeline,
                 "execution_env": execution_env,
@@ -6210,7 +6510,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
     return {
         "run_id": submit.run_id,
         "state": state,
-        "pipeline": str(args["pipeline_path"]),
+        "pipeline": str(resolved_pipeline_path),
         "executor": args["executor"],
         "project_id": project_id,
         "job_ids": submit.job_ids or [],
