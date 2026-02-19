@@ -51,6 +51,33 @@ def test_runner_resolves_sys_placeholders_in_step_args(tmp_path: Path) -> None:
     assert "{" not in out["tag"]
 
 
+def test_runner_resolves_sys_step_nn_for_parallel_steps(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_capture_plugin(plugin_dir / "capture.py")
+
+    pipeline = Pipeline(
+        vars={"jobname": "yanroy"},
+        steps=[
+            Step(name="left", script="capture.py nn={sys.step.NN}", output_var="l", parallel_with="g1"),
+            Step(name="right", script="capture.py nn={sys.step.NN}", output_var="r", parallel_with="g1"),
+            Step(name="done", script="capture.py nn={sys.step.NN}", output_var="d"),
+        ],
+    )
+
+    result = run_pipeline(
+        pipeline,
+        plugin_dir=plugin_dir,
+        workdir=tmp_path / ".runs",
+        run_id="fedcba9876543210fedcba9876543210",
+    )
+    assert result.success is True
+    by_name = {r.step.name: r for r in result.steps}
+    assert by_name["left"].outputs["args"]["nn"] == "01a"
+    assert by_name["right"].outputs["args"]["nn"] == "01b"
+    assert by_name["done"].outputs["args"]["nn"] == "02"
+
+
 def test_runner_resolves_sys_placeholders_in_step_env(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -124,3 +151,51 @@ def test_runner_reuses_existing_stamped_workdir_for_same_run_id_suffix(tmp_path:
     )
     assert result.success is True
     assert str(result.artifact_dir).replace("\\", "/").endswith(f"/260215/232242-{run_id[:8]}")
+
+
+def test_runner_foreach_can_use_expr_range_in_vars(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_capture_plugin(plugin_dir / "capture.py")
+
+    pipeline = Pipeline(
+        vars={"years": "{expr.range(2000, 2002)}"},
+        steps=[
+            Step(
+                name="s_year",
+                script="capture.py year={item}",
+                foreach="years",
+                output_var="out",
+            )
+        ],
+    )
+    result = run_pipeline(pipeline, plugin_dir=plugin_dir, workdir=tmp_path / ".runs")
+    assert result.success is True
+    years = sorted(int(r.outputs["args"]["year"]) for r in result.steps)
+    assert years == [2000, 2001, 2002]
+
+
+def test_runner_resolves_expr_dateformat_with_sys_now(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_capture_plugin(plugin_dir / "capture.py")
+
+    pipeline = Pipeline(
+        steps=[
+            Step(
+                name="s1",
+                script="capture.py tag={expr.dateformat(sys.now,'%Y%m%d-%H%M%S')}",
+                output_var="out",
+            )
+        ],
+    )
+    result = run_pipeline(
+        pipeline,
+        plugin_dir=plugin_dir,
+        workdir=tmp_path / ".runs",
+        run_id="00112233445566778899aabbccddeeff",
+    )
+    assert result.success is True
+    tag = result.steps[0].outputs["args"]["tag"]
+    assert len(tag) == 15
+    assert "-" in tag

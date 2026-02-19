@@ -1,15 +1,16 @@
 projects:
   default:
     vars:
-      basedir: "/data/default"
+      basedir: "{env.basedir}/default"
       owner: "core"
 
   land_core:
     vars:
-      basedir: "/data/land_core"
+      basedir: "{env.basedir}/land_core"
       owner: "land-core"
+      data_dictionary_repo_url: "https://github.com/land-core/landcore-data-catalog.git"
       states_of_interest: [ 'IL', 'MN', 'WI', 'OH', 'SD', 'IA', 'IN', 'MI', 'MO' ]
   gee_lee:
     vars:
-      basedir: "/data/gee_lee"
+      basedir: "{env.basedir}/gee_lee"
       owner: "gee-lee"

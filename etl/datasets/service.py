@@ -289,6 +289,63 @@ def get_dataset(dataset_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def create_dataset(
+    *,
+    dataset_id: str,
+    data_class: Optional[str] = None,
+    owner_user: Optional[str] = None,
+    status: Optional[str] = None,
+) -> Dict[str, Any]:
+    ds_id = str(dataset_id or "").strip()
+    if not ds_id:
+        raise DatasetServiceError("dataset_id is required")
+    data_class_text = str(data_class or "").strip() or None
+    owner_user_text = str(owner_user or "").strip() or None
+    status_raw = str(status or "").strip().lower()
+    status_text = status_raw or "active"
+
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM etl_datasets WHERE dataset_id = %s", (ds_id,))
+                existed = cur.fetchone() is not None
+                cur.execute(
+                    """
+                    INSERT INTO etl_datasets (dataset_id, data_class, owner_user, status, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (dataset_id)
+                    DO UPDATE SET
+                        data_class = COALESCE(EXCLUDED.data_class, etl_datasets.data_class),
+                        owner_user = COALESCE(EXCLUDED.owner_user, etl_datasets.owner_user),
+                        status = CASE
+                            WHEN %s THEN EXCLUDED.status
+                            ELSE etl_datasets.status
+                        END,
+                        updated_at = NOW()
+                    RETURNING dataset_id, data_class, owner_user, status, created_at, updated_at
+                    """,
+                    (ds_id, data_class_text, owner_user_text, status_text, bool(status_raw)),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise DatasetServiceError("Failed to create dataset.")
+            conn.commit()
+    except DatasetServiceError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DatasetServiceError(f"Failed to create dataset '{ds_id}': {exc}") from exc
+
+    return {
+        "dataset_id": row[0],
+        "data_class": row[1],
+        "owner_user": row[2],
+        "status": row[3],
+        "created_at": row[4].isoformat() if row[4] is not None else None,
+        "updated_at": row[5].isoformat() if row[5] is not None else None,
+        "created": not existed,
+    }
+
+
 def store_data(
     *,
     dataset_id: str,
@@ -694,4 +751,4 @@ def get_data(
     }
 
 
-__all__ = ["DatasetServiceError", "list_datasets", "get_dataset", "store_data", "get_data"]
+__all__ = ["DatasetServiceError", "list_datasets", "get_dataset", "create_dataset", "store_data", "get_data"]

@@ -5,6 +5,7 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from .expr import try_eval_expr_text
 
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
 
@@ -36,17 +37,27 @@ class VariableSolver:
     def _resolve_string_once(value: str, ctx: Dict[str, Any]) -> Any:
         exact = _PLACEHOLDER_RE.fullmatch(value)
         if exact:
-            resolved, ok = VariableSolver._lookup_path(ctx, exact.group(1))
+            token = exact.group(1)
+            resolved, ok = VariableSolver._lookup_path(ctx, token)
             if ok:
                 if isinstance(resolved, (dict, list)):
                     return copy.deepcopy(resolved)
                 return str(resolved)
+            expr_value, expr_ok = try_eval_expr_text(token, ctx)
+            if expr_ok:
+                if isinstance(expr_value, (dict, list)):
+                    return copy.deepcopy(expr_value)
+                return expr_value
             return value
 
         def _repl(match: re.Match[str]) -> str:
-            resolved, ok = VariableSolver._lookup_path(ctx, match.group(1))
+            token = match.group(1)
+            resolved, ok = VariableSolver._lookup_path(ctx, token)
             if not ok or isinstance(resolved, (dict, list)):
-                return match.group(0)
+                expr_value, expr_ok = try_eval_expr_text(token, ctx)
+                if not expr_ok or isinstance(expr_value, (dict, list)):
+                    return match.group(0)
+                return str(expr_value)
             return str(resolved)
 
         return _PLACEHOLDER_RE.sub(_repl, value)

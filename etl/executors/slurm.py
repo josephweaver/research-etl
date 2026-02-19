@@ -354,6 +354,29 @@ class SlurmExecutor(Executor):
             return None
         return len(value)
 
+    def _foreach_array_max_concurrency(self, step: Any) -> Optional[int]:
+        resources = dict(getattr(step, "resources", {}) or {})
+        raw = (
+            resources.get("foreach_max_concurrency")
+            if resources.get("foreach_max_concurrency") not in (None, "")
+            else (
+                resources.get("max_concurrency")
+                if resources.get("max_concurrency") not in (None, "")
+                else resources.get("array_max_parallel")
+            )
+        )
+        if raw in (None, ""):
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+        if int(self.max_parallel or 0) > 0:
+            value = min(value, int(self.max_parallel))
+        return max(1, value)
+
     @staticmethod
     def _parse_script_plugin_ref(script: str) -> Optional[str]:
         text = str(script or "").strip()
@@ -807,6 +830,7 @@ class SlurmExecutor(Executor):
                 step_name = getattr(steps[0], "name", f"step{step_indices[0]}")
                 foreach_count = self._foreach_count_from_pipeline(steps[0], pipeline)
                 if foreach_count and foreach_count > 1:
+                    foreach_array_max_parallel = self._foreach_array_max_concurrency(steps[0])
                     chunk_size = min(self.array_task_limit, int(foreach_count))
                     start = 0
                     while start < int(foreach_count):
@@ -844,6 +868,7 @@ class SlurmExecutor(Executor):
                             sbatch_mem=batch_resources.get("mem"),
                             array_index=True,
                             array_count=chunk_n,
+                            array_max_parallel=foreach_array_max_parallel,
                             foreach_from_array=True,
                             foreach_item_offset=start,
                         )
@@ -1142,6 +1167,7 @@ class SlurmExecutor(Executor):
         sbatch_mem: Optional[str] = None,
         array_index: bool = False,
         array_count: Optional[int] = None,
+        array_max_parallel: Optional[int] = None,
         foreach_from_array: bool = False,
         foreach_item_offset: int = 0,
     ) -> str:
@@ -1164,7 +1190,18 @@ class SlurmExecutor(Executor):
         lines.append(f"#SBATCH -o {logdir}/etl-{run_id}-%j.%a.out" if array_index else f"#SBATCH -o {logdir}/etl-{run_id}-%j.out")
         if array_index:
             array_n = int(array_count or len(steps))
-            lines.append(f"#SBATCH --array=0-{max(0, array_n-1)}")
+            array_upper = max(0, array_n - 1)
+            if array_max_parallel not in (None, ""):
+                try:
+                    arr_cap = int(array_max_parallel)
+                except (TypeError, ValueError):
+                    arr_cap = 0
+                if arr_cap > 0:
+                    lines.append(f"#SBATCH --array=0-{array_upper}%{arr_cap}")
+                else:
+                    lines.append(f"#SBATCH --array=0-{array_upper}")
+            else:
+                lines.append(f"#SBATCH --array=0-{array_upper}")
         if self.env.sbatch_extra:
             for extra in self.env.sbatch_extra:
                 lines.append(f"#SBATCH {extra}")

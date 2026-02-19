@@ -34,11 +34,11 @@ Build a reusable geospatial ETL flow for Yanroy:
   - [x] Output: filtered vector artifact
   - [x] Supports simple where syntax: `COL in (...)`, `COL == ...`, `COL != ...`
 
-- [ ] `plugins/geo_filter_rasters_by_polygon.py`
-  - [ ] Input: raster dir or raster facts csv
-  - [ ] Input: selector polygon file
-  - [ ] Logic: read raster bounds+crs, build footprints, intersect polygons
-  - [ ] Output: selected rasters list + selected footprint table
+- [x] `plugins/geo_filter_rasters_by_polygon.py`
+  - [x] Input: raster dir (no `raster_facts` dependency)
+  - [x] Input: selector polygon file
+  - [x] Logic: read raster header bounds+crs, build footprints, intersect polygons
+  - [x] Output: selected rasters list + selected footprint table
 
 - [ ] `plugins/raster_to_polygon.py`
   - [ ] Input: raster list/dir

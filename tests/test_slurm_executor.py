@@ -15,7 +15,7 @@ def test_slurm_submit_uses_array_batches_and_passes_resume_retry(monkeypatch, tm
             Step(name="setup", script="echo.py"),
             Step(name="p1", script="echo.py", parallel_with="grp"),
             Step(name="p2", script="echo.py", parallel_with="grp"),
-            Step(name="fan", script="echo.py", foreach="items"),
+            Step(name="fan", script="echo.py", foreach="items", resources={"foreach_max_concurrency": 1}),
         ],
     )
     monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
@@ -91,7 +91,7 @@ def test_slurm_submit_uses_array_batches_and_passes_resume_retry(monkeypatch, tm
 
     # foreach uses SLURM array and passes item index into run_batch.
     foreach_call = calls[3]
-    assert "#SBATCH --array=0-1" in foreach_call["script_text"]
+    assert "#SBATCH --array=0-1%1" in foreach_call["script_text"]
     assert "--steps 3" in foreach_call["script_text"]
     assert "--foreach-item-index ${SLURM_ARRAY_TASK_ID}" in foreach_call["script_text"]
 

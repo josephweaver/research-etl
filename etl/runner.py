@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .pipeline import Pipeline, Step
+from .expr import try_eval_expr_text
 from .logging import CallbackLogSink, CompositeLogSink, ConsoleLogSink, FileLogSink, RedactingLogSink, StepLogger
 from .plugins.base import (
     PluginContext,
@@ -360,6 +361,21 @@ def _batch_steps(steps: List[Step]) -> List[List[Step]]:
     return batches
 
 
+def _alpha_suffix(index: int) -> str:
+    """0 -> a, 25 -> z, 26 -> aa, ..."""
+    n = int(index)
+    if n < 0:
+        return ""
+    chars: List[str] = []
+    while True:
+        n, rem = divmod(n, 26)
+        chars.append(chr(ord("a") + rem))
+        if n == 0:
+            break
+        n -= 1
+    return "".join(reversed(chars))
+
+
 class _SafeDict(dict):
     def __missing__(self, key):
         return "{" + key + "}"
@@ -386,14 +402,27 @@ def _lookup_ctx_path(ctx: Dict[str, Any], dotted: str) -> tuple[Any, bool]:
     return cur, True
 
 
-def _resolve_text_with_ctx(value: str, ctx: Dict[str, Any]) -> str:
+def _resolve_text_with_ctx(value: str, ctx: Dict[str, Any]) -> Any:
     text = str(value or "")
+    exact = _TPL_RE.fullmatch(text)
+    if exact:
+        token = str(exact.group(1) or "")
+        found, ok = _lookup_ctx_path(ctx, token)
+        if ok:
+            return found
+        expr_value, expr_ok = try_eval_expr_text(token, ctx)
+        if expr_ok:
+            return expr_value
+        return text
 
     def _repl(match: re.Match[str]) -> str:
         key = str(match.group(1) or "")
         found, ok = _lookup_ctx_path(ctx, key)
         if not ok or isinstance(found, (dict, list)):
-            return match.group(0)
+            expr_value, expr_ok = try_eval_expr_text(key, ctx)
+            if not expr_ok or isinstance(expr_value, (dict, list)):
+                return match.group(0)
+            return str(expr_value)
         return str(found)
 
     return _TPL_RE.sub(_repl, text)
@@ -403,6 +432,39 @@ def _resolve_with_ctx(value: Any, ctx: Dict[str, Any], *, max_passes: int = 20) 
     def _walk(v: Any) -> Any:
         if isinstance(v, str):
             return _resolve_text_with_ctx(v, ctx)
+        if isinstance(v, list):
+            return [_walk(x) for x in v]
+        if isinstance(v, dict):
+            return {k: _walk(x) for k, x in v.items()}
+        return v
+
+    cur = value
+    for _ in range(max_passes):
+        nxt = _walk(cur)
+        if nxt == cur:
+            return cur
+        cur = nxt
+    return cur
+
+
+def _resolve_expr_only_with_ctx(value: Any, ctx: Dict[str, Any], *, max_passes: int = 20) -> Any:
+    def _walk(v: Any) -> Any:
+        if isinstance(v, str):
+            text = str(v or "")
+            exact = _TPL_RE.fullmatch(text)
+            if exact:
+                token = str(exact.group(1) or "")
+                expr_value, expr_ok = try_eval_expr_text(token, ctx)
+                return expr_value if expr_ok else text
+
+            def _repl(match: re.Match[str]) -> str:
+                token = str(match.group(1) or "")
+                expr_value, expr_ok = try_eval_expr_text(token, ctx)
+                if not expr_ok or isinstance(expr_value, (dict, list)):
+                    return match.group(0)
+                return str(expr_value)
+
+            return _TPL_RE.sub(_repl, text)
         if isinstance(v, list):
             return [_walk(x) for x in v]
         if isinstance(v, dict):
@@ -527,6 +589,7 @@ def _with_runtime_sys(
     step_name: str = "",
     step_id: str = "",
     step_index: Optional[int] = None,
+    step_nn: str = "",
 ) -> Dict[str, Any]:
     out = dict(base_ctx or {})
     sys_ns = {
@@ -542,6 +605,7 @@ def _with_runtime_sys(
             "id": str(step_id or step_name or ""),
             "name": str(step_name or ""),
             "index": "" if step_index is None else str(step_index),
+            "NN": str(step_nn or ""),
         },
         "now": {
             "iso_utc": run_started.isoformat() + "Z",
@@ -558,6 +622,7 @@ def _with_runtime_sys(
     out["step_id"] = sys_ns["step"]["id"]
     out["step_name"] = sys_ns["step"]["name"]
     out["step_index"] = sys_ns["step"]["index"]
+    out["step_nn"] = sys_ns["step"]["NN"]
     out["date"] = sys_ns["now"]["yymmdd"]
     out["time"] = sys_ns["now"]["hhmmss"]
     return out
@@ -619,6 +684,11 @@ def run_pipeline(
         run_started=ts,
         job_name=str((pipeline.vars or {}).get("jobname") or ""),
     )
+    ctx_vars = _resolve_expr_only_with_ctx(
+        ctx_vars,
+        ctx_vars,
+        max_passes=max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20)),
+    )
     prior_step_outputs = prior_step_outputs or {}
     foreach_selection = foreach_selection or {}
     resolve_max_passes = max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20))
@@ -639,6 +709,7 @@ def run_pipeline(
 
     batches = _batch_steps(pipeline.steps)
     failed = False
+    step_batch_seq = 0
     for orig_batch in batches:
         expansion_ctx = dict(ctx_vars)
         expanded_for_batch: List[Step] = []
@@ -680,6 +751,8 @@ def run_pipeline(
             run_batches = filtered_batches
 
         for batch in run_batches:
+            step_batch_seq += 1
+            batch_base = step_batch_seq
             if len(batch) == 1:
                 step = batch[0]
                 res = _execute_step(
@@ -696,6 +769,7 @@ def run_pipeline(
                     ctx_vars,
                     resolve_max_passes=resolve_max_passes,
                     step_index=len(step_results),
+                    step_nn=f"{batch_base:02d}",
                     step_log_func=step_log_func,
                     log_redactions=log_redactions,
                 )
@@ -708,7 +782,8 @@ def run_pipeline(
             else:
                 futures = []
                 with ThreadPoolExecutor(max_workers=len(batch)) as pool:
-                    for step in batch:
+                    for local_idx, step in enumerate(batch):
+                        step_nn = f"{batch_base:02d}{_alpha_suffix(local_idx)}"
                         futures.append(
                             pool.submit(
                                 _execute_step,
@@ -725,6 +800,7 @@ def run_pipeline(
                                 dict(ctx_vars),
                                 resolve_max_passes,
                                 None,
+                                step_nn,
                                 step_log_func,
                                 log_redactions,
                             )
@@ -756,6 +832,7 @@ def _execute_step(
     ctx_vars: Dict[str, Any],
     resolve_max_passes: int = 20,
     step_index: Optional[int] = None,
+    step_nn: str = "",
     step_log_func=None,
     log_redactions: Optional[List[str]] = None,
 ) -> StepResult:
@@ -769,6 +846,7 @@ def _execute_step(
         step_name=step.name,
         step_id=step_id,
         step_index=step_index,
+        step_nn=step_nn,
     )
 
     if not _eval_when(step.when, runtime_ctx):

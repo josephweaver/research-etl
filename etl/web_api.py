@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import tempfile
+import shutil
 import json
 import shlex
 import re
 import threading
+import multiprocessing as mp
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+from queue import Empty
 
 import psycopg
 from fastapi import Body, FastAPI, HTTPException, Query, Request
@@ -19,6 +22,7 @@ from fastapi.responses import HTMLResponse
 from .config import ConfigError, load_global_config, resolve_global_config_path
 from .ai_pipeline import AIPipelineError, generate_pipeline_draft
 from .db import get_database_url
+from .datasets import DatasetServiceError, create_dataset
 from .execution_config import (
     ExecutionConfigError,
     apply_execution_env_overrides,
@@ -27,6 +31,7 @@ from .execution_config import (
     resolve_execution_config_path,
     validate_environment_executor,
 )
+from .executors.hpcc_direct import HpccDirectExecutor
 from .executors.local import LocalExecutor
 from .executors.slurm import SlurmExecutor
 from .pipeline import (
@@ -38,7 +43,14 @@ from .pipeline import (
     resolve_max_passes_setting,
 )
 from .provenance import collect_run_provenance
-from .projects import infer_project_id_from_pipeline_path, normalize_project_id, resolve_project_id
+from .projects import (
+    ProjectConfigError,
+    infer_project_id_from_pipeline_path,
+    load_project_vars,
+    normalize_project_id,
+    resolve_project_id,
+    resolve_projects_config_path,
+)
 from .plugins.base import PluginLoadError, load_plugin
 from .runner import run_pipeline
 from .tracking import fetch_plugin_resource_stats, upsert_run_status
@@ -70,6 +82,8 @@ _LOCAL_RUN_FUTURES: dict[str, Any] = {}
 _LOCAL_RUN_CANCEL_REQUESTED: set[str] = set()
 _LOCAL_RUN_LOG_RING: dict[str, list[str]] = {}
 _LOCAL_RUN_LOG_RING_MAX = 2000
+_BUILDER_STEP_TEST_LOCK = threading.Lock()
+_BUILDER_STEP_TESTS: dict[str, dict[str, Any]] = {}
 
 
 @dataclass(frozen=True)
@@ -136,6 +150,14 @@ def _tail_text_lines(path: Path, limit: int = 200) -> list[str]:
     return lines[-limit:]
 
 
+def _last_non_empty_line(lines: list[str]) -> str:
+    for line in reversed(list(lines or [])):
+        text = str(line or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def _release_local_run(run_id: str) -> None:
     with _LOCAL_RUN_LOCK:
         key = _LOCAL_RUN_KEY_BY_RUN_ID.pop(run_id, None)
@@ -143,6 +165,19 @@ def _release_local_run(run_id: str) -> None:
             _ACTIVE_LOCAL_RUN_KEYS.pop(key, None)
         _LOCAL_RUN_FUTURES.pop(run_id, None)
         _LOCAL_RUN_CANCEL_REQUESTED.discard(run_id)
+
+
+def _builder_step_tests_compact() -> None:
+    now = datetime.utcnow().timestamp()
+    with _BUILDER_STEP_TEST_LOCK:
+        stale: list[str] = []
+        for test_id, rec in list(_BUILDER_STEP_TESTS.items()):
+            state = str(rec.get("state") or "")
+            done_ts = float(rec.get("done_ts") or 0.0)
+            if state in {"completed", "failed", "cancelled"} and done_ts > 0 and (now - done_ts) > 1800:
+                stale.append(test_id)
+        for test_id in stale:
+            _BUILDER_STEP_TESTS.pop(test_id, None)
 
 
 def _submit_local_run_async(
@@ -348,6 +383,9 @@ INDEX_HTML = """<!doctype html>
     .combo-picker input { width:100%; }
     .combo-dropdown { position:absolute; left:0; right:0; top:calc(100% + 4px); display:none; z-index:35; border:1px solid var(--line); border-radius:8px; background:#fff; box-shadow:0 10px 22px rgba(10,25,60,.15); padding:6px; }
     .combo-picker.open .combo-dropdown { display:block; }
+    .step-plugin-picker { flex:1 1 460px; min-width:280px; max-width:700px; }
+    .step-plugin-picker .combo-dropdown { max-height:260px; overflow:auto; }
+    .builder-step-plugin-tree { max-height:232px; overflow:auto; }
     #b_pipeline_tree { max-height:260px; overflow:auto; }
     #builder_namespace_tree { max-height:260px; overflow:auto; border:1px solid var(--line); border-radius:8px; background:#fff; padding:6px; margin-bottom:8px; }
     #builder_namespace_tree .ns-row { display:grid; grid-template-columns: minmax(140px, 38%) minmax(0, 1fr); gap:8px; width:100%; align-items:center; }
@@ -411,6 +449,10 @@ INDEX_HTML = """<!doctype html>
             <option value="admin">admin</option>
             <option value="land-core">land-core</option>
             <option value="gee-lee">gee-lee</option>
+          </select>
+          <label for="nav_env">Env</label>
+          <select id="nav_env">
+            <option value="">env (optional)</option>
           </select>
         </div>
         <input id="nav_live_id" placeholder="run id for live view" />
@@ -502,6 +544,7 @@ INDEX_HTML = """<!doctype html>
                 <button id="btn_builder_generate">Generate</button>
                 <button id="btn_builder_validate">Validate Draft</button>
                 <button id="btn_builder_run" class="spin-btn"><span>Run Pipeline</span><span class="spin"></span></button>
+                <button id="btn_builder_terminate">Terminate Run</button>
                 <span id="builder_msg" class="muted"></span>
               </div>
               <div class="controls">
@@ -509,8 +552,8 @@ INDEX_HTML = """<!doctype html>
                 <input id="b_constraints" placeholder="constraints (optional)" />
               </div>
               <div class="controls">
-                <select id="b_env_name">
-                  <option value="">env (optional)</option>
+                <select id="b_project_id">
+                  <option value="">project (optional)</option>
                 </select>
                 <select id="b_run_mode">
                   <option value="draft">Draft Mode (workspace)</option>
@@ -604,6 +647,7 @@ INDEX_HTML = """<!doctype html>
           <select id="a_executor">
             <option value="local">local</option>
             <option value="slurm">slurm</option>
+            <option value="hpcc_direct">hpcc_direct</option>
           </select>
           <button id="btn_validate">Validate</button>
           <button id="btn_run">Run</button>
@@ -620,7 +664,7 @@ INDEX_HTML = """<!doctype html>
           <input id="a_max_retries" placeholder="max_retries (optional)" />
           <input id="a_retry_delay" placeholder="retry_delay_seconds (optional)" />
           <label class="muted"><input type="checkbox" id="a_dry_run" /> dry_run</label>
-          <label class="muted"><input type="checkbox" id="a_verbose" /> verbose (slurm)</label>
+          <label class="muted"><input type="checkbox" id="a_verbose" /> verbose (slurm/hpcc_direct)</label>
         </div>
         <div class="controls">
           <button id="btn_resume">Resume Selected</button>
@@ -638,6 +682,7 @@ INDEX_HTML = """<!doctype html>
             <option value="">executor override (default: original)</option>
             <option value="local">local</option>
             <option value="slurm">slurm</option>
+            <option value="hpcc_direct">hpcc_direct</option>
           </select>
         </div>
         <div id="detail" class="muted">Select a run to view details.</div>
@@ -671,7 +716,7 @@ INDEX_HTML = """<!doctype html>
       ? decodeURIComponent(window.location.pathname.slice("/datasets/".length))
       : null;
     let builderLoaded = false;
-    let builderModel = { vars: {}, dirs: {}, requires_pipelines: [], steps: [] };
+    let builderModel = { project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] };
     let builderPlugins = [];
     let builderPluginMeta = {};
     let builderPluginStats = {};
@@ -680,6 +725,8 @@ INDEX_HTML = """<!doctype html>
     let builderStepTesting = {};
     let builderStepOutput = {};
     let builderStepOutputCollapsed = {};
+    let builderStepLastLog = {};
+    let builderStepTestJob = {};
     let builderParamIssues = {};
     let builderPipelineRunState = "not-run";
     let builderPipelineRunning = false;
@@ -693,7 +740,12 @@ INDEX_HTML = """<!doctype html>
     let builderValidateInFlight = false;
     let builderNamespaceDigest = "";
     let builderRunSeed = null;
+    let builderLastRunId = "";
+    let builderLastRunExecutor = "";
+    let builderEnvironmentsConfig = "";
+    let builderEnvExecutorMap = {};
     const USER_STORAGE_KEY = "etl_ui_user";
+    const ENV_STORAGE_KEY = "etl_ui_env";
     const VALID_UI_USERS = new Set(["admin", "land-core", "gee-lee"]);
     const _nativeFetch = window.fetch.bind(window);
     function currentAsUser(){
@@ -701,6 +753,10 @@ INDEX_HTML = """<!doctype html>
       const raw = el ? String(el.value || "").trim() : "";
       const val = raw || "admin";
       return VALID_UI_USERS.has(val) ? val : "admin";
+    }
+    function currentEnvName(){
+      const el = document.getElementById("nav_env");
+      return el ? String(el.value || "").trim() : "";
     }
     function withAsUserUrl(inputUrl){
       const txt = String(inputUrl || "");
@@ -737,6 +793,24 @@ INDEX_HTML = """<!doctype html>
         await tick();
       };
     }
+    function initEnvScope(){
+      const sel = document.getElementById("nav_env");
+      if(!sel) return;
+      const stored = String(localStorage.getItem(ENV_STORAGE_KEY) || "").trim();
+      if(stored){
+        sel.setAttribute("data-pref", stored);
+      }
+      sel.onchange = async () => {
+        const next = String(sel.value || "").trim();
+        localStorage.setItem(ENV_STORAGE_KEY, next);
+        if(isBuilderView){
+          await loadBuilderPluginStats();
+          renderBuilderPluginStats();
+          renderBuilderModel();
+          await refreshBuilderNamespace();
+        }
+      };
+    }
     function defaultBuilderDirs(){
       return {
         workdir: "{env.workdir}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}",
@@ -750,6 +824,16 @@ INDEX_HTML = """<!doctype html>
         return out;
       }
       out.dirs = { ...defaultBuilderDirs() };
+      return out;
+    }
+    function normalizeBuilderModelPlugins(model){
+      const out = model || {};
+      out.steps = Array.isArray(out.steps) ? out.steps : [];
+      out.steps = out.steps.map((step) => {
+        const st = step || {};
+        st.plugin = normalizePluginRef(st.plugin || "");
+        return st;
+      });
       return out;
     }
     function deriveBuilderWorkdir(){
@@ -861,7 +945,7 @@ INDEX_HTML = """<!doctype html>
       if(isDatasetsView){
         document.getElementById("page_title").textContent = "Research ETL Datasets";
         document.getElementById("left_title").textContent = "Datasets";
-        document.getElementById("right_title").textContent = "Dataset Detail";
+        document.getElementById("right_title").textContent = "Dataset Detail + Create";
         document.getElementById("ops_panel").style.display = "none";
         document.getElementById("pipelines_panel").style.display = "none";
         document.getElementById("pipeline_summary").style.display = "none";
@@ -870,6 +954,8 @@ INDEX_HTML = """<!doctype html>
         if(isDatasetDetailView){
           selectedDataset = datasetFromPath;
           document.getElementById("f_q").value = datasetFromPath || "";
+        } else {
+          renderDatasetCreateForm();
         }
       }
       if(isBuilderView){
@@ -1010,8 +1096,8 @@ INDEX_HTML = """<!doctype html>
       if (pipeline) body.pipeline = pipeline;
       body.executor = document.getElementById("a_executor").value.trim() || "local";
       const globalConfig = document.getElementById("a_global_config").value.trim();
-      const environmentsConfig = document.getElementById("a_environments_config").value.trim();
-      const env = document.getElementById("a_env").value.trim();
+      const environmentsConfig = document.getElementById("a_environments_config").value.trim() || builderEnvironmentsConfig;
+      const env = document.getElementById("a_env").value.trim() || currentEnvName();
       const pluginsDir = document.getElementById("a_plugins_dir").value.trim();
       const workdir = document.getElementById("a_workdir").value.trim();
       const retries = document.getElementById("a_max_retries").value.trim();
@@ -1049,8 +1135,11 @@ INDEX_HTML = """<!doctype html>
       return [base, ...parts].filter(Boolean).join(" ");
     }
     function buildYamlFromModel(){
-      const m = builderModel || { vars:{}, dirs:{}, requires_pipelines:[], steps:[] };
+      const m = builderModel || { project_id:"", vars:{}, dirs:{}, requires_pipelines:[], steps:[] };
       const lines = [];
+      if ((m.project_id || "").trim()){
+        lines.push(`project_id: ${_yamlEsc(m.project_id)}`);
+      }
       if ((m.requires_pipelines || []).length){
         lines.push("requires_pipelines:");
         for(const r of m.requires_pipelines){ lines.push(`  - ${_yamlEsc(r)}`); }
@@ -1073,7 +1162,15 @@ INDEX_HTML = """<!doctype html>
         lines.push("  - plugin: echo.py");
       } else {
         for(const st of steps){
-          lines.push(`  - plugin: ${_yamlEsc(st.plugin || "echo.py")}`);
+          if ((st.name || "").trim()){
+            lines.push(`  - name: ${_yamlEsc(st.name)}`);
+            lines.push(`    plugin: ${_yamlEsc(st.plugin || "echo.py")}`);
+          } else {
+            lines.push(`  - plugin: ${_yamlEsc(st.plugin || "echo.py")}`);
+          }
+          if (st.enabled === false) {
+            lines.push("    enabled: false");
+          }
           const pentries = Object.entries(st.params || {}).filter(([_, v]) => {
             if (v === null || v === undefined) return false;
             if (typeof v === "string") return String(v).trim().length > 0;
@@ -1123,11 +1220,15 @@ INDEX_HTML = """<!doctype html>
       area.value = next;
       if(changed){
         builderRunSeed = null;
+        builderLastRunId = "";
+        builderLastRunExecutor = "";
         builderValidationState = "unknown";
         builderStepStatus = {};
         builderStepTesting = {};
         builderStepOutput = {};
         builderStepOutputCollapsed = {};
+        builderStepLastLog = {};
+        builderStepTestJob = {};
         builderParamIssues = {};
         builderPipelineRunState = "not-run";
       }
@@ -1163,6 +1264,10 @@ INDEX_HTML = """<!doctype html>
         runBtn.classList.toggle("loading", !!builderPipelineRunning);
         runBtn.disabled = !!builderPipelineRunning;
       }
+      const termBtn = document.getElementById("btn_builder_terminate");
+      if(termBtn){
+        termBtn.disabled = !builderLastRunId || !!builderPipelineRunning;
+      }
     }
     function renderBuilderPreviewPanel(){
       const card = document.getElementById("builder_preview_card");
@@ -1194,39 +1299,77 @@ INDEX_HTML = """<!doctype html>
       const pipeline = normalizeBuilderPipelineName(document.getElementById("b_pipeline_path").value.trim());
       const intent = document.getElementById("b_intent").value.trim();
       const constraints = document.getElementById("b_constraints").value.trim();
-      const envName = document.getElementById("b_env_name").value.trim();
+      const projectId = document.getElementById("b_project_id").value.trim();
+      const envName = currentEnvName();
       const workdir = deriveBuilderWorkdir();
       const retries = document.getElementById("b_max_retries").value.trim();
       const delay = document.getElementById("b_retry_delay").value.trim();
       if (pipeline) body.pipeline = pipeline;
       if (intent) body.intent = intent;
       if (constraints) body.constraints = constraints;
+      if (projectId) body.project_id = projectId;
       if (envName) body.env = envName;
+      if (builderEnvironmentsConfig) body.environments_config = builderEnvironmentsConfig;
       if (workdir) body.workdir = workdir;
       if (retries) body.max_retries = Number(retries);
       if (delay) body.retry_delay_seconds = Number(delay);
       body.dry_run = document.getElementById("b_dry_run").checked;
       return body;
     }
-    async function loadBuilderEnvironments(){
+    async function loadBuilderProjects(){
       if(!isBuilderView) return;
-      const sel = document.getElementById("b_env_name");
+      const sel = document.getElementById("b_project_id");
       const current = String(sel.value || "").trim();
+      const res = await fetch(`/api/builder/projects`);
+      if(!res.ok){
+        document.getElementById("builder_msg").textContent = await readMessage(res);
+        sel.innerHTML = `<option value="">project (optional)</option>`;
+        return;
+      }
+      const payload = await res.json();
+      const projects = Array.isArray(payload.projects) ? payload.projects : [];
+      sel.innerHTML = `<option value="">project (optional)</option>` + projects.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+      const modelProject = String((builderModel && builderModel.project_id) || "").trim();
+      if(current && projects.includes(current)){
+        sel.value = current;
+      } else if(modelProject && projects.includes(modelProject)){
+        sel.value = modelProject;
+      }
+    }
+    async function loadBuilderEnvironments(){
+      const sel = document.getElementById("nav_env");
+      if(!sel) return;
+      const current = String(sel.value || "").trim();
+      const preferred = String(sel.getAttribute("data-pref") || localStorage.getItem(ENV_STORAGE_KEY) || "").trim();
       const qp = new URLSearchParams();
       const res = await fetch(`/api/builder/environments?${qp.toString()}`);
       if(!res.ok){
-        document.getElementById("builder_msg").textContent = await readMessage(res);
         sel.innerHTML = `<option value="">env (optional)</option>`;
+        builderEnvironmentsConfig = "";
+        builderEnvExecutorMap = {};
         return;
       }
       const payload = await res.json();
       const envs = Array.isArray(payload.environments) ? payload.environments : [];
+      builderEnvironmentsConfig = String(payload.environments_config || "").trim();
+      const specs = Array.isArray(payload.environment_specs) ? payload.environment_specs : [];
+      const envExecutorMap = {};
+      for(const spec of specs){
+        const envNameSpec = String((spec && spec.name) || "").trim();
+        const execName = String((spec && spec.executor) || "").trim().toLowerCase();
+        if(!envNameSpec) continue;
+        if(execName) envExecutorMap[envNameSpec] = execName;
+      }
+      builderEnvExecutorMap = envExecutorMap;
       sel.innerHTML = `<option value="">env (optional)</option>` + envs.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join("");
       if(current && envs.includes(current)){
         sel.value = current;
+      } else if(preferred && envs.includes(preferred)){
+        sel.value = preferred;
       } else if(envs.includes("local")){
         sel.value = "local";
       }
+      localStorage.setItem(ENV_STORAGE_KEY, String(sel.value || "").trim());
     }
     async function loadBuilderPlugins(){
       if(!isBuilderView) return;
@@ -1243,14 +1386,51 @@ INDEX_HTML = """<!doctype html>
       renderBuilderPluginStats();
       renderBuilderModel();
     }
+    function stripPySuffix(path){
+      const text = String(path || "").trim();
+      return text.toLowerCase().endsWith(".py") ? text.slice(0, -3) : text;
+    }
+    function pluginPathVariants(path){
+      const raw = String(path || "").trim();
+      if(!raw) return [];
+      const out = [];
+      const add = (v) => {
+        const t = String(v || "").trim();
+        if(!t) return;
+        if(!out.includes(t)) out.push(t);
+      };
+      add(raw);
+      if(raw.toLowerCase().endsWith(".py")){
+        add(raw.slice(0, -3));
+      } else {
+        add(`${raw}.py`);
+      }
+      return out;
+    }
+    function canonicalPluginPath(path){
+      const variants = pluginPathVariants(path);
+      for(const v of variants){
+        if(builderPluginMeta[v]) return v;
+      }
+      return String(path || "").trim();
+    }
+    function normalizePluginRef(path){
+      return stripPySuffix(path);
+    }
+    function builderMetaForPlugin(path){
+      const canonical = canonicalPluginPath(path);
+      if(builderPluginMeta[canonical]) return builderPluginMeta[canonical];
+      return { params: {} };
+    }
     function pluginRecommendation(path){
-      const st = builderPluginStats[String(path || "")] || {};
+      const canonical = canonicalPluginPath(path);
+      const st = builderPluginStats[String(canonical || "")] || {};
       return st.recommendation || {};
     }
     async function loadBuilderPluginStats(){
       if(!isBuilderView) return;
       const qp = new URLSearchParams();
-      const envName = String((document.getElementById("b_env_name") || {}).value || "").trim();
+      const envName = currentEnvName();
       if(envName) qp.set("env", envName);
       const res = await fetch(`/api/plugins/stats?${qp.toString()}`);
       if(!res.ok){
@@ -1414,11 +1594,13 @@ INDEX_HTML = """<!doctype html>
       syncYamlPreview();
     }
     function addBuilderStep(){
-      const firstPlugin = builderPlugins.length ? builderPlugins[0].path : "echo.py";
+      const firstPlugin = normalizePluginRef(builderPlugins.length ? builderPlugins[0].path : "echo.py");
       builderModel.steps = builderModel.steps || [];
       builderModel.steps.push({
+        name:"{sys.step.NN}_Step",
         type:"sequential",
         plugin:firstPlugin,
+        enabled:true,
         params:{},
         resources:{},
         output_var:"",
@@ -1433,12 +1615,14 @@ INDEX_HTML = """<!doctype html>
       syncYamlPreview();
     }
     function insertBuilderStepAt(index){
-      const firstPlugin = builderPlugins.length ? builderPlugins[0].path : "echo.py";
+      const firstPlugin = normalizePluginRef(builderPlugins.length ? builderPlugins[0].path : "echo.py");
       const steps = builderModel.steps || [];
       const idx = Math.max(0, Math.min(Number(index || 0), steps.length));
       steps.splice(idx, 0, {
+        name:"{sys.step.NN}_Step",
         type:"sequential",
         plugin:firstPlugin,
+        enabled:true,
         params:{},
         resources:{},
         output_var:"",
@@ -1568,7 +1752,6 @@ INDEX_HTML = """<!doctype html>
       });
 
       const steps = builderModel.steps || [];
-      const stepLabels = stepDisplayLabels(steps);
       const renderInsertRow = (insertIdx) => {
         const row = document.createElement("div");
         row.className = "builder-insert-row";
@@ -1592,8 +1775,8 @@ INDEX_HTML = """<!doctype html>
         return s === "true" || s === "1" || s === "yes" || s === "on";
       }
       steps.forEach((st, idx) => {
-        const meta = builderPluginMeta[st.plugin] || {params:{}};
-        const pluginOptions = builderPlugins.map(p => `<option value="${esc(p.path)}" ${p.path===st.plugin?"selected":""}>${esc(p.path)}</option>`).join("");
+        const meta = builderMetaForPlugin(st.plugin);
+        const pluginPath = normalizePluginRef(st.plugin);
         const type = st.type || "sequential";
         let paramsHtml = "";
         for(const [pk, pspec] of Object.entries(meta.params || {})){
@@ -1646,6 +1829,8 @@ INDEX_HTML = """<!doctype html>
         card.className = "builder-item";
         const badge = stepStatusMeta(idx);
         const loading = !!builderStepTesting[idx];
+        const lastLogLine = String(builderStepLastLog[idx] || "").trim();
+        const stepInlineStatus = loading ? "Running..." : lastLogLine;
         const rec = pluginRecommendation(st.plugin);
         const recCpu = rec.cpu_cores === null || rec.cpu_cores === undefined ? "" : Number(rec.cpu_cores).toFixed(2);
         const recMem = rec.memory_gb === null || rec.memory_gb === undefined ? "" : Number(rec.memory_gb).toFixed(2);
@@ -1653,6 +1838,11 @@ INDEX_HTML = """<!doctype html>
         const hasRec = !!(recCpu || recMem || recWall);
         st.resources = st.resources || {};
         let typeSpecificHtml = "";
+        const foreachMaxConcurrencyRaw = st.resources?.foreach_max_concurrency;
+        const foreachMaxConcurrency =
+          foreachMaxConcurrencyRaw === null || foreachMaxConcurrencyRaw === undefined
+            ? ""
+            : String(foreachMaxConcurrencyRaw);
         if(type === "parallel"){
           typeSpecificHtml = `<div class="controls"><input data-kind="step-parallel" data-idx="${idx}" value="${esc(st.parallel_with || "")}" placeholder="parallel_with group key" /></div>`;
         } else if (type === "foreach"){
@@ -1681,8 +1871,12 @@ INDEX_HTML = """<!doctype html>
         }
         card.innerHTML = `
           <div class="step-head">
-            <h5>${stepLabels[idx] || `Step ${idx+1}`}</h5>
+            <h5>Step ${idx+1}</h5>
             <span class="status-pill ${badge.klass}">${badge.text}</span>
+          </div>
+          <div class="controls">
+            <label class="muted">Step name</label>
+            <input data-kind="step-name" data-idx="${idx}" value="${esc(st.name || "")}" placeholder="{sys.step.NN}_Step" />
           </div>
           <div class="controls">
             <select data-kind="step-type" data-idx="${idx}">
@@ -1690,13 +1884,21 @@ INDEX_HTML = """<!doctype html>
               <option value="parallel" ${type==="parallel"?"selected":""}>parallel</option>
               <option value="foreach" ${type==="foreach"?"selected":""}>foreach</option>
             </select>
-            <select data-kind="step-plugin" data-idx="${idx}">${pluginOptions}</select>
+            <div class="combo-picker step-plugin-picker" data-idx="${idx}">
+              <input data-kind="step-plugin-input" data-idx="${idx}" value="${esc(pluginPath)}" placeholder="plugin path (browse tree or type exact path)" autocomplete="off" />
+              <div class="combo-dropdown">
+                <div id="b_step_plugin_tree_${idx}" class="builder-step-plugin-tree"></div>
+              </div>
+            </div>
+            <label class="muted"><input type="checkbox" data-kind="step-enabled" data-idx="${idx}" ${st.enabled === false ? "" : "checked"} /> enabled</label>
             <button class="spin-btn ${loading ? "loading" : ""}" data-test-step="${idx}" ${loading ? "disabled" : ""}>
               <span>Test Step</span><span class="spin"></span>
             </button>
+            ${loading ? `<button data-stop-step-test="${idx}">Stop</button>` : ``}
             <button data-apply-step-rec="${idx}" ${hasRec ? "" : "disabled"}>Apply Recommended</button>
             <button data-del-step="${idx}">Remove Step</button>
           </div>
+          <div class="muted">${esc(stepInlineStatus || "")}</div>
           <div class="param-panel">
             <div class="param-panel-title">Input Parameters</div>
             <div class="param-grid">${paramsHtml || '<span class="muted">No plugin params</span>'}</div>
@@ -1707,6 +1909,10 @@ INDEX_HTML = """<!doctype html>
               <div class="param-row"><div class="param-label">cpu_cores</div><div class="param-value"><input data-kind="step-res-cpu" data-idx="${idx}" value="${esc(st.resources.cpu_cores ?? "")}" placeholder="e.g. 4" /></div></div>
               <div class="param-row"><div class="param-label">memory_gb</div><div class="param-value"><input data-kind="step-res-mem" data-idx="${idx}" value="${esc(st.resources.memory_gb ?? "")}" placeholder="e.g. 16" /></div></div>
               <div class="param-row"><div class="param-label">wall_minutes</div><div class="param-value"><input data-kind="step-res-wall" data-idx="${idx}" value="${esc(st.resources.wall_minutes ?? "")}" placeholder="e.g. 60" /></div></div>
+              ${type === "foreach"
+                ? `<div class="param-row"><div class="param-label">foreach_max_concurrency</div><div class="param-value"><input data-kind="step-res-foreach-max-concurrency" data-idx="${idx}" value="${esc(foreachMaxConcurrency)}" placeholder="e.g. 20 (SLURM array %N cap)" /></div></div>`
+                : ``
+              }
             </div>
             <div class="muted">Recommended: cpu=${esc(recCpu || "-")}, mem_gb=${esc(recMem || "-")}, wall_min=${esc(recWall || "-")} (samples=${esc(String(rec.samples || 0))})</div>
           </div>
@@ -1726,6 +1932,7 @@ INDEX_HTML = """<!doctype html>
         stepsEl.appendChild(card);
         renderInsertRow(idx + 1);
       });
+      renderBuilderStepPluginTrees();
     }
     function handleBuilderInput(ev){
       const t = ev.target;
@@ -1779,6 +1986,22 @@ INDEX_HTML = """<!doctype html>
         const idx = Number(t.getAttribute("data-idx") || "-1");
         if(idx < 0 || !builderModel.steps[idx]) return;
         const st = builderModel.steps[idx];
+        if(kind === "step-plugin-input"){
+          const raw = String(t.value || "").trim();
+          if(eventType === "input"){
+            showBuilderStepPluginPicker(idx);
+            filterBuilderStepPluginTree(idx, raw);
+            return;
+          }
+          if(eventType === "change"){
+            const canonical = canonicalPluginPath(raw);
+            if(builderPluginMeta[canonical]){
+              applyBuilderStepPluginSelection(idx, canonical);
+            }
+            return;
+          }
+          return;
+        }
         if(kind === "step-type"){
           st.type = t.value;
           if(st.type === "parallel" && !(String(st.parallel_with || "").trim())){
@@ -1794,7 +2017,11 @@ INDEX_HTML = """<!doctype html>
           renderBuilderModel();
           changed = true;
         }
-        if(kind === "step-plugin"){ st.plugin = t.value; st.params = {}; renderBuilderModel(); changed = true; }
+        if(kind === "step-name"){ st.name = t.value; changed = true; }
+        if(kind === "step-enabled"){
+          st.enabled = !!(t instanceof HTMLInputElement ? t.checked : true);
+          changed = true;
+        }
         if(kind === "step-output"){ st.output_var = t.value; changed = true; }
         if(kind === "step-when"){ st.when = t.value; changed = true; }
         if(kind === "step-parallel"){ st.parallel_with = t.value; changed = true; }
@@ -1806,15 +2033,27 @@ INDEX_HTML = """<!doctype html>
         }
         if(kind === "step-foreach-glob"){ st.foreach_glob = t.value; changed = true; }
         if(kind === "step-foreach-kind"){ st.foreach_kind = t.value; changed = true; }
-        if(kind === "step-res-cpu" || kind === "step-res-mem" || kind === "step-res-wall"){
+        if(
+          kind === "step-res-cpu" ||
+          kind === "step-res-mem" ||
+          kind === "step-res-wall" ||
+          kind === "step-res-foreach-max-concurrency"
+        ){
           st.resources = st.resources || {};
-          const key = kind === "step-res-cpu" ? "cpu_cores" : (kind === "step-res-mem" ? "memory_gb" : "wall_minutes");
+          let key = "wall_minutes";
+          if(kind === "step-res-cpu") key = "cpu_cores";
+          if(kind === "step-res-mem") key = "memory_gb";
+          if(kind === "step-res-foreach-max-concurrency") key = "foreach_max_concurrency";
           const raw = String(t.value ?? "").trim();
           if(!raw.length){
             delete st.resources[key];
           } else {
             const n = Number(raw);
-            st.resources[key] = Number.isNaN(n) ? raw : n;
+            if(key === "foreach_max_concurrency"){
+              st.resources[key] = Number.isNaN(n) ? raw : Math.max(1, Math.trunc(n));
+            } else {
+              st.resources[key] = Number.isNaN(n) ? raw : n;
+            }
           }
           changed = true;
         }
@@ -1866,6 +2105,14 @@ INDEX_HTML = """<!doctype html>
         }
         return;
       }
+      const stopStepBtn = t.closest("[data-stop-step-test]");
+      if(stopStepBtn){
+        const idx = Number(stopStepBtn.getAttribute("data-stop-step-test") || "-1");
+        if(idx >= 0){
+          await stopBuilderStepTestAt(idx);
+        }
+        return;
+      }
       const applyRec = t.getAttribute("data-apply-step-rec");
       if (applyRec !== null){
         const idx = Number(applyRec);
@@ -1908,6 +2155,8 @@ INDEX_HTML = """<!doctype html>
         builderModel.steps.splice(didx,1);
         delete builderStepOutput[didx];
         delete builderStepOutputCollapsed[didx];
+        delete builderStepLastLog[didx];
+        delete builderStepTestJob[didx];
         renderBuilderModel();
         syncYamlPreview();
         return;
@@ -1921,6 +2170,156 @@ INDEX_HTML = """<!doctype html>
       let i = 1;
       while(files.has(`new_pipeline_${i}.yml`)) i++;
       return `new_pipeline_${i}.yml`;
+    }
+    function buildBuilderPluginJsTreeData(paths){
+      const nodes = [];
+      const seenDirs = new Set();
+      const all = Array.isArray(paths) ? paths.map(x => String(x || "").replaceAll("\\\\", "/").trim()).filter(Boolean) : [];
+      for(const rel of all){
+        const parts = rel.split("/").filter(Boolean);
+        if(!parts.length) continue;
+        let parentId = "#";
+        for(let i=0; i<parts.length - 1; i++){
+          const seg = parts[i];
+          const dpath = parts.slice(0, i + 1).join("/");
+          const did = `pd:${dpath}`;
+          if(!seenDirs.has(did)){
+            seenDirs.add(did);
+            nodes.push({ id: did, parent: parentId, text: seg, type: "dir", icon: "jstree-folder" });
+          }
+          parentId = did;
+        }
+        const fname = parts[parts.length - 1];
+        const displayName = fname.toLowerCase().endsWith(".py") ? fname.slice(0, -3) : fname;
+        nodes.push({ id: `pf:${rel}`, parent: parentId, text: displayName, type: "file", icon: "jstree-file", relpath: rel });
+      }
+      return nodes;
+    }
+    function hideBuilderStepPluginPickers(exceptIdx = null){
+      const pickers = Array.from(document.querySelectorAll(".step-plugin-picker.open"));
+      for(const picker of pickers){
+        const idx = Number((picker instanceof HTMLElement ? picker.getAttribute("data-idx") : "") || "-1");
+        if(exceptIdx !== null && idx === Number(exceptIdx)) continue;
+        picker.classList.remove("open");
+      }
+    }
+    function showBuilderStepPluginPicker(idx){
+      const picker = document.querySelector(`.step-plugin-picker[data-idx="${idx}"]`);
+      if(!(picker instanceof HTMLElement)) return;
+      hideBuilderStepPluginPickers(idx);
+      picker.classList.add("open");
+    }
+    function filterBuilderStepPluginTree(idx, query){
+      const holder = document.getElementById(`b_step_plugin_tree_${idx}`);
+      const $ = window.jQuery;
+      if(!holder || !$ || !$.fn || !$.fn.jstree) return;
+      const inst = $(holder).jstree(true);
+      if(!inst) return;
+      try {
+        inst.search(String(query || "").trim());
+      } catch {}
+    }
+    function applyBuilderStepPluginSelection(idx, pluginPath){
+      const steps = builderModel.steps || [];
+      if(idx < 0 || idx >= steps.length) return;
+      const chosen = normalizePluginRef(pluginPath);
+      if(!chosen) return;
+      const st = steps[idx];
+      if(String(st.plugin || "") === chosen){
+        hideBuilderStepPluginPickers();
+        return;
+      }
+      st.plugin = chosen;
+      st.params = {};
+      renderBuilderModel();
+      syncYamlPreview();
+      hideBuilderStepPluginPickers();
+    }
+    function renderBuilderStepPluginTrees(){
+      const $ = window.jQuery;
+      if(!$ || !$.fn || !$.fn.jstree) return;
+      const pluginPaths = (builderPlugins || []).map(p => String((p || {}).path || "").trim()).filter(Boolean);
+      (builderModel.steps || []).forEach((st, idx) => {
+        const holder = document.getElementById(`b_step_plugin_tree_${idx}`);
+        if(!holder) return;
+        const data = buildBuilderPluginJsTreeData(pluginPaths);
+        const $holder = $(holder);
+        try { $holder.jstree("destroy"); } catch {}
+        $holder.off(".jstree");
+        holder.innerHTML = "";
+        $holder.jstree({
+          core: { data, multiple: false },
+          plugins: ["wholerow", "sort", "search"],
+          search: { show_only_matches: true, case_insensitive: true },
+          sort: function(a, b){
+            const na = this.get_node(a);
+            const nb = this.get_node(b);
+            const ta = na?.original?.type || "";
+            const tb = nb?.original?.type || "";
+            if(ta !== tb) return ta === "dir" ? -1 : 1;
+            return String(na?.text || "").localeCompare(String(nb?.text || ""));
+          },
+        });
+        $holder.on("select_node.jstree", function(_ev, payload){
+          const node = payload?.node;
+          if(!node) return;
+          const inst = $holder.jstree(true);
+          const ntype = String(node.original?.type || "");
+          if(ntype === "dir"){
+            if(inst){
+              if(inst.is_open(node)) inst.close_node(node);
+              else inst.open_node(node);
+            }
+            return;
+          }
+          if(ntype !== "file") return;
+          const rel = String(node.original?.relpath || "").trim();
+          if(!rel) return;
+          applyBuilderStepPluginSelection(idx, rel);
+        });
+        $holder.on("ready.jstree", function(){
+          const inst = $holder.jstree(true);
+          if(!inst) return;
+          const selectedPath = canonicalPluginPath(st.plugin);
+          if(!selectedPath) return;
+          const nodeId = `pf:${selectedPath}`;
+          if(!inst.get_node(nodeId)) return;
+          try {
+            inst.deselect_all(true);
+            inst.select_node(nodeId, false, true);
+            let parent = inst.get_parent(nodeId);
+            while(parent && parent !== "#"){
+              inst.open_node(parent);
+              parent = inst.get_parent(parent);
+            }
+          } catch {}
+        });
+      });
+    }
+    function handleBuilderStepPluginPickerFocus(ev){
+      const t = ev.target;
+      if(!(t instanceof HTMLInputElement)) return;
+      if(t.getAttribute("data-kind") !== "step-plugin-input") return;
+      const idx = Number(t.getAttribute("data-idx") || "-1");
+      if(idx < 0) return;
+      showBuilderStepPluginPicker(idx);
+      filterBuilderStepPluginTree(idx, "");
+    }
+    function handleBuilderStepPluginPickerInput(ev){
+      const t = ev.target;
+      if(!(t instanceof HTMLInputElement)) return;
+      if(t.getAttribute("data-kind") !== "step-plugin-input") return;
+      const idx = Number(t.getAttribute("data-idx") || "-1");
+      if(idx < 0) return;
+      showBuilderStepPluginPicker(idx);
+      filterBuilderStepPluginTree(idx, t.value);
+    }
+    function handleBuilderStepPluginPickerOutsideMouseDown(ev){
+      const t = ev.target;
+      if(!(t instanceof Node)) return;
+      const inPicker = (t instanceof Element) ? t.closest(".step-plugin-picker") : null;
+      if(inPicker) return;
+      hideBuilderStepPluginPickers();
     }
     function buildBuilderJsTreeData(files){
       const nodes = [];
@@ -2095,7 +2494,13 @@ INDEX_HTML = """<!doctype html>
       if(!pipeline){
         pipeline = await suggestNewPipelineName();
         document.getElementById("b_pipeline_path").value = pipeline;
-        builderModel = ensureBuilderDefaultDirs({ vars: {}, dirs: {}, requires_pipelines: [], steps: [] });
+        builderModel = normalizeBuilderModelPlugins(
+          ensureBuilderDefaultDirs({ project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] })
+        );
+        const projectSel = document.getElementById("b_project_id");
+        if(projectSel){
+          builderModel.project_id = String(projectSel.value || "").trim();
+        }
         builderRunSeed = null;
         await loadBuilderPlugins();
         renderBuilderModel();
@@ -2109,11 +2514,28 @@ INDEX_HTML = """<!doctype html>
       const res = await fetch(`/api/builder/source?pipeline=${encodeURIComponent(pipeline)}`);
       if(!res.ok){
         document.getElementById("builder_msg").textContent = await readMessage(res);
-        builderModel = ensureBuilderDefaultDirs({ vars: {}, dirs: {}, requires_pipelines: [], steps: [] });
+        builderModel = normalizeBuilderModelPlugins(
+          ensureBuilderDefaultDirs({ project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] })
+        );
+        const projectSel = document.getElementById("b_project_id");
+        if(projectSel){
+          builderModel.project_id = String(projectSel.value || "").trim();
+        }
         builderRunSeed = null;
       } else {
         const payload = await res.json();
-        builderModel = ensureBuilderDefaultDirs(payload.model || { vars: {}, dirs: {}, requires_pipelines: [], steps: [] });
+        builderModel = normalizeBuilderModelPlugins(
+          ensureBuilderDefaultDirs(payload.model || { project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] })
+        );
+        const projectSel = document.getElementById("b_project_id");
+        if(projectSel){
+          const pid = String((builderModel && builderModel.project_id) || "").trim();
+          if(pid){
+            projectSel.value = pid;
+          } else {
+            builderModel.project_id = String(projectSel.value || "").trim();
+          }
+        }
         builderRunSeed = null;
       }
       await loadBuilderPlugins();
@@ -2223,6 +2645,12 @@ INDEX_HTML = """<!doctype html>
 
       msg.textContent = "Submitting run...";
       const runBody = {};
+      if(payload.env) runBody.env = payload.env;
+      if(payload.environments_config) runBody.environments_config = payload.environments_config;
+      if(payload.env && builderEnvExecutorMap[payload.env]){
+        runBody.executor = builderEnvExecutorMap[payload.env];
+      }
+      if(payload.executor) runBody.executor = payload.executor;
       if(payload.plugins_dir) runBody.plugins_dir = payload.plugins_dir;
       if(payload.workdir) runBody.workdir = payload.workdir;
       if(payload.max_retries !== undefined) runBody.max_retries = payload.max_retries;
@@ -2251,9 +2679,37 @@ INDEX_HTML = """<!doctype html>
       }
       const data = await runRes.json();
       builderPipelineRunState = data.success === false ? "failed" : "run_ok";
+      builderLastRunId = String(data.run_id || "").trim();
+      builderLastRunExecutor = String(data.executor || runBody.executor || "").trim().toLowerCase();
       builderPipelineRunning = false;
       renderBuilderPipelineStatus();
       msg.textContent = `Run ${data.run_id} (${data.state || "submitted"}) [${runMode}]`;
+      out.textContent = JSON.stringify(data, null, 2);
+    }
+    async function terminateBuilderPipeline(){
+      const msg = document.getElementById("builder_msg");
+      const out = document.getElementById("builder_output");
+      const runId = String(builderLastRunId || "").trim();
+      if(!runId){
+        msg.textContent = "No run selected to terminate.";
+        return;
+      }
+      msg.textContent = `Terminating ${runId}...`;
+      const body = {};
+      if(builderLastRunExecutor){
+        body.executor = builderLastRunExecutor;
+      }
+      const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/stop`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(body),
+      });
+      if(!res.ok){
+        msg.textContent = await readMessage(res);
+        return;
+      }
+      const data = await res.json();
+      msg.textContent = data.message || `Terminate requested for ${runId}`;
       out.textContent = JSON.stringify(data, null, 2);
     }
     async function generateBuilderDraft(){
@@ -2275,7 +2731,16 @@ INDEX_HTML = """<!doctype html>
         return;
       }
       const data = await res.json();
-      builderModel = data.model || builderModel;
+      builderModel = normalizeBuilderModelPlugins(ensureBuilderDefaultDirs(data.model || builderModel));
+      const projectSel = document.getElementById("b_project_id");
+      if(projectSel){
+        const pid = String((builderModel && builderModel.project_id) || "").trim();
+        if(pid){
+          projectSel.value = pid;
+        } else {
+          builderModel.project_id = String(projectSel.value || "").trim();
+        }
+      }
       builderRunSeed = null;
       renderBuilderModel();
       syncYamlPreview();
@@ -2341,10 +2806,34 @@ INDEX_HTML = """<!doctype html>
         builderValidateInFlight = false;
       }
     }
+    function _sleep(ms){
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    async function stopBuilderStepTestAt(idx){
+      const msg = document.getElementById("builder_msg");
+      const testId = String(builderStepTestJob[idx] || "").trim();
+      if(!testId){
+        msg.textContent = "No running step test to stop.";
+        return;
+      }
+      const res = await fetch(`/api/builder/test-step/stop`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ test_id: testId }),
+      });
+      if(!res.ok){
+        msg.textContent = await readMessage(res);
+        return;
+      }
+      builderStepLastLog[idx] = "Stop requested...";
+      renderBuilderModel();
+      msg.textContent = `Stop requested for step ${idx + 1}.`;
+    }
     async function testBuilderStepAt(idx){
       const msg = document.getElementById("builder_msg");
       const out = document.getElementById("builder_output");
       builderStepTesting[idx] = true;
+      builderStepLastLog[idx] = "Running...";
       renderBuilderModel();
       msg.textContent = `Validating draft before step ${idx + 1} test...`;
       const prePayload = builderPayload();
@@ -2363,6 +2852,7 @@ INDEX_HTML = """<!doctype html>
         setBuilderParamIssues(unresolved);
         builderValidationState = "unknown";
         delete builderStepTesting[idx];
+        builderStepLastLog[idx] = "Validation failed before step test.";
         renderBuilderModel();
         if(detail && typeof detail === "object"){
           msg.textContent = String(detail.message || "Validation failed.");
@@ -2382,23 +2872,88 @@ INDEX_HTML = """<!doctype html>
       payload.run_id = seed.run_id;
       payload.run_started_at = seed.run_started_at;
       payload.step_index = idx;
-      const res = await fetch(`/api/builder/test-step`, {
+      const startRes = await fetch(`/api/builder/test-step/start`, {
         method:"POST",
         headers: {"Content-Type":"application/json"},
         body: JSON.stringify(payload),
       });
-      if(!res.ok){
+      if(!startRes.ok){
         builderStepStatus[idx] = "failed";
         delete builderStepTesting[idx];
+        const errText = await readMessage(startRes);
+        builderStepLastLog[idx] = errText || "Step test failed.";
         renderBuilderModel();
-        msg.textContent = await readMessage(res);
+        msg.textContent = errText;
         return;
       }
-      const data = await res.json();
+      const startData = await startRes.json();
+      const testId = String(startData.test_id || "").trim();
+      if(!testId){
+        builderStepStatus[idx] = "failed";
+        delete builderStepTesting[idx];
+        builderStepLastLog[idx] = "Failed to start step test.";
+        renderBuilderModel();
+        msg.textContent = "Failed to start step test.";
+        return;
+      }
+      builderStepTestJob[idx] = testId;
+
+      let data = null;
+      while(true){
+        await _sleep(700);
+        const statusRes = await fetch(`/api/builder/test-step/status?test_id=${encodeURIComponent(testId)}`);
+        if(!statusRes.ok){
+          builderStepStatus[idx] = "failed";
+          delete builderStepTesting[idx];
+          delete builderStepTestJob[idx];
+          const errText = await readMessage(statusRes);
+          builderStepLastLog[idx] = errText || "Step test failed.";
+          renderBuilderModel();
+          msg.textContent = errText;
+          return;
+        }
+        const statusPayload = await statusRes.json();
+        const state = String(statusPayload.state || "").trim().toLowerCase();
+        if(state === "running" || state === "queued"){
+          continue;
+        }
+        if(state === "cancelled"){
+          builderStepStatus[idx] = "failed";
+          delete builderStepTesting[idx];
+          delete builderStepTestJob[idx];
+          builderStepLastLog[idx] = "Step test cancelled.";
+          renderBuilderModel();
+          msg.textContent = `Step ${idx + 1} cancelled.`;
+          return;
+        }
+        if(state !== "completed"){
+          builderStepStatus[idx] = "failed";
+          delete builderStepTesting[idx];
+          delete builderStepTestJob[idx];
+          const errText = String(statusPayload.error || statusPayload.detail || "Step test failed.");
+          builderStepLastLog[idx] = errText;
+          renderBuilderModel();
+          msg.textContent = errText;
+          return;
+        }
+        data = statusPayload.result || null;
+        break;
+      }
+      if(!data){
+        builderStepStatus[idx] = "failed";
+        delete builderStepTesting[idx];
+        delete builderStepTestJob[idx];
+        builderStepLastLog[idx] = "Step test failed.";
+        renderBuilderModel();
+        msg.textContent = "Step test failed.";
+        return;
+      }
       builderStepStatus[idx] = data.success ? "run_ok" : "failed";
       builderStepOutput[idx] = JSON.stringify(data, null, 2);
       builderStepOutputCollapsed[idx] = false;
+      builderStepLastLog[idx] = String(data.last_log_line || (data.success ? "Step test completed." : data.error || "Step test failed."));
       delete builderStepTesting[idx];
+      delete builderStepTestJob[idx];
       renderBuilderModel();
       msg.textContent = `Step ${data.step_name}: ${data.success ? "successful" : "failed"}`;
       out.textContent = JSON.stringify(data, null, 2);
@@ -2802,6 +3357,71 @@ INDEX_HTML = """<!doctype html>
         window.location.href = `/datasets/${encodeURIComponent(selectedDataset)}`;
       });
     }
+    function renderDatasetCreateForm(msgText = "", isError = false){
+      if(!isDatasetsView || isDatasetDetailView) return;
+      const detailEl = document.getElementById("detail");
+      detailEl.innerHTML = `
+        <div><b>Add Dataset</b></div>
+        <div class="muted">Create or update a dataset record in the registry.</div>
+        <div class="controls">
+          <input id="ds_dataset_id" placeholder="dataset_id (required, e.g. serve.demo_v1)" />
+          <input id="ds_data_class" placeholder="data_class (optional, e.g. SERVE)" />
+        </div>
+        <div class="controls">
+          <input id="ds_owner_user" placeholder="owner_user (optional)" />
+          <input id="ds_status" placeholder="status (optional, default: active)" />
+        </div>
+        <div class="controls">
+          <button id="btn_dataset_add">Add Dataset</button>
+          <span id="dataset_add_msg" class="${isError ? "bad" : "muted"}">${esc(msgText)}</span>
+        </div>
+      `;
+      const btn = document.getElementById("btn_dataset_add");
+      if(btn){
+        btn.onclick = createDatasetFromForm;
+      }
+    }
+    async function createDatasetFromForm(){
+      const msgEl = document.getElementById("dataset_add_msg");
+      const datasetId = document.getElementById("ds_dataset_id").value.trim();
+      const dataClass = document.getElementById("ds_data_class").value.trim();
+      const ownerUser = document.getElementById("ds_owner_user").value.trim();
+      const status = document.getElementById("ds_status").value.trim();
+      if(!datasetId){
+        if(msgEl){
+          msgEl.className = "bad";
+          msgEl.textContent = "dataset_id is required.";
+        }
+        return;
+      }
+      if(msgEl){
+        msgEl.className = "muted";
+        msgEl.textContent = "Saving...";
+      }
+      const payload = { dataset_id: datasetId };
+      if(dataClass) payload.data_class = dataClass;
+      if(ownerUser) payload.owner_user = ownerUser;
+      if(status) payload.status = status;
+      const res = await fetch("/api/datasets", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(payload),
+      });
+      if(!res.ok){
+        const msg = await readMessage(res);
+        if(msgEl){
+          msgEl.className = "bad";
+          msgEl.textContent = msg;
+        }
+        return;
+      }
+      const out = await res.json();
+      if(msgEl){
+        msgEl.className = "ok";
+        msgEl.textContent = out.created ? `Created ${out.dataset_id}` : `Updated ${out.dataset_id}`;
+      }
+      await loadDatasets();
+    }
     async function loadDatasetDetail(){
       if(!isDatasetsView) return;
       if(isDatasetDetailView){
@@ -2966,11 +3586,11 @@ INDEX_HTML = """<!doctype html>
       }
       await tick();
     }
-    async function quickStop(runId){
+    async function quickStop(runId, body=null){
       const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/stop`, {
         method:"POST",
         headers: {"Content-Type":"application/json"},
-        body: "{}",
+        body: JSON.stringify(body || {}),
       });
       if(!res.ok){
         return await readMessage(res);
@@ -3051,6 +3671,7 @@ INDEX_HTML = """<!doctype html>
     initViewMode();
     setActiveNav();
     initUserScope();
+    initEnvScope();
     document.getElementById("btn_apply").onclick = tick;
     document.getElementById("btn_ops_refresh").onclick = tick;
     document.getElementById("btn_pipelines").onclick = tick;
@@ -3090,12 +3711,12 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("btn_builder_generate").onclick = generateBuilderDraft;
     document.getElementById("btn_builder_validate").onclick = validateBuilderDraft;
     document.getElementById("btn_builder_run").onclick = runBuilderPipeline;
+    document.getElementById("btn_builder_terminate").onclick = terminateBuilderPipeline;
     document.getElementById("btn_plugins_refresh").onclick = tick;
     document.getElementById("plugins_env").onchange = tick;
-    document.getElementById("b_env_name").onchange = async () => {
-      await loadBuilderPluginStats();
-      renderBuilderPluginStats();
-      renderBuilderModel();
+    document.getElementById("b_project_id").onchange = () => {
+      builderModel.project_id = String(document.getElementById("b_project_id").value || "").trim();
+      syncYamlPreview();
     };
     document.getElementById("b_requires").addEventListener("input", handleBuilderInput);
     document.getElementById("b_vars").addEventListener("input", handleBuilderInput);
@@ -3105,6 +3726,9 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("b_dirs").addEventListener("change", handleBuilderInput);
     document.getElementById("b_steps").addEventListener("input", handleBuilderInput);
     document.getElementById("b_steps").addEventListener("change", handleBuilderInput);
+    document.getElementById("b_steps").addEventListener("focusin", handleBuilderStepPluginPickerFocus, true);
+    document.getElementById("b_steps").addEventListener("input", handleBuilderStepPluginPickerInput, true);
+    document.addEventListener("mousedown", handleBuilderStepPluginPickerOutsideMouseDown);
     document.getElementById("b_requires").addEventListener("click", handleBuilderClicks);
     document.getElementById("b_vars").addEventListener("click", handleBuilderClicks);
     document.getElementById("b_dirs").addEventListener("click", handleBuilderClicks);
@@ -3115,9 +3739,16 @@ INDEX_HTML = """<!doctype html>
     initBuilderTreeComboBehavior();
     initBuilderTooltipResolution();
     loadPluginEnvOptions();
-    loadBuilderEnvironments();
+    loadBuilderProjects();
+    loadBuilderEnvironments().then(async () => {
+      if(isBuilderView){
+        await loadBuilderPluginStats();
+        renderBuilderPluginStats();
+        renderBuilderModel();
+      }
+      await refreshBuilderNamespace();
+    });
     refreshBuilderTreeFiles();
-    refreshBuilderNamespace();
     tick(); setInterval(tick, 12000);
   </script>
 </body>
@@ -3404,6 +4035,29 @@ def api_datasets(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def _parse_dataset_create_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
+    payload = payload or {}
+    dataset_id = str(payload.get("dataset_id") or "").strip()
+    if not dataset_id:
+        raise HTTPException(status_code=400, detail="`dataset_id` is required.")
+    return {
+        "dataset_id": dataset_id,
+        "data_class": str(payload.get("data_class") or "").strip() or None,
+        "owner_user": str(payload.get("owner_user") or "").strip() or None,
+        "status": str(payload.get("status") or "").strip() or None,
+    }
+
+
+@app.post("/api/datasets")
+def api_create_dataset(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    _ = _resolve_user_scope(request)
+    args = _parse_dataset_create_payload(payload)
+    try:
+        return create_dataset(**args)
+    except DatasetServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/datasets/{dataset_id:path}")
 def api_dataset_detail(request: Request, dataset_id: str) -> dict:
     _ = _resolve_user_scope(request)
@@ -3555,9 +4209,30 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
     environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
     env_name = env_name_raw or None
 
-    executor = str(payload.get("executor") or "local").strip().lower()
-    if executor not in {"local", "slurm"}:
-        raise HTTPException(status_code=400, detail="`executor` must be one of: local, slurm.")
+    executor = str(payload.get("executor") or "").strip().lower()
+
+    # Match CLI behavior: when an execution environment is selected, its
+    # declared executor is authoritative.
+    if env_name:
+        try:
+            resolved_env_cfg = resolve_execution_config_path(environments_config_path)
+        except ExecutionConfigError as exc:
+            raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
+        if resolved_env_cfg:
+            try:
+                envs = load_execution_config(resolved_env_cfg)
+            except ExecutionConfigError as exc:
+                raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
+            env_spec = envs.get(env_name)
+            if isinstance(env_spec, dict):
+                env_exec = str(env_spec.get("executor") or "").strip().lower()
+                if env_exec:
+                    executor = env_exec
+
+    if not executor:
+        executor = "local"
+    if executor not in {"local", "slurm", "hpcc_direct"}:
+        raise HTTPException(status_code=400, detail="`executor` must be one of: local, slurm, hpcc_direct.")
 
     max_retries = _parse_optional_int(payload.get("max_retries"), field_name="max_retries")
     retry_delay_seconds = _parse_optional_float(payload.get("retry_delay_seconds"), field_name="retry_delay_seconds")
@@ -3688,6 +4363,28 @@ def _resolve_builder_env_vars(
     return resolve_execution_env_templates(resolved_env, global_vars=global_vars or {})
 
 
+def _resolve_builder_project_vars(yaml_text: str) -> tuple[Optional[str], dict[str, Any]]:
+    try:
+        import yaml
+
+        raw = yaml.safe_load(yaml_text) or {}
+    except Exception:
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    project_id = normalize_project_id(str(raw.get("project_id") or "").strip() or None)
+    if not project_id:
+        meta = raw.get("metadata")
+        if isinstance(meta, dict):
+            project_id = normalize_project_id(str(meta.get("project_id") or "").strip() or None)
+    try:
+        projects_config_path = resolve_projects_config_path(None)
+        project_vars = load_project_vars(project_id=project_id, projects_config_path=projects_config_path)
+    except ProjectConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+    return project_id, project_vars
+
+
 def _parse_pipeline_from_yaml_text(
     yaml_text: str,
     *,
@@ -3697,6 +4394,7 @@ def _parse_pipeline_from_yaml_text(
 ) -> Pipeline:
     if not (yaml_text or "").strip():
         raise HTTPException(status_code=400, detail="`yaml_text` is required.")
+    _, project_vars = _resolve_builder_project_vars(yaml_text)
     global_vars = _resolve_global_vars(global_config_path)
     env_vars = _resolve_builder_env_vars(
         environments_config_path=environments_config_path,
@@ -3707,7 +4405,7 @@ def _parse_pipeline_from_yaml_text(
         tmp.write(yaml_text)
         tmp_path = Path(tmp.name)
     try:
-        return parse_pipeline(tmp_path, global_vars=global_vars, env_vars=env_vars)
+        return parse_pipeline(tmp_path, global_vars=global_vars, env_vars=env_vars, project_vars=project_vars)
     except (PipelineError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid draft pipeline: {exc}") from exc
     finally:
@@ -3834,6 +4532,10 @@ def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
         data = {}
     vars_section = data.get("vars", {}) or {}
     dirs_section = data.get("dirs", {}) or {}
+    project_id = str(data.get("project_id") or "").strip()
+    metadata_section = data.get("metadata")
+    if not project_id and isinstance(metadata_section, dict):
+        project_id = str(metadata_section.get("project_id") or "").strip()
     reqs = data.get("requires_pipelines", []) or []
     steps_section = data.get("steps", []) or []
 
@@ -3870,10 +4572,23 @@ def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
                 stype = "foreach"
             elif step_map.get("parallel_with"):
                 stype = "parallel"
+            enabled_raw = step_map.get("enabled")
+            if enabled_raw is None and "Enabled" in step_map:
+                enabled_raw = step_map.get("Enabled")
+            disabled_raw = step_map.get("disabled")
+            if disabled_raw is None and "Disabled" in step_map:
+                disabled_raw = step_map.get("Disabled")
+            enabled = True
+            if isinstance(enabled_raw, bool):
+                enabled = enabled_raw
+            elif isinstance(disabled_raw, bool):
+                enabled = not disabled_raw
             model_steps.append(
                 {
+                    "name": str(step_map.get("name") or ""),
                     "type": stype,
                     "plugin": plugin_ref,
+                    "enabled": enabled,
                     "params": params,
                     "resources": resources,
                     "output_var": str(step_map.get("output_var") or ""),
@@ -3886,6 +4601,7 @@ def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
                 }
             )
     return {
+        "project_id": project_id,
         "vars": vars_section if isinstance(vars_section, dict) else {},
         "dirs": dirs_section if isinstance(dirs_section, dict) else {},
         "requires_pipelines": [str(x) for x in reqs if str(x).strip()] if isinstance(reqs, list) else [],
@@ -3939,6 +4655,7 @@ def _build_builder_namespace(
     pipeline: Pipeline,
     global_vars: dict[str, Any],
     env_vars: dict[str, Any],
+    project_vars: Optional[dict[str, Any]] = None,
     raw_vars: Optional[dict[str, Any]] = None,
     raw_dirs: Optional[dict[str, Any]] = None,
     preview_run_id: Optional[str] = None,
@@ -3989,7 +4706,7 @@ def _build_builder_namespace(
         seed_flat: dict[str, Any],
         max_passes: int,
     ) -> tuple[dict[str, Any], int, bool]:
-        reserved = {"sys", "global", "globals", "env", "vars", "dirs", "resolution"}
+        reserved = {"sys", "global", "globals", "env", "project", "projects", "vars", "dirs", "resolution"}
         current = dict(flat_map or {})
         for i in range(max_passes):
             ctx = dict(base_ctx)
@@ -4052,12 +4769,13 @@ def _build_builder_namespace(
     }
     global_ns = dict(global_vars or {})
     env_ns = dict(env_vars or {})
+    project_ns = dict(project_vars or {})
     vars_ns = dict(pipeline.vars or {})
     dirs_ns = dict(pipeline.dirs or {})
     vars_preview = dict(raw_vars or vars_ns)
     dirs_preview = dict(raw_dirs or dirs_ns)
     seed_flat: dict[str, Any] = {}
-    for source in (global_ns, env_ns, vars_preview):
+    for source in (global_ns, env_ns, project_ns, vars_preview):
         for k, v in source.items():
             seed_flat[str(k)] = v
     flat_ns: dict[str, Any] = {}
@@ -4071,6 +4789,8 @@ def _build_builder_namespace(
             "global": global_ns,
             "globals": global_ns,
             "env": env_ns,
+            "project": project_ns,
+            "projects": project_ns,
             "pipe": vars_ns,
             "vars": vars_ns,
             "dirs": dirs_ns,
@@ -4082,6 +4802,7 @@ def _build_builder_namespace(
         "sys": sys_ns,
         "global": global_ns,
         "env": env_ns,
+        "project": project_ns,
         "vars": vars_ns,
         "dirs": dirs_ns,
         "resolution": {
@@ -4600,16 +5321,56 @@ def api_builder_environments(
         envs = load_execution_config(resolved)
     except ExecutionConfigError as exc:
         raise HTTPException(status_code=400, detail=f"Environments config error: {exc}") from exc
+    env_specs: list[dict[str, str]] = []
+    for name, spec in sorted(envs.items(), key=lambda kv: str(kv[0])):
+        executor = ""
+        if isinstance(spec, dict):
+            executor = str(spec.get("executor") or "").strip().lower()
+        env_specs.append({"name": str(name), "executor": executor})
     return {
         "environments_config": str(resolved),
         "environments": sorted(str(k) for k in envs.keys()),
+        "environment_specs": env_specs,
     }
+
+
+@app.get("/api/builder/projects")
+def api_builder_projects(request: Request, projects_config: Optional[str] = Query(default=None)) -> dict:
+    _ = _resolve_user_scope(request)
+    raw = str(projects_config or "").strip()
+    cfg_path = Path(raw).expanduser() if raw else None
+    try:
+        resolved = resolve_projects_config_path(cfg_path)
+    except ProjectConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+    if not resolved:
+        return {"projects_config": None, "projects": []}
+    try:
+        import yaml
+
+        data = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+    if not isinstance(data, dict):
+        return {"projects_config": str(resolved), "projects": []}
+    projects_section = data.get("projects")
+    projects_map = projects_section if isinstance(projects_section, dict) else data
+    project_ids: list[str] = []
+    for k in projects_map.keys():
+        pid = normalize_project_id(str(k))
+        if not pid:
+            continue
+        if pid == "default":
+            continue
+        project_ids.append(pid)
+    return {"projects_config": str(resolved), "projects": sorted(set(project_ids))}
 
 
 @app.post("/api/builder/resolve-text")
 def api_builder_resolve_text(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     payload = payload or {}
     value = str(payload.get("value") or "")
+    yaml_text = str(payload.get("yaml_text") or "")
     global_config_raw = str(payload.get("global_config") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
     environments_config_raw = str(payload.get("environments_config") or "").strip()
@@ -4621,9 +5382,10 @@ def api_builder_resolve_text(payload: Optional[dict[str, Any]] = Body(default=No
         env_name=env_name,
         global_vars=global_vars,
     )
-    raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(str(payload.get("yaml_text") or ""))
+    _, project_vars = _resolve_builder_project_vars(yaml_text)
+    raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(yaml_text)
     pipeline = _parse_pipeline_from_yaml_text(
-        str(payload.get("yaml_text") or ""),
+        yaml_text,
         global_config_path=global_config_path,
         environments_config_path=environments_config_path,
         env_name=env_name,
@@ -4632,6 +5394,7 @@ def api_builder_resolve_text(payload: Optional[dict[str, Any]] = Body(default=No
         pipeline=pipeline,
         global_vars=global_vars,
         env_vars=env_vars,
+        project_vars=project_vars,
         raw_vars=raw_vars,
         raw_dirs=raw_dirs,
     )
@@ -4644,6 +5407,7 @@ def api_builder_resolve_text(payload: Optional[dict[str, Any]] = Body(default=No
 @app.post("/api/builder/namespace")
 def api_builder_namespace(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     payload = payload or {}
+    yaml_text = str(payload.get("yaml_text") or "")
     global_config_raw = str(payload.get("global_config") or "").strip()
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
     environments_config_raw = str(payload.get("environments_config") or "").strip()
@@ -4655,9 +5419,10 @@ def api_builder_namespace(payload: Optional[dict[str, Any]] = Body(default=None)
         env_name=env_name,
         global_vars=global_vars,
     )
-    raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(str(payload.get("yaml_text") or ""))
+    _, project_vars = _resolve_builder_project_vars(yaml_text)
+    raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(yaml_text)
     pipeline = _parse_pipeline_from_yaml_text(
-        str(payload.get("yaml_text") or ""),
+        yaml_text,
         global_config_path=global_config_path,
         environments_config_path=environments_config_path,
         env_name=env_name,
@@ -4666,6 +5431,7 @@ def api_builder_namespace(payload: Optional[dict[str, Any]] = Body(default=None)
         pipeline=pipeline,
         global_vars=global_vars,
         env_vars=env_vars,
+        project_vars=project_vars,
         raw_vars=raw_vars,
         raw_dirs=raw_dirs,
     )
@@ -4675,6 +5441,7 @@ def api_builder_namespace(payload: Optional[dict[str, Any]] = Body(default=None)
             "sys": len(dict(namespace.get("sys") or {})),
             "global": len(global_vars),
             "env": len(env_vars),
+            "project": len(project_vars),
             "vars": len(dict(pipeline.vars or {})),
             "dirs": len(dict(pipeline.dirs or {})),
             "flat": len(namespace),
@@ -4814,8 +5581,7 @@ def api_builder_generate(payload: Optional[dict[str, Any]] = Body(default=None))
     }
 
 
-@app.post("/api/builder/test-step")
-def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
     payload = payload or {}
     run_id_seed = str(payload.get("run_id") or "").strip() or None
     run_started_seed = str(payload.get("run_started_at") or "").strip() or None
@@ -4833,6 +5599,7 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
     env_name_raw = str(payload.get("env") or "").strip()
     env_name = env_name_raw or "local"
     yaml_text = str(payload.get("yaml_text") or "")
+    _, project_vars = _resolve_builder_project_vars(yaml_text)
     global_vars = _resolve_global_vars(global_config_path)
     env_vars = _resolve_builder_env_vars(
         environments_config_path=environments_config_path,
@@ -4850,6 +5617,7 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
         pipeline=pipeline,
         global_vars=global_vars,
         env_vars=env_vars,
+        project_vars=project_vars,
         raw_vars=raw_vars,
         raw_dirs=raw_dirs,
         preview_run_id=run_id_seed,
@@ -4930,33 +5698,294 @@ def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)
         resolve_max_passes=int(getattr(pipeline, "resolve_max_passes", resolve_max_passes) or resolve_max_passes),
         steps=[target_step],
     )
+    executor_name = str(payload.get("executor") or env_vars.get("executor") or "local").strip().lower()
+
+    if executor_name == "local":
+        try:
+            result = run_pipeline(
+                mini,
+                plugin_dir=plugins_dir,
+                workdir=workdir,
+                logdir=logdir,
+                run_id=run_id_seed,
+                run_started=run_started_dt,
+                dry_run=dry_run,
+                max_retries=max_retries,
+                retry_delay_seconds=retry_delay_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"Step test failed: {exc}") from exc
+
+        step_result = result.steps[0] if result.steps else None
+        last_log_line = ""
+        if step_result is not None:
+            step_name_safe = str(getattr(step_result.step, "name", target_step.name) or target_step.name)
+            step_id = str(getattr(step_result, "step_id", "") or "").strip()
+            candidates: list[Path] = []
+            if step_id and result.artifact_dir:
+                candidates.append(Path(result.artifact_dir) / step_name_safe / step_id / "logs" / "step.log")
+            if step_id and logdir is not None:
+                candidates.append(Path(logdir) / step_name_safe / step_id / "logs" / "step.log")
+            for path in candidates:
+                tail = _tail_text_lines(path, limit=30)
+                last_log_line = _last_non_empty_line(tail)
+                if last_log_line:
+                    break
+        return {
+            "run_id": result.run_id,
+            "artifact_dir": result.artifact_dir,
+            "step_name": target_step.name,
+            "step_index": target_step_index,
+            "executor": executor_name,
+            "success": bool(step_result.success if step_result else False),
+            "skipped": bool(step_result.skipped if step_result else False),
+            "error": step_result.error if step_result else "No step result produced.",
+            "outputs": step_result.outputs if step_result else {},
+            "attempts": step_result.attempts if step_result else [],
+            "last_log_line": last_log_line,
+        }
+
+    # Non-local single-step tests are executed through the selected executor.
+    # We materialize a tiny temp pipeline file containing only the selected step.
+    import yaml
+
+    temp_pipeline_dir = Path(tempfile.mkdtemp(prefix="etl_builder_step_test_"))
+    temp_pipeline_path = temp_pipeline_dir / "step_test.yml"
+    step_payload = {
+        "name": str(target_step.name),
+        "script": str(target_step.script),
+        "output_var": target_step.output_var,
+        "env": dict(target_step.env or {}),
+        "resources": dict(target_step.resources or {}),
+        "when": target_step.when,
+        "parallel_with": target_step.parallel_with,
+    }
+    step_payload = {k: v for k, v in step_payload.items() if v not in (None, "", {}, [])}
+    temp_pipeline_doc = {
+        "project_id": str(getattr(pipeline, "project_id", "") or ""),
+        "vars": dict(mini.vars or {}),
+        "dirs": dict(mini.dirs or {}),
+        "steps": [step_payload],
+    }
+    if not temp_pipeline_doc["project_id"]:
+        temp_pipeline_doc.pop("project_id", None)
+    temp_pipeline_path.write_text(yaml.safe_dump(temp_pipeline_doc, sort_keys=False), encoding="utf-8")
+
     try:
-        result = run_pipeline(
-            mini,
-            plugin_dir=plugins_dir,
-            workdir=workdir,
-            logdir=logdir,
-            run_id=run_id_seed,
-            run_started=run_started_dt,
-            dry_run=dry_run,
-            max_retries=max_retries,
-            retry_delay_seconds=retry_delay_seconds,
+        repo_root = Path(".").resolve()
+        run_id = run_id_seed or uuid.uuid4().hex
+        run_started_at = run_started_seed or (datetime.utcnow().isoformat() + "Z")
+        if executor_name == "hpcc_direct":
+            ex = HpccDirectExecutor(
+                env_config=env_vars,
+                repo_root=repo_root,
+                plugins_dir=plugins_dir,
+                workdir=workdir,
+                global_config=global_config_path,
+                projects_config=None,
+                environments_config=environments_config_path,
+                env_name=env_name,
+                dry_run=dry_run,
+                verbose=_parse_bool(payload.get("verbose"), default=False),
+            )
+        elif executor_name == "slurm":
+            ex = SlurmExecutor(
+                env_config=env_vars,
+                repo_root=repo_root,
+                plugins_dir=plugins_dir,
+                workdir=workdir,
+                global_config=global_config_path,
+                projects_config=None,
+                environments_config=environments_config_path,
+                env_name=env_name,
+                dry_run=dry_run,
+                verbose=_parse_bool(payload.get("verbose"), default=False),
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported executor for step test: {executor_name}")
+
+        submit = ex.submit(
+            str(temp_pipeline_path),
+            context={
+                "run_id": run_id,
+                "run_started_at": run_started_at,
+                "execution_env": env_vars,
+                "global_vars": global_vars,
+                "project_vars": project_vars,
+                "project_id": normalize_project_id(str(payload.get("project_id") or getattr(pipeline, "project_id", "") or "").strip() or None),
+            },
         )
+        st = ex.status(submit.run_id)
+        state = st.state.value if hasattr(st.state, "value") else str(st.state)
+        success = str(state).lower() in {"succeeded", "success"}
+        return {
+            "run_id": submit.run_id,
+            "artifact_dir": None,
+            "step_name": target_step.name,
+            "step_index": target_step_index,
+            "executor": executor_name,
+            "state": state,
+            "success": success,
+            "skipped": False,
+            "error": None if success else (st.message or submit.message or f"executor state={state}"),
+            "outputs": {},
+            "attempts": [],
+            "last_log_line": st.message or submit.message or "",
+        }
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Step test failed: {exc}") from exc
+    finally:
+        try:
+            shutil.rmtree(temp_pipeline_dir, ignore_errors=True)
+        except Exception:
+            pass
 
-    step_result = result.steps[0] if result.steps else None
-    return {
-        "run_id": result.run_id,
-        "artifact_dir": result.artifact_dir,
-        "step_name": target_step.name,
-        "step_index": target_step_index,
-        "success": bool(step_result.success if step_result else False),
-        "skipped": bool(step_result.skipped if step_result else False),
-        "error": step_result.error if step_result else "No step result produced.",
-        "outputs": step_result.outputs if step_result else {},
-        "attempts": step_result.attempts if step_result else [],
-    }
+
+def _builder_step_test_worker(payload: dict[str, Any], result_queue) -> None:
+    try:
+        result = _execute_builder_step_test(dict(payload or {}))
+        result_queue.put({"ok": True, "result": result})
+    except HTTPException as exc:
+        result_queue.put(
+            {
+                "ok": False,
+                "status_code": int(getattr(exc, "status_code", 500) or 500),
+                "detail": exc.detail,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        result_queue.put({"ok": False, "status_code": 500, "detail": str(exc)})
+
+
+def _builder_step_test_snapshot(test_id: str) -> Optional[dict[str, Any]]:
+    _builder_step_tests_compact()
+    with _BUILDER_STEP_TEST_LOCK:
+        rec = _BUILDER_STEP_TESTS.get(test_id)
+        if not rec:
+            return None
+        state = str(rec.get("state") or "running").lower()
+        proc = rec.get("proc")
+        result_queue = rec.get("queue")
+    msg = None
+    if result_queue is not None:
+        while True:
+            try:
+                msg = result_queue.get_nowait()
+            except Empty:
+                break
+    now_ts = datetime.utcnow().timestamp()
+    with _BUILDER_STEP_TEST_LOCK:
+        rec2 = _BUILDER_STEP_TESTS.get(test_id)
+        if not rec2:
+            return None
+        if msg is not None:
+            if bool(msg.get("ok")):
+                result = dict(msg.get("result") or {})
+                rec2["state"] = "completed"
+                rec2["result"] = result
+                rec2["error"] = ""
+                rec2["done_ts"] = now_ts
+            else:
+                rec2["state"] = "failed"
+                rec2["error"] = str(msg.get("detail") or "Step test failed.")
+                rec2["status_code"] = int(msg.get("status_code") or 500)
+                rec2["done_ts"] = now_ts
+        elif rec2.get("state") == "running" and proc is not None and not proc.is_alive():
+            rec2["state"] = "failed"
+            rec2["error"] = str(rec2.get("error") or "Step test process exited unexpectedly.")
+            rec2["status_code"] = int(rec2.get("status_code") or 500)
+            rec2["done_ts"] = now_ts
+        snap = dict(rec2)
+    return snap
+
+
+@app.post("/api/builder/test-step")
+def api_builder_test_step(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    return _execute_builder_step_test(dict(payload or {}))
+
+
+@app.post("/api/builder/test-step/start")
+def api_builder_test_step_start(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    payload = dict(payload or {})
+    _builder_step_tests_compact()
+    test_id = uuid.uuid4().hex
+    payload["run_id"] = str(payload.get("run_id") or "").strip() or uuid.uuid4().hex
+    payload["run_started_at"] = str(payload.get("run_started_at") or "").strip() or (datetime.utcnow().isoformat() + "Z")
+
+    ctx = mp.get_context("spawn")
+    result_queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_builder_step_test_worker,
+        args=(payload, result_queue),
+        daemon=True,
+        name=f"etl-step-test-{test_id[:8]}",
+    )
+    proc.start()
+    with _BUILDER_STEP_TEST_LOCK:
+        _BUILDER_STEP_TESTS[test_id] = {
+            "test_id": test_id,
+            "state": "running",
+            "created_ts": datetime.utcnow().timestamp(),
+            "done_ts": 0.0,
+            "proc": proc,
+            "queue": result_queue,
+            "result": None,
+            "error": "",
+            "status_code": 500,
+            "run_id": payload.get("run_id"),
+        }
+    return {"test_id": test_id, "state": "running", "run_id": payload.get("run_id")}
+
+
+@app.get("/api/builder/test-step/status")
+def api_builder_test_step_status(test_id: str = Query(default="")) -> dict:
+    key = str(test_id or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="`test_id` is required.")
+    snap = _builder_step_test_snapshot(key)
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"Step test not found: {key}")
+    state = str(snap.get("state") or "running")
+    if state == "completed":
+        return {"test_id": key, "state": state, "result": dict(snap.get("result") or {})}
+    if state == "failed":
+        return {
+            "test_id": key,
+            "state": state,
+            "error": str(snap.get("error") or "Step test failed."),
+            "status_code": int(snap.get("status_code") or 500),
+        }
+    if state == "cancelled":
+        return {"test_id": key, "state": state, "error": str(snap.get("error") or "Step test cancelled.")}
+    return {"test_id": key, "state": "running", "run_id": snap.get("run_id")}
+
+
+@app.post("/api/builder/test-step/stop")
+def api_builder_test_step_stop(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    payload = payload or {}
+    key = str(payload.get("test_id") or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="`test_id` is required.")
+    with _BUILDER_STEP_TEST_LOCK:
+        rec = _BUILDER_STEP_TESTS.get(key)
+        if not rec:
+            raise HTTPException(status_code=404, detail=f"Step test not found: {key}")
+        state = str(rec.get("state") or "running")
+        proc = rec.get("proc")
+        if state in {"completed", "failed", "cancelled"}:
+            return {"test_id": key, "state": state}
+        if proc is not None and proc.is_alive():
+            try:
+                proc.terminate()
+                proc.join(timeout=2.0)
+            except Exception:
+                pass
+        rec["state"] = "cancelled"
+        rec["error"] = "Step test cancelled by user."
+        rec["done_ts"] = datetime.utcnow().timestamp()
+    return {"test_id": key, "state": "cancelled"}
 
 
 def _payload_with_pipeline(payload: Optional[dict[str, Any]], pipeline_id: str) -> dict[str, Any]:
@@ -5103,6 +6132,19 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
             source_bundle=source_bundle,
             source_snapshot=source_snapshot,
             allow_workspace_source=allow_workspace_source,
+        )
+    elif args["executor"] == "hpcc_direct":
+        ex = HpccDirectExecutor(
+            env_config=execution_env,
+            repo_root=repo_root,
+            plugins_dir=args["plugins_dir"],
+            workdir=Path(resolved_workdir_text),
+            global_config=args["global_config_path"],
+            projects_config=None,
+            environments_config=environments_config_path,
+            env_name=env_name,
+            dry_run=args["dry_run"],
+            verbose=args["verbose"],
         )
     else:
         run_id = str(args.get("run_id") or "").strip() or uuid.uuid4().hex

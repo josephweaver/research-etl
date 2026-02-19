@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import yaml
 from .variable_solver import VariableSolver
+from .expr import try_eval_expr_text
 
 
 class PipelineError(ValueError):
@@ -49,7 +50,7 @@ class Step:
     foreach: Optional[str] = None  # name of list variable to fan out over
     foreach_glob: Optional[str] = None  # glob pattern to fan out over filesystem paths
     foreach_kind: Optional[str] = None  # any|files|dirs (applies to foreach_glob)
-    disabled: bool = False
+    enabled: bool = True
 
 
 @dataclass
@@ -88,17 +89,27 @@ def _lookup_path(ctx: Dict[str, Any], path: str) -> tuple[Any, bool]:
 def _resolve_string(value: str, ctx: Dict[str, Any]) -> Any:
     exact = _PLACEHOLDER_RE.fullmatch(value)
     if exact:
-        resolved, ok = _lookup_path(ctx, exact.group(1))
+        token = exact.group(1)
+        resolved, ok = _lookup_path(ctx, token)
         if ok:
             if isinstance(resolved, (dict, list)):
                 return copy.deepcopy(resolved)
             return str(resolved)
+        expr_value, expr_ok = try_eval_expr_text(token, ctx)
+        if expr_ok:
+            if isinstance(expr_value, (dict, list)):
+                return copy.deepcopy(expr_value)
+            return expr_value
         return value
 
     def _repl(match: re.Match[str]) -> str:
-        resolved, ok = _lookup_path(ctx, match.group(1))
+        token = match.group(1)
+        resolved, ok = _lookup_path(ctx, token)
         if not ok or isinstance(resolved, (dict, list)):
-            return match.group(0)
+            expr_value, expr_ok = try_eval_expr_text(token, ctx)
+            if not expr_ok or isinstance(expr_value, (dict, list)):
+                return match.group(0)
+            return str(expr_value)
         return str(resolved)
 
     return _PLACEHOLDER_RE.sub(_repl, value)
@@ -268,6 +279,53 @@ def _compose_script_from_parts(
     return shlex.join(tokens)
 
 
+def _alpha_suffix(index: int) -> str:
+    """0 -> a, 25 -> z, 26 -> aa, ..."""
+    n = int(index)
+    if n < 0:
+        return ""
+    chars: List[str] = []
+    while True:
+        n, rem = divmod(n, 26)
+        chars.append(chr(ord("a") + rem))
+        if n == 0:
+            break
+        n -= 1
+    return "".join(reversed(chars))
+
+
+def _step_nn_labels(step_maps: List[Dict[str, Any]]) -> List[str]:
+    """
+    Build `sys.step.NN` labels for enabled steps.
+
+    Non-parallel steps get: 01, 02, ...
+    Parallel groups get shared number with suffixes: 01a, 01b, ...
+    """
+    labels: List[str] = []
+    seq = 0
+    i = 0
+    while i < len(step_maps):
+        token = str(step_maps[i].get("parallel_with") or "").strip()
+        if token:
+            j = i + 1
+            while j < len(step_maps) and str(step_maps[j].get("parallel_with") or "").strip() == token:
+                j += 1
+            group = step_maps[i:j]
+            seq += 1
+            base = f"{seq:02d}"
+            if len(group) == 1:
+                labels.append(base)
+            else:
+                for k in range(len(group)):
+                    labels.append(f"{base}{_alpha_suffix(k)}")
+            i = j
+            continue
+        seq += 1
+        labels.append(f"{seq:02d}")
+        i += 1
+    return labels
+
+
 def parse_pipeline(
     path: Path,
     global_vars: Optional[Dict[str, Any]] = None,
@@ -353,7 +411,7 @@ def parse_pipeline(
     step_ctx["dirs"] = copy.deepcopy(dirs_interp)
     step_ctx.update(copy.deepcopy(dirs_interp))
 
-    steps: List[Step] = []
+    pre_steps: List[Dict[str, Any]] = []
     for idx, raw in enumerate(steps_section):
         step_map = _normalize_step(raw, idx)
         name = step_map.get("name") or f"step_{idx}"
@@ -415,33 +473,75 @@ def parse_pipeline(
                 raise PipelineError(f"Step {idx} `foreach_kind` must be one of: any, files, dirs")
             if foreach_glob is None:
                 raise PipelineError(f"Step {idx} `foreach_kind` requires `foreach_glob`.")
-        disabled = step_map.get("disabled")
-        if disabled is None and "Disabled" in step_map:
-            disabled = step_map.get("Disabled")
-        if disabled is None:
-            disabled = False
-        if not isinstance(disabled, bool):
+        enabled_raw = step_map.get("enabled")
+        if enabled_raw is None and "Enabled" in step_map:
+            enabled_raw = step_map.get("Enabled")
+        disabled_raw = step_map.get("disabled")
+        if disabled_raw is None and "Disabled" in step_map:
+            disabled_raw = step_map.get("Disabled")
+        if enabled_raw is not None and not isinstance(enabled_raw, bool):
+            raise PipelineError(f"Step {idx} `enabled` must be a boolean if provided")
+        if disabled_raw is not None and not isinstance(disabled_raw, bool):
             raise PipelineError(f"Step {idx} `disabled` must be a boolean if provided")
-        if disabled:
+        if enabled_raw is not None and disabled_raw is not None and enabled_raw == disabled_raw:
+            raise PipelineError(
+                f"Step {idx} has conflicting `enabled` and `disabled` values; these flags must be logical opposites."
+            )
+        enabled = True
+        if enabled_raw is not None:
+            enabled = enabled_raw
+        elif disabled_raw is not None:
+            enabled = not disabled_raw
+        if not enabled:
             continue
-        script_interp = _resolve_iterative(script, step_ctx, max_passes=resolve_max_passes)
-        env_interp = _resolve_iterative(env, step_ctx, max_passes=resolve_max_passes)
+        if not isinstance(name, str):
+            raise PipelineError(f"Step {idx} `name` must be a string when provided")
+        pre_steps.append(
+            {
+                "idx": idx,
+                "name": str(name),
+                "script": str(script),
+                "output_var": output_var,
+                "env": env,
+                "resources": copy.deepcopy(resources),
+                "when": when,
+                "parallel_with": parallel_with,
+                "foreach": foreach,
+                "foreach_glob": foreach_glob,
+                "foreach_kind": foreach_kind_norm,
+            }
+        )
+
+    labels = _step_nn_labels(pre_steps)
+    steps: List[Step] = []
+    for pos, spec in enumerate(pre_steps):
+        step_label = labels[pos]
+        step_ctx_local = copy.deepcopy(step_ctx)
+        sys_ns = dict(step_ctx_local.get("sys") or {})
+        step_ns = dict(sys_ns.get("step") or {})
+        step_ns["NN"] = step_label
+        sys_ns["step"] = step_ns
+        step_ctx_local["sys"] = sys_ns
+
+        name_interp = _resolve_iterative(spec["name"], step_ctx_local, max_passes=resolve_max_passes)
+        script_interp = _resolve_iterative(spec["script"], step_ctx_local, max_passes=resolve_max_passes)
+        env_interp = _resolve_iterative(spec["env"], step_ctx_local, max_passes=resolve_max_passes)
         foreach_glob_interp: Optional[str] = None
-        if foreach_glob is not None:
-            foreach_glob_interp = _resolve_iterative(foreach_glob, step_ctx, max_passes=resolve_max_passes)
+        if spec["foreach_glob"] is not None:
+            foreach_glob_interp = _resolve_iterative(spec["foreach_glob"], step_ctx_local, max_passes=resolve_max_passes)
         steps.append(
             Step(
-                name=name,
-                script=script_interp,
-                output_var=output_var,
-                env=env_interp,
-                resources=copy.deepcopy(resources),
-                when=when,
-                parallel_with=parallel_with,
-                foreach=foreach,
+                name=str(name_interp),
+                script=str(script_interp),
+                output_var=spec["output_var"],
+                env=env_interp if isinstance(env_interp, dict) else {},
+                resources=copy.deepcopy(spec["resources"]),
+                when=spec["when"],
+                parallel_with=spec["parallel_with"],
+                foreach=spec["foreach"],
                 foreach_glob=foreach_glob_interp,
-                foreach_kind=foreach_kind_norm,
-                disabled=False,
+                foreach_kind=spec["foreach_kind"],
+                enabled=True,
             )
         )
 

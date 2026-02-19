@@ -241,7 +241,8 @@ def run(args, ctx):
 - `steps`: list of steps; each step supports:
   - `name` (optional; defaults to `step_<index>`)
   - `script` (required string, templated)
-  - `disabled` / `Disabled` (optional bool, default `false`; when `true`, the step is ignored at parse time)
+  - `enabled` / `Enabled` (optional bool, default `true`; when `false`, the step is ignored at parse time)
+    - Legacy compatibility: `disabled` / `Disabled` is still accepted.
   - `output_var` (optional string identifier)
   - `env` (optional mapping, templated)
   - `when` (optional string condition; evaluated later)

@@ -158,6 +158,30 @@ def test_parse_pipeline_rejects_noncontiguous_parallel_group_tokens(tmp_path: Pa
         parse_pipeline(p)
 
 
+def test_parse_pipeline_resolves_sys_step_nn_in_step_names(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: \"{sys.step.NN}_download\"",
+                "    script: echo.py",
+                "  - name: \"{sys.step.NN}_prep_a\"",
+                "    script: echo.py",
+                "    parallel_with: grp1",
+                "  - name: \"{sys.step.NN}_prep_b\"",
+                "    script: echo.py",
+                "    parallel_with: grp1",
+                "  - name: \"{sys.step.NN}_finalize\"",
+                "    script: echo.py",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    assert [s.name for s in pipeline.steps] == ["01_download", "02a_prep_a", "02b_prep_b", "03_finalize"]
+
+
 def test_parse_pipeline_supports_plugin_and_args_mapping(tmp_path: Path) -> None:
     p = tmp_path / "p.yml"
     p.write_text(
@@ -428,7 +452,7 @@ def test_parse_pipeline_rejects_foreach_kind_without_foreach_glob(tmp_path: Path
         parse_pipeline(p)
 
 
-def test_parse_pipeline_skips_disabled_steps_with_default_false(tmp_path: Path) -> None:
+def test_parse_pipeline_supports_enabled_default_true_and_legacy_disabled(tmp_path: Path) -> None:
     p = tmp_path / "p.yml"
     p.write_text(
         "\n".join(
@@ -436,6 +460,9 @@ def test_parse_pipeline_skips_disabled_steps_with_default_false(tmp_path: Path) 
                 "steps:",
                 "  - name: enabled_default",
                 "    script: echo.py",
+                "  - name: disabled_via_enabled",
+                "    script: echo.py",
+                "    enabled: false",
                 "  - name: disabled_lower",
                 "    script: echo.py",
                 "    disabled: true",
@@ -444,7 +471,7 @@ def test_parse_pipeline_skips_disabled_steps_with_default_false(tmp_path: Path) 
                 "    Disabled: true",
                 "  - name: enabled_explicit",
                 "    script: echo.py",
-                "    disabled: false",
+                "    enabled: true",
             ]
         ),
         encoding="utf-8",
@@ -468,3 +495,56 @@ def test_parse_pipeline_rejects_non_boolean_disabled(tmp_path: Path) -> None:
     )
     with pytest.raises(PipelineError, match="`disabled` must be a boolean"):
         parse_pipeline(p)
+
+
+def test_parse_pipeline_rejects_non_boolean_enabled(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+                "    enabled: \"true\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="`enabled` must be a boolean"):
+        parse_pipeline(p)
+
+
+def test_parse_pipeline_rejects_conflicting_enabled_and_disabled(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+                "    enabled: true",
+                "    disabled: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(PipelineError, match="conflicting `enabled` and `disabled`"):
+        parse_pipeline(p)
+
+
+def test_parse_pipeline_expr_range_in_vars_produces_list(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "vars:",
+                "  years: \"{expr.range(2000, 2002)}\"",
+                "steps:",
+                "  - name: s1",
+                "    script: echo.py",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    assert pipeline.vars["years"] == [2000, 2001, 2002]

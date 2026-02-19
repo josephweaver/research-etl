@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from etl.variable_solver import VariableSolver
 
 
@@ -63,3 +65,23 @@ def test_variable_solver_get_path_uses_env_path_style() -> None:
     solver2.overlay("env", {"path_style": "unix"})
     solver2.overlay("pipe", {"workdir": r"C:\data\run"})
     assert solver2.get_path("pipe.workdir") == "C:/data/run"
+
+
+def test_variable_solver_expr_range_returns_list_for_exact_placeholder() -> None:
+    solver = VariableSolver(max_passes=20)
+    payload = {"years": "{expr.range(2000, 2002)}"}
+    resolved = solver.resolve(payload)
+    assert resolved["years"] == [2000, 2001, 2002]
+
+
+def test_variable_solver_expr_date_nested_and_format_alias() -> None:
+    solver = VariableSolver(max_passes=20)
+    out = solver.resolve("{expr.dateformat(expr.datediff(expr.date(2020, 1, 31), -1, 'M'), '%YYYY-%MM-%DD')}")
+    assert out == "2019-12-31"
+
+
+def test_variable_solver_expr_dateformat_accepts_sys_now_dict() -> None:
+    solver = VariableSolver(max_passes=20)
+    solver.with_sys({"now": {"iso_utc": "2026-02-19T15:04:05Z"}})
+    out = solver.resolve("{expr.dateformat(sys.now, '%Y%m%d-%H%M%S')}")
+    assert out == datetime(2026, 2, 19, 15, 4, 5).strftime("%Y%m%d-%H%M%S")

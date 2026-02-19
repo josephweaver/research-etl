@@ -49,6 +49,11 @@ def test_web_api_endpoints(monkeypatch):
         "fetch_dataset_detail",
         lambda dataset_id: {"dataset_id": dataset_id, "versions": [], "locations": [], "dictionary_entries": []},
     )
+    monkeypatch.setattr(
+        web_api,
+        "create_dataset",
+        lambda **kwargs: {"dataset_id": kwargs["dataset_id"], "created": True},
+    )
     monkeypatch.setattr(web_api, "fetch_run_detail", lambda run_id: {"run_id": run_id, "status": "succeeded"})
 
     client = TestClient(web_api.app)
@@ -113,6 +118,10 @@ def test_web_api_endpoints(monkeypatch):
     assert r10.status_code == 200
     assert r10.json()["dataset_id"] == "serve.demo"
 
+    r11 = client.post("/api/datasets", json={"dataset_id": "serve.demo_v2", "data_class": "SERVE"})
+    assert r11.status_code == 200
+    assert r11.json()["dataset_id"] == "serve.demo_v2"
+
 
 def test_web_api_project_filters(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
@@ -130,6 +139,32 @@ def test_web_api_project_filters(monkeypatch):
     r = client.get("/api/runs", params={"project_id": "Land Core"})
     assert r.status_code == 200
     assert called["project_id"] == "land_core"
+
+
+def test_web_api_create_dataset_requires_dataset_id():
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    r = client.post("/api/datasets", json={})
+    assert r.status_code == 400
+    assert "dataset_id" in str(r.json().get("detail"))
+
+
+def test_web_api_create_dataset_maps_service_errors(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    def _boom(**kwargs):
+        raise web_api.DatasetServiceError("failed to create")
+
+    monkeypatch.setattr(web_api, "create_dataset", _boom)
+    client = TestClient(web_api.app)
+    r = client.post("/api/datasets", json={"dataset_id": "serve.demo"})
+    assert r.status_code == 400
+    assert "failed to create" in str(r.json().get("detail"))
 
 
 def test_web_api_denies_cross_project_access(monkeypatch):
@@ -384,6 +419,67 @@ def test_web_api_builder_environments_lists_envs(monkeypatch, tmp_path: Path) ->
     assert r.status_code == 200
     payload = r.json()
     assert payload["environments"] == ["hpcc_alpha", "local"]
+
+
+def test_web_api_builder_projects_lists_projects(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    projects_cfg = cfg / "projects.yml"
+    projects_cfg.write_text(
+        "\n".join(
+            [
+                "projects:",
+                "  default:",
+                "    vars:",
+                "      owner: core",
+                "  land_core:",
+                "    vars:",
+                "      owner: land-core",
+                "  gee_lee:",
+                "    vars:",
+                "      owner: gee-lee",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    r = client.get("/api/builder/projects", params={"projects_config": str(projects_cfg)})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["projects"] == ["gee_lee", "land_core"]
+
+
+def test_web_api_builder_validate_resolves_project_vars_from_project_id() -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "project_id: land_core",
+            "dirs:",
+            "  workdir: .out/work",
+            "  logdir: .out/log",
+            "steps:",
+            "  - name: s1",
+            "    plugin: echo.py",
+            "    args:",
+            "      msg: \"{project.owner}\"",
+        ]
+    ) + "\n"
+    r = client.post("/api/builder/validate", json={"yaml_text": yaml_text})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["valid"] is True
+    rr = client.post("/api/builder/resolve-text", json={"yaml_text": yaml_text, "value": "{project.owner}"})
+    assert rr.status_code == 200
+    assert rr.json()["resolved"] == "land-core"
 
 
 def test_web_api_builder_resolve_text_with_env_context(tmp_path: Path) -> None:
@@ -759,9 +855,34 @@ def test_web_api_builder_source_parses_plugin_args_model(tmp_path: Path):
     assert s.status_code == 200
     model = s.json()["model"]
     assert model["steps"][0]["plugin"] == "gdrive_download.py"
+    assert model["steps"][0]["enabled"] is True
     assert model["steps"][0]["params"]["src"] == "Data/Field_Boundaries"
     assert model["steps"][0]["params"]["recursive"] is True
     assert model["steps"][0]["params"]["max_files"] == 20
+
+
+def test_web_api_builder_source_maps_legacy_disabled_to_enabled(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    p = tmp_path / "draft_disabled.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "steps:",
+                "  - plugin: echo.py",
+                "    disabled: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    s = client.get("/api/builder/source", params={"pipeline": str(p)})
+    assert s.status_code == 200
+    step = s.json()["model"]["steps"][0]
+    assert step["enabled"] is False
 
 
 def test_web_api_builder_source_parses_foreach_glob_model(tmp_path: Path) -> None:
@@ -1130,6 +1251,41 @@ def test_web_api_builder_test_step_with_step_index(monkeypatch):
     assert payload["success"] is True
 
 
+def test_web_api_builder_test_step_returns_last_log_line(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.pipeline import Pipeline, Step
+    from etl.runner import RunResult, StepResult
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(
+        web_api,
+        "_parse_pipeline_from_yaml_text",
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
+            dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
+            steps=[Step(name="s1", script="echo.py")],
+        ),
+    )
+
+    def _fake_run_pipeline(*_args, **_kwargs):
+        artifact_dir = tmp_path / ".runs" / "builder" / "x"
+        log_path = artifact_dir / "s1" / "sid1" / "logs" / "step.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("line 1\nline 2\n", encoding="utf-8")
+        return RunResult(
+            run_id="builder_run_log",
+            steps=[StepResult(step=Step(name="s1", script="echo.py"), success=True, step_id="sid1")],
+            artifact_dir=str(artifact_dir),
+        )
+
+    monkeypatch.setattr(web_api, "run_pipeline", _fake_run_pipeline)
+    client = TestClient(web_api.app)
+    r = client.post("/api/builder/test-step", json={"yaml_text": "steps: []", "step_name": "s1"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["last_log_line"] == "line 2"
+
+
 def test_web_api_builder_test_step_uses_work_dir_from_dirs(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
@@ -1247,6 +1403,48 @@ def test_web_api_builder_test_step_falls_back_when_workdir_unresolved(monkeypatc
     assert called["workdir"].replace("\\", "/").endswith(".runs/builder")
 
 
+def test_web_api_builder_test_step_uses_hpcc_direct_executor_when_env_requests_it(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.pipeline import Pipeline, Step
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(
+        web_api,
+        "_parse_pipeline_from_yaml_text",
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
+            dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
+            steps=[Step(name="s1", script="echo.py")],
+        ),
+    )
+    monkeypatch.setattr(web_api, "_resolve_global_vars", lambda *_a, **_k: {})
+    monkeypatch.setattr(web_api, "_resolve_builder_env_vars", lambda **_k: {"executor": "hpcc_direct", "workdir": ".runs/work"})
+
+    seen = {}
+
+    class _FakeHpccDirectExecutor:
+        def __init__(self, **kwargs):
+            seen["init"] = kwargs
+
+        def submit(self, pipeline_path, context=None):
+            seen["submit_pipeline_path"] = str(pipeline_path)
+            seen["submit_context"] = dict(context or {})
+            return type("Sub", (), {"run_id": "remote_step_1", "message": "submitted"})()
+
+        def status(self, run_id):
+            return type("St", (), {"state": type("State", (), {"value": "succeeded"})(), "message": "ok"})()
+
+    monkeypatch.setattr(web_api, "HpccDirectExecutor", _FakeHpccDirectExecutor)
+    client = TestClient(web_api.app)
+    r = client.post("/api/builder/test-step", json={"yaml_text": "steps: []", "env": "hpcc_msu_direct"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["executor"] == "hpcc_direct"
+    assert payload["run_id"] == "remote_step_1"
+    assert payload["success"] is True
+    assert seen["submit_context"]["execution_env"]["executor"] == "hpcc_direct"
+
+
 def test_web_api_404(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
@@ -1328,6 +1526,113 @@ def test_web_api_run_action_local(monkeypatch, tmp_path: Path):
     assert payload["state"] == "queued"
     assert payload["message"].startswith("Run accepted")
     assert called["run_id"] == payload["run_id"]
+
+
+def test_web_api_run_action_hpcc_direct(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.executors.base import RunState, RunStatus, SubmissionResult
+    from etl.pipeline import Pipeline, Step
+    from fastapi.testclient import TestClient
+
+    pipeline_path = tmp_path / "p.yml"
+    pipeline_path.write_text("steps: []", encoding="utf-8")
+    monkeypatch.setattr(web_api, "parse_pipeline", lambda *a, **k: Pipeline(steps=[Step(name="s1", script="echo.py")]))
+    monkeypatch.setattr(web_api, "collect_run_provenance", lambda **k: {"git_commit_sha": "abc"})
+    monkeypatch.setattr(
+        web_api,
+        "_resolve_execution_env",
+        lambda *a, **k: ({"executor": "hpcc_direct", "ssh_host": "dev-amd24.passwordless"}, None, "hpcc_msu_direct"),
+    )
+    captured = {}
+
+    class _FakeHpccExecutor:
+        def __init__(self, *a, **k):
+            captured["init"] = dict(k)
+
+        def submit(self, pipeline_path_text, context):
+            captured["submit_pipeline"] = pipeline_path_text
+            captured["submit_context"] = dict(context or {})
+            return SubmissionResult(run_id="hpcc_run_1", job_ids=[], message="submitted")
+
+        def status(self, run_id):
+            return RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="ok")
+
+    monkeypatch.setattr(web_api, "HpccDirectExecutor", _FakeHpccExecutor)
+
+    client = TestClient(web_api.app)
+    r = client.post(
+        "/api/actions/run",
+        json={
+            "pipeline": str(pipeline_path),
+            "executor": "hpcc_direct",
+            "plugins_dir": "plugins",
+            "workdir": ".runs",
+            "dry_run": True,
+        },
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["executor"] == "hpcc_direct"
+    assert payload["run_id"] == "hpcc_run_1"
+    assert payload["state"] == "succeeded"
+    assert captured["submit_pipeline"] == str(pipeline_path)
+
+
+def test_web_api_run_action_env_executor_overrides_payload(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.executors.base import RunState, RunStatus, SubmissionResult
+    from etl.pipeline import Pipeline, Step
+    from fastapi.testclient import TestClient
+
+    pipeline_path = tmp_path / "p.yml"
+    pipeline_path.write_text("steps: []", encoding="utf-8")
+    env_cfg = tmp_path / "environments.yml"
+    env_cfg.write_text(
+        "\n".join(
+            [
+                "environments:",
+                "  hpcc_msu_direct:",
+                "    executor: hpcc_direct",
+                "    ssh_host: dev-amd24.passwordless",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(web_api, "parse_pipeline", lambda *a, **k: Pipeline(steps=[Step(name="s1", script="echo.py")]))
+    monkeypatch.setattr(web_api, "collect_run_provenance", lambda **k: {"git_commit_sha": "abc"})
+    captured = {}
+
+    class _FakeHpccExecutor:
+        def __init__(self, *a, **k):
+            captured["init"] = dict(k)
+
+        def submit(self, pipeline_path_text, context):
+            captured["submit_pipeline"] = pipeline_path_text
+            return SubmissionResult(run_id="hpcc_run_2", job_ids=[], message="submitted")
+
+        def status(self, run_id):
+            return RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="ok")
+
+    monkeypatch.setattr(web_api, "HpccDirectExecutor", _FakeHpccExecutor)
+
+    client = TestClient(web_api.app)
+    r = client.post(
+        "/api/actions/run",
+        json={
+            "pipeline": str(pipeline_path),
+            "executor": "local",
+            "environments_config": str(env_cfg),
+            "env": "hpcc_msu_direct",
+            "dry_run": True,
+        },
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["executor"] == "hpcc_direct"
+    assert payload["run_id"] == "hpcc_run_2"
 
 
 def test_web_api_run_action_ignores_unresolved_workdir_payload(monkeypatch, tmp_path: Path):
