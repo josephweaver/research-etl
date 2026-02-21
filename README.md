@@ -543,7 +543,8 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
    - `retry_delay_seconds`
    - executor override (`local`/`slurm`)
 8) Builder git sync options:
-   - pipeline-level `git_sync` can auto-create/switch a branch, commit staged `pipelines/`, `plugins/`, `scripts/` changes, and push to origin before run/step-test.
+   - pipeline-level `git_sync` is off by default and only runs when `ETL_BUILDER_GIT_SYNC_REPO` is set to a separate pipelines/scripts repo path.
+   - when enabled, it auto-creates/switches a branch, commits staged `pipelines/` + `scripts/`, and pushes to origin before run/step-test.
    - optional branch input allows forcing a specific branch name.
 
 API endpoints:

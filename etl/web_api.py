@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import shutil
 import json
@@ -567,7 +568,7 @@ INDEX_HTML = """<!doctype html>
                 </select>
                 <label class="muted"><input type="checkbox" id="b_dry_run" /> dry_run</label>
                 <label class="muted"><input type="checkbox" id="b_verbose" checked /> verbose</label>
-                <label class="muted"><input type="checkbox" id="b_git_sync" checked /> git_sync</label>
+                <label class="muted"><input type="checkbox" id="b_git_sync" /> git_sync</label>
                 <input id="b_git_branch" placeholder="git branch (auto-create if empty)" />
                 <span id="b_git_repo_status" class="muted"></span>
               </div>
@@ -1355,6 +1356,10 @@ INDEX_HTML = """<!doctype html>
         return;
       }
       const g = await res.json();
+      if(g.sync_repo_configured === false){
+        el.textContent = "git_sync disabled (set ETL_BUILDER_GIT_SYNC_REPO)";
+        return;
+      }
       const name = String(g.repo_name || "repo");
       const branch = String(g.branch || "");
       const commit = String(g.commit || "").slice(0, 8);
@@ -4283,6 +4288,30 @@ def _git_branch_slug(text: str) -> str:
     return slug or "builder"
 
 
+def _builder_git_sync_repo_root_from_env() -> Optional[Path]:
+    raw = str(os.environ.get("ETL_BUILDER_GIT_SYNC_REPO") or "").strip()
+    if not raw:
+        return None
+    root = Path(raw).expanduser().resolve()
+    if not root.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Configured ETL_BUILDER_GIT_SYNC_REPO does not exist: {root}",
+        )
+    is_repo = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if is_repo.returncode != 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Configured ETL_BUILDER_GIT_SYNC_REPO is not a git repository: {root}",
+        )
+    return root
+
+
 def _builder_git_sync(
     *,
     pipeline: str,
@@ -4290,7 +4319,15 @@ def _builder_git_sync(
     push: bool = True,
     create_branch: bool = True,
 ) -> dict[str, Any]:
-    repo_root = Path(".").resolve()
+    repo_root = _builder_git_sync_repo_root_from_env()
+    if repo_root is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Builder git sync is disabled for this repo by default. "
+                "Set ETL_BUILDER_GIT_SYNC_REPO to your pipelines/scripts repository path."
+            ),
+        )
     status_before = _git_repo_status(repo_root)
     pipeline_rel = str(pipeline or "").strip().replace("\\", "/")
     if not pipeline_rel:
@@ -4320,7 +4357,7 @@ def _builder_git_sync(
         else:
             _git_out(repo_root, "checkout", "-b", target_branch)
 
-    _git_out(repo_root, "add", "--", "pipelines", "plugins", "scripts")
+    _git_out(repo_root, "add", "--", "pipelines", "scripts")
     staged = _git_out(repo_root, "diff", "--cached", "--name-only")
     staged_files = [x.strip() for x in staged.splitlines() if x.strip()]
     committed = False
@@ -5581,7 +5618,15 @@ def api_builder_projects(request: Request, projects_config: Optional[str] = Quer
 
 @app.get("/api/builder/git-status")
 def api_builder_git_status() -> dict:
-    return _git_repo_status()
+    target = _builder_git_sync_repo_root_from_env()
+    if target is None:
+        payload = _git_repo_status()
+        payload["sync_repo_configured"] = False
+        payload["sync_repo_hint"] = "Set ETL_BUILDER_GIT_SYNC_REPO to enable builder git_sync."
+        return payload
+    payload = _git_repo_status(target)
+    payload["sync_repo_configured"] = True
+    return payload
 
 
 @app.post("/api/builder/git-sync")
