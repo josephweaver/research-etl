@@ -13,25 +13,29 @@ dirs:
   rawdir: "{env.basedir}/data/tiger/state/raw"
   extractdir: "{env.basedir}/data/tiger/state/extract"
 steps:
-  - plugin: web_download_list.py
+  - name: "{sys.step.NN}_download"
+    plugin: web_download_list
     args:
       out: "{rawdir}"
       overwrite: false
       timeout_seconds: 180
       urls: "{tiger_state_url}"
     output_var: staged_raw
-  - plugin: archive_extract.py
+  - name: "{sys.step.NN}_unzip"
+    plugin: archive_extract
     args:
       archive_glob: "{rawdir}/*.zip"
       out: "{extractdir}"
       overwrite: true
     output_var: extracted_state
-  - plugin: vector_facts.py
+  - name: "{sys.step.NN}_vector_facts"
+    plugin: vector_facts
     args:
       input_dir: "{extractdir}"
       output_dir: "{workdir}/vector_facts"
     output_var: vector_facts
-  - plugin: dataset_store.py
+  - name: "{sys.step.NN}_store"
+    plugin: dataset_store
     args:
       dataset_id: "{dataset_id}"
       path: "{extractdir}"
@@ -43,7 +47,8 @@ steps:
       data_class: "{data_class}"
       dry_run: false
     output_var: dataset_store
-  - plugin: dataset_dictionary_pr.py
+  - name: "{sys.step.NN}_dictionary_update"
+    plugin: dataset_dictionary_pr
     args:
       dataset_id: "{dataset_id}"
       repo_key: "{dictionary_repo_key}"
