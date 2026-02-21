@@ -5825,7 +5825,7 @@ def _normalize_tree_label(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return "repo"
-    text = text.replace("_", "-").replace("\\", "/").strip("/")
+    text = text.replace("\\", "/").strip("/")
     return text or "repo"
 
 
@@ -5863,7 +5863,7 @@ def _builder_pipeline_source_views(
             label = f"{label}-{seen}"
 
         try:
-            repo_dir = sync_pipeline_asset_source(src, cache_root=cache_root)
+            repo_dir = sync_pipeline_asset_source(src, cache_root=cache_root, repo_root=repo_root)
         except PipelineAssetError as exc:
             warnings.append(f"{label}: {exc}")
             continue

@@ -21,6 +21,7 @@ class PipelineAssetSource:
     scripts_dir: str = "scripts"
     ref: str = "main"
     priority: int = 100
+    local_repo_path: Optional[str] = None
 
 
 _SYNCED_REPOS: set[Tuple[str, str]] = set()
@@ -82,6 +83,7 @@ def pipeline_asset_sources_from_project_vars(project_vars: Dict[str, Any]) -> Li
                     scripts_dir=str(raw.get("scripts_dir") or "scripts").strip() or "scripts",
                     ref=str(raw.get("ref") or "main").strip() or "main",
                     priority=int(raw.get("priority", 100) or 100),
+                    local_repo_path=str(raw.get("local_repo_path") or raw.get("local_path") or "").strip() or None,
                 )
             )
 
@@ -95,20 +97,38 @@ def pipeline_asset_sources_from_project_vars(project_vars: Dict[str, Any]) -> Li
                 scripts_dir=str(vars_map.get("pipeline_assets_scripts_dir") or "scripts").strip() or "scripts",
                 ref=str(vars_map.get("pipeline_assets_ref") or "main").strip() or "main",
                 priority=int(vars_map.get("pipeline_assets_priority", 1000) or 1000),
+                local_repo_path=str(vars_map.get("pipeline_assets_local_repo_path") or "").strip() or None,
             )
         )
 
-    # De-duplicate by (repo, ref, pipelines_dir, scripts_dir); preserve priority.
-    uniq: Dict[Tuple[str, str, str, str], PipelineAssetSource] = {}
+    # De-duplicate by (repo, ref, pipelines_dir, scripts_dir, local_repo_path); preserve priority.
+    uniq: Dict[Tuple[str, str, str, str, str], PipelineAssetSource] = {}
     for src in out:
-        key = (src.repo_url, src.ref, src.pipelines_dir, src.scripts_dir)
+        key = (src.repo_url, src.ref, src.pipelines_dir, src.scripts_dir, str(src.local_repo_path or ""))
         if key in uniq:
             continue
         uniq[key] = src
     return sorted(uniq.values(), key=lambda s: int(s.priority))
 
 
-def sync_pipeline_asset_source(source: PipelineAssetSource, *, cache_root: Path) -> Path:
+def sync_pipeline_asset_source(source: PipelineAssetSource, *, cache_root: Path, repo_root: Optional[Path] = None) -> Path:
+    if str(source.local_repo_path or "").strip():
+        root = Path(repo_root or Path(".").resolve()).resolve()
+        local = Path(str(source.local_repo_path)).expanduser()
+        if not local.is_absolute():
+            local = (root / local).resolve()
+        if not local.exists() or not local.is_dir():
+            raise PipelineAssetError(f"local_repo_path not found: {local}")
+        is_repo = subprocess.run(
+            ["git", "-C", str(local), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if is_repo.returncode != 0:
+            raise PipelineAssetError(f"local_repo_path is not a git repo: {local}")
+        return local
+
     cache_root = Path(cache_root).resolve()
     cache_root.mkdir(parents=True, exist_ok=True)
     repo_dir = _repo_cache_dir(cache_root, source.repo_url)
