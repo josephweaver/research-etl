@@ -14,6 +14,19 @@ projects:
       owner: "land-core"
       data_dictionary_repo_url: "https://github.com/land-core/landcore-data-catalog.git"
       states_of_interest: [ 'IL', 'MN', 'WI', 'OH', 'SD', 'IA', 'IN', 'MI', 'MO' ]
+      pipeline_asset_sources:
+        - project_key: "land-core"
+          repo_url: "https://github.com/josephweaver/landcore-etl-pipelines.git"
+          pipelines_dir: "pipelines"
+          scripts_dir: "scripts"
+          ref: "main"
+          priority: 100
+        - project_key: "shared"
+          repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
+          pipelines_dir: "pipelines"
+          scripts_dir: "scripts"
+          ref: "main"
+          priority: 200
       pipeline_assets_repo_url: "https://github.com/josephweaver/landcore-etl-pipelines.git"
       pipeline_assets_project_key: "land_core"
       pipeline_assets_pipelines_dir: "pipelines"

@@ -454,6 +454,45 @@ def test_web_api_builder_projects_lists_projects(tmp_path: Path) -> None:
     assert payload["projects"] == ["gee_lee", "land_core"]
 
 
+def test_web_api_builder_project_vars_returns_merged_vars(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    projects_cfg = cfg / "projects.yml"
+    projects_cfg.write_text(
+        "\n".join(
+            [
+                "projects:",
+                "  default:",
+                "    vars:",
+                "      owner: core",
+                "      storage:",
+                "        base: /data/base",
+                "  land_core:",
+                "    vars:",
+                "      owner: land-core",
+                "      storage:",
+                "        prism: /data/prism",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    r = client.get(
+        "/api/builder/project-vars",
+        params={"projects_config": str(projects_cfg), "project_id": "land_core"},
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["project_id"] == "land_core"
+    assert payload["project_vars"]["owner"] == "land-core"
+    assert payload["project_vars"]["storage"]["prism"] == "/data/prism"
+
+
 def test_web_api_builder_validate_resolves_project_vars_from_project_id() -> None:
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
@@ -1172,6 +1211,73 @@ def test_web_api_builder_files_lists_pipeline_folder(monkeypatch, tmp_path: Path
     assert "sub/b.yml" in files
 
 
+def test_web_api_builder_files_uses_project_source_views(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    src_a = tmp_path / "src_a" / "pipelines" / "yanroy"
+    src_b = tmp_path / "src_b" / "pipelines" / "tiger"
+    src_a.mkdir(parents=True, exist_ok=True)
+    src_b.mkdir(parents=True, exist_ok=True)
+    (src_a / "download.yml").write_text("steps:\n  - script: echo.py\n", encoding="utf-8")
+    (src_b / "state.yml").write_text("steps:\n  - script: echo.py\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_api, "_builder_project_context", lambda **_k: ("land_core", {}, None))
+    monkeypatch.setattr(
+        web_api,
+        "_builder_pipeline_source_views",
+        lambda **_k: (
+            [
+                {"label": "land-core", "pipelines_root": (tmp_path / "src_a" / "pipelines").resolve()},
+                {"label": "shared", "pipelines_root": (tmp_path / "src_b" / "pipelines").resolve()},
+            ],
+            [],
+        ),
+    )
+
+    client = TestClient(web_api.app)
+    r = client.get("/api/builder/files", params={"project_id": "land_core"})
+    assert r.status_code == 200
+    payload = r.json()
+    files = payload["files"]
+    assert any(f["tree_path"] == "land-core/yanroy/download.yml" and f["pipeline"] == "yanroy/download.yml" for f in files)
+    assert any(f["tree_path"] == "shared/tiger/state.yml" and f["pipeline"] == "tiger/state.yml" for f in files)
+    assert "land-core" in payload["dirs"]
+    assert "shared" in payload["dirs"]
+
+
+def test_web_api_builder_source_resolves_project_prefixed_pipeline(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    src_a = tmp_path / "src_a" / "pipelines" / "yanroy"
+    src_a.mkdir(parents=True, exist_ok=True)
+    target = src_a / "download.yml"
+    target.write_text("steps:\n  - name: s1\n    script: echo.py\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_api, "_builder_project_context", lambda **_k: ("land_core", {}, None))
+    monkeypatch.setattr(
+        web_api,
+        "_builder_pipeline_source_views",
+        lambda **_k: (
+            [{"label": "land-core", "pipelines_root": (tmp_path / "src_a" / "pipelines").resolve()}],
+            [],
+        ),
+    )
+
+    client = TestClient(web_api.app)
+    s = client.get(
+        "/api/builder/source",
+        params={"project_id": "land_core", "pipeline": "land-core/yanroy/download.yml"},
+    )
+    assert s.status_code == 200
+    assert Path(s.json()["pipeline"]).resolve() == target.resolve()
+
+
 def test_web_api_builder_generate(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
@@ -1258,6 +1364,57 @@ def test_web_api_pipeline_save_project_path_admin_allowed(monkeypatch, tmp_path:
     r = client.put(f"/api/pipelines/{pipeline_id}", params={"as_user": "admin"}, json={"yaml_text": update_text})
     assert r.status_code == 200
     assert "s2" in pipeline.read_text(encoding="utf-8")
+
+
+def test_web_api_pipeline_save_create_and_update_project_source(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+    from urllib.parse import quote
+
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "remote_a" / "pipelines" / "yanroy"
+    src.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(web_api, "_builder_project_context", lambda **_k: ("land_core", {}, None))
+    monkeypatch.setattr(
+        web_api,
+        "_builder_pipeline_source_views",
+        lambda **_k: (
+            [{"label": "land-core", "pipelines_root": (tmp_path / "remote_a" / "pipelines").resolve()}],
+            [],
+        ),
+    )
+
+    client = TestClient(web_api.app)
+    yaml_text = "steps:\n  - name: s1\n    script: echo.py\n"
+    create = client.post(
+        "/api/pipelines",
+        json={
+            "pipeline": "yanroy/new_draft",
+            "yaml_text": yaml_text,
+            "project_id": "land_core",
+            "pipeline_source": "land-core",
+        },
+    )
+    assert create.status_code == 200
+    created_path = Path(create.json()["pipeline"]).resolve()
+    expected_path = (tmp_path / "remote_a" / "pipelines" / "yanroy" / "new_draft.yml").resolve()
+    assert created_path == expected_path
+    assert created_path.exists()
+
+    update_text = "steps:\n  - name: s1\n    script: echo.py\n  - name: s2\n    script: echo.py\n"
+    pid = quote("yanroy/new_draft", safe="")
+    update = client.put(
+        f"/api/pipelines/{pid}",
+        json={
+            "yaml_text": update_text,
+            "project_id": "land_core",
+            "pipeline_source": "land-core",
+        },
+    )
+    assert update.status_code == 200
+    assert "s2" in expected_path.read_text(encoding="utf-8")
 
 
 def test_web_api_builder_test_step(monkeypatch):

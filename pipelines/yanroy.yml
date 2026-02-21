@@ -1,10 +1,13 @@
 project_id: land_core
-shared_with_projects:
-  - gee_lee
-
 requires_pipelines:
   - pipelines/yanroy/build.yml
-
+vars:
+  {}
+dirs:
+  workdir: "{env.workdir}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  logdir: "{workdir}/logs"
 steps:
   - name: yanroy_subfolder_entrypoint
-    script: 'echo.py message="YanRoy root wrapper complete; use pipelines/yanroy/*.yml for modular jobs."'
+    plugin: echo
+    args:
+      message: "YanRoy root wrapper complete; use pipelines/yanroy/*.yml for modular jobs."
