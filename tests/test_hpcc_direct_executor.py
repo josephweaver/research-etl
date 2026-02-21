@@ -1,3 +1,9 @@
+# research-etl
+# Copyright (c) 2026 Joseph Weaver
+# This file is part of the research-etl project and is licensed under the MIT License.
+# You may not use this file except in compliance with the License.
+# See https://github.com/josephweaver/research-etl for details.
+
 from __future__ import annotations
 
 import subprocess
@@ -7,6 +13,7 @@ import etl.executors.hpcc_direct as hpcc_mod
 from etl.executors.hpcc_direct import HpccDirectExecutor
 from etl.git_checkout import GitExecutionSpec
 from etl.pipeline import Pipeline, Step
+from etl.source_control import SourceControlError
 
 
 def _fake_ssh_runner(seen_scripts: list[str], *, returncode: int = 0, stdout: str = "ok", stderr: str = ""):
@@ -95,6 +102,52 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
     assert "export ETL_DB_VERBOSE=1" in remote_script
     assert "--steps 0,1" in remote_script
     assert "--project-id land_core" in remote_script
+
+
+def test_hpcc_direct_submit_uses_pipeline_remote_hint_for_external_pipeline(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "plugins").mkdir(parents=True, exist_ok=True)
+    external = tmp_path / "external" / "pipelines" / "prism" / "download.yml"
+    external.parent.mkdir(parents=True, exist_ok=True)
+    external.write_text("steps: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        hpcc_mod,
+        "parse_pipeline",
+        lambda *_a, **_k: Pipeline(steps=[Step(name="s1", script="echo.py")]),
+    )
+    monkeypatch.setattr(
+        hpcc_mod,
+        "resolve_execution_spec",
+        lambda **_k: GitExecutionSpec(
+            commit_sha="32adb6b10db9aaaa111122223333444455556666",
+            origin_url="git@github.com:org/research-etl.git",
+            repo_name="research-etl",
+            git_is_dirty=False,
+        ),
+    )
+    monkeypatch.setattr(
+        hpcc_mod,
+        "repo_relative_path",
+        lambda _path, _root, label: (_ for _ in ()).throw(SourceControlError("outside repo"))
+        if label == "pipeline"
+        else Path(str(label)),
+    )
+    seen_scripts: list[str] = []
+    monkeypatch.setattr(HpccDirectExecutor, "_run_ssh_script", _fake_ssh_runner(seen_scripts))
+
+    ex = HpccDirectExecutor(
+        env_config={"ssh_host": "dev.hpcc.local", "remote_repo": "/scratch/alice/research-etl", "propagate_secrets": False},
+        repo_root=repo,
+        plugins_dir=repo / "plugins",
+        dry_run=False,
+    )
+    _ = ex.submit(
+        str(external),
+        {"run_id": "runhint", "pipeline_remote_hint": "pipelines/prism/download.yml"},
+    )
+    remote_script = str(seen_scripts[-1])
+    assert "pipelines/prism/download.yml" in remote_script
 
 
 def test_hpcc_direct_submit_records_failed_status(monkeypatch, tmp_path: Path) -> None:

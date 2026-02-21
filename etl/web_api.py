@@ -1,3 +1,9 @@
+# research-etl
+# Copyright (c) 2026 Joseph Weaver
+# This file is part of the research-etl project and is licensed under the MIT License.
+# You may not use this file except in compliance with the License.
+# See https://github.com/josephweaver/research-etl for details.
+
 from __future__ import annotations
 
 import os
@@ -5875,6 +5881,24 @@ def _builder_pipeline_source_views(
     return views, warnings
 
 
+def _infer_external_pipeline_remote_hint(
+    *,
+    pipeline_path: Path,
+    project_vars: dict[str, Any],
+    repo_root: Path,
+) -> Optional[str]:
+    resolved = Path(pipeline_path).resolve()
+    views, _warnings = _builder_pipeline_source_views(project_vars=project_vars, repo_root=repo_root)
+    for view in views:
+        root = Path(view.get("pipelines_root") or "").resolve()
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            continue
+        return (Path("pipelines") / rel).as_posix()
+    return None
+
+
 def _resolve_project_writable_pipeline_path(
     *,
     pipeline: str,
@@ -7208,14 +7232,21 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
         pipeline_inside_repo = True
     except ValueError:
         pipeline_inside_repo = False
+    pipeline_remote_hint: Optional[str] = None
     if args["executor"] in {"slurm", "hpcc_direct"} and not pipeline_inside_repo:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "External pipeline asset paths are currently supported for local executor only. "
-                "Use executor=local for external repos, or place pipeline inside this repo for remote executors."
-            ),
+        pipeline_remote_hint = _infer_external_pipeline_remote_hint(
+            pipeline_path=resolved_pipeline_path,
+            project_vars=project_vars,
+            repo_root=repo_root,
         )
+        if not pipeline_remote_hint:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "External pipeline path could not be mapped to any configured project pipeline asset source. "
+                    "Check project pipeline_asset_sources/pipelines_dir config or run locally."
+                ),
+            )
     try:
         pipeline = parse_pipeline(
             resolved_pipeline_path,
@@ -7334,6 +7365,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
             "provenance": provenance,
             "repo_root": repo_root,
             "global_vars": global_vars,
+            "project_vars": project_vars,
             "execution_source": execution_source,
             "source_bundle": source_bundle,
             "source_snapshot": source_snapshot,
@@ -7367,11 +7399,13 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
                 "provenance": provenance,
                 "repo_root": repo_root,
                 "global_vars": global_vars,
+                "project_vars": project_vars,
                 "execution_source": execution_source,
                 "source_bundle": source_bundle,
                 "source_snapshot": source_snapshot,
                 "allow_workspace_source": allow_workspace_source,
                 "project_id": project_id,
+                "pipeline_remote_hint": pipeline_remote_hint,
             },
         )
         st = ex.status(submit.run_id)

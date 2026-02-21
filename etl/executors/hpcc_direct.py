@@ -1,3 +1,9 @@
+# research-etl
+# Copyright (c) 2026 Joseph Weaver
+# This file is part of the research-etl project and is licensed under the MIT License.
+# You may not use this file except in compliance with the License.
+# See https://github.com/josephweaver/research-etl for details.
+
 """
 HPCC direct executor: run batch worker directly over SSH on a dev node.
 
@@ -169,11 +175,19 @@ class HpccDirectExecutor(Executor):
         ]
         return args
 
-    def _map_repo_path_for_root(self, path: Path, remote_root: str, label: str = "path") -> str:
+    def _map_repo_path_for_root(
+        self,
+        path: Path,
+        remote_root: str,
+        label: str = "path",
+        fallback_relative: Optional[str] = None,
+    ) -> str:
         try:
             rel = repo_relative_path(path, self.repo_root, label)
             return (Path(remote_root) / rel).as_posix()
         except SourceControlError:
+            if str(fallback_relative or "").strip():
+                return (Path(remote_root) / Path(str(fallback_relative))).as_posix()
             return path.as_posix()
 
     def _run_ssh_script(self, target: str, script: str, *, stream_output: bool = False) -> subprocess.CompletedProcess:
@@ -463,7 +477,12 @@ class HpccDirectExecutor(Executor):
 
         remote_base = str(self.remote_repo or "").strip() or "~/.etl"
         repo_root_remote = (Path(remote_base) / f"{spec.repo_name}-{spec.commit_sha[:12]}").as_posix()
-        pipeline_remote = self._map_repo_path_for_root(Path(pipeline_path), repo_root_remote, label="pipeline")
+        pipeline_remote = self._map_repo_path_for_root(
+            Path(pipeline_path),
+            repo_root_remote,
+            label="pipeline",
+            fallback_relative=str(context.get("pipeline_remote_hint") or "").strip() or None,
+        )
         plugins_remote = self._map_repo_path_for_root(self.plugins_dir.resolve(), repo_root_remote, label="plugins_dir")
         global_remote = (
             self._map_repo_path_for_root(self.global_config.resolve(), repo_root_remote, label="global_config")

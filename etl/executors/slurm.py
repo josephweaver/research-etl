@@ -1,3 +1,9 @@
+# research-etl
+# Copyright (c) 2026 Joseph Weaver
+# This file is part of the research-etl project and is licensed under the MIT License.
+# You may not use this file except in compliance with the License.
+# See https://github.com/josephweaver/research-etl for details.
+
 """
 SLURM executor: submits the whole pipeline as a single SLURM job.
 
@@ -28,7 +34,7 @@ from ..git_checkout import GitExecutionSpec
 from ..pipeline import Pipeline
 from ..pipeline import parse_pipeline
 from ..plugins.base import load_plugin
-from ..source_control import SourceExecutionSpec, make_git_source_provider
+from ..source_control import SourceControlError, SourceExecutionSpec, make_git_source_provider
 from ..tracking import fetch_plugin_resource_stats, upsert_run_status
 from ..variable_solver import VariableSolver
 
@@ -743,10 +749,20 @@ class SlurmExecutor(Executor):
         # resolve pipeline and plugins dir to POSIX paths on remote checkout
         use_repo_relative_paths = self.enforce_git_checkout and selected_source_mode != "workspace"
         workspace_repo_root = Path(checkout_root)
+        pipeline_remote_hint = str(context.get("pipeline_remote_hint") or "").strip()
 
         if use_repo_relative_paths:
-            pipeline_rel = repo_relative_path(pipeline_input, source_repo_root, "pipeline")
-            pipeline_remote = (Path(checkout_root) / pipeline_rel).as_posix()
+            try:
+                pipeline_rel = repo_relative_path(pipeline_input, source_repo_root, "pipeline")
+                pipeline_remote = (Path(checkout_root) / pipeline_rel).as_posix()
+            except SourceControlError as exc:
+                if pipeline_remote_hint:
+                    pipeline_remote = (Path(checkout_root) / Path(pipeline_remote_hint)).as_posix()
+                else:
+                    raise SlurmSubmitError(
+                        "Pipeline path is outside the execution source repository and no pipeline_remote_hint was "
+                        f"provided: {pipeline_input}"
+                    ) from exc
         else:
             if Path(pipeline_path).is_absolute():
                 pipeline_remote = Path(pipeline_path).as_posix()

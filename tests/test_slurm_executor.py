@@ -1,3 +1,9 @@
+# research-etl
+# Copyright (c) 2026 Joseph Weaver
+# This file is part of the research-etl project and is licensed under the MIT License.
+# You may not use this file except in compliance with the License.
+# See https://github.com/josephweaver/research-etl for details.
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,6 +12,7 @@ import etl.executors.slurm as slurm_mod
 from etl.executors.slurm import SlurmExecutor
 from etl.pipeline import Pipeline, Step
 from etl.git_checkout import GitExecutionSpec
+from etl.source_control import SourceControlError
 
 
 def test_slurm_submit_uses_array_batches_and_passes_resume_retry(monkeypatch, tmp_path: Path) -> None:
@@ -166,6 +173,68 @@ def test_slurm_submit_applies_step_resource_hints_and_env_caps(monkeypatch, tmp_
     assert "#SBATCH -c 20" in batch_script
     assert "#SBATCH --mem=64G" in batch_script
     assert "#SBATCH -t 10:00:00" in batch_script
+
+
+def test_slurm_submit_uses_pipeline_remote_hint_for_external_pipeline(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(steps=[Step(name="s1", script="echo.py")])
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+    monkeypatch.setattr(
+        slurm_mod,
+        "resolve_execution_spec",
+        lambda **_k: GitExecutionSpec(
+            commit_sha="32adb6b10db9aaaa111122223333444455556666",
+            origin_url="git@github.com:org/research-etl.git",
+            repo_name="research-etl",
+            git_is_dirty=False,
+        ),
+    )
+    monkeypatch.setattr(
+        slurm_mod,
+        "repo_relative_path",
+        lambda _path, _root, label: (_ for _ in ()).throw(SourceControlError("outside repo"))
+        if label == "pipeline"
+        else Path(str(label)),
+    )
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    external_pipeline = tmp_path / "external" / "pipelines" / "prism" / "download.yml"
+    external_pipeline.parent.mkdir(parents=True, exist_ok=True)
+    external_pipeline.write_text("steps: []\n", encoding="utf-8")
+
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/work", "logdir": "/tmp/logs", "ssh_host": "dev.hpcc.local"},
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+        enforce_git_checkout=True,
+    )
+    _ = ex.submit(
+        str(external_pipeline),
+        {
+            "run_id": "runhint123",
+            "repo_root": tmp_path,
+            "execution_source": "git_remote",
+            "pipeline_remote_hint": "pipelines/prism/download.yml",
+        },
+    )
+    assert len(calls) >= 2
+    assert "pipelines/prism/download.yml" in calls[1]["script_text"]
 
 
 def test_slurm_submit_uses_db_metrics_with_low_sample_1_5x(monkeypatch, tmp_path: Path) -> None:

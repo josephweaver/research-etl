@@ -689,4 +689,5 @@ Goal: submit pipelines through interchangeable "executors" (local, SLURM/HPCC, K
 ## Future Work
 
 Future items (including CI -> SLURM handoff) are tracked in `future.todo.md`.
+Add new future ideas there so the backlog stays centralized in one file.
 

@@ -1,3 +1,9 @@
+# research-etl
+# Copyright (c) 2026 Joseph Weaver
+# This file is part of the research-etl project and is licensed under the MIT License.
+# You may not use this file except in compliance with the License.
+# See https://github.com/josephweaver/research-etl for details.
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -1838,28 +1844,65 @@ def test_web_api_run_action_local(monkeypatch, tmp_path: Path):
     assert called["run_id"] == payload["run_id"]
 
 
-def test_web_api_run_action_rejects_external_pipeline_for_remote_executor(monkeypatch, tmp_path: Path):
+def test_web_api_run_action_allows_external_pipeline_for_remote_executor_with_project_sources(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
+    from etl.executors.base import RunState, RunStatus, SubmissionResult
     from etl.pipeline import Pipeline, Step
     from fastapi.testclient import TestClient
 
-    resolved_pipeline_path = tmp_path / "external.yml"
+    external_repo = tmp_path / "landcore-etl-pipelines"
+    resolved_pipeline_path = external_repo / "pipelines" / "prism" / "download.yml"
+    resolved_pipeline_path.parent.mkdir(parents=True, exist_ok=True)
     resolved_pipeline_path.write_text("steps: []", encoding="utf-8")
 
     monkeypatch.setattr(web_api, "resolve_projects_config_path", lambda path: None)
-    monkeypatch.setattr(web_api, "load_project_vars", lambda **kwargs: {})
+    monkeypatch.setattr(
+        web_api,
+        "load_project_vars",
+        lambda **kwargs: {
+            "pipeline_asset_sources": [
+                {
+                    "repo_url": "git@github.com:org/landcore-etl-pipelines.git",
+                    "local_repo_path": str(external_repo),
+                    "pipelines_dir": "pipelines",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(web_api, "sync_pipeline_asset_source", lambda *a, **k: external_repo)
     monkeypatch.setattr(web_api, "resolve_pipeline_path_from_project_sources", lambda *a, **k: resolved_pipeline_path)
+    monkeypatch.setattr(
+        web_api,
+        "_resolve_execution_env",
+        lambda *a, **k: ({"executor": "hpcc_direct", "ssh_host": "dev-amd24.passwordless"}, None, "hpcc_msu_direct"),
+    )
     monkeypatch.setattr(web_api, "parse_pipeline", lambda *a, **k: Pipeline(steps=[Step(name="s1", script="echo.py")]))
     monkeypatch.setattr(web_api, "collect_run_provenance", lambda **k: {"git_commit_sha": "abc"})
+    captured = {}
+
+    class _FakeHpccExecutor:
+        def __init__(self, *a, **k):
+            captured["init"] = dict(k)
+
+        def submit(self, pipeline_path_text, context):
+            captured["submit_pipeline"] = pipeline_path_text
+            captured["submit_context"] = dict(context or {})
+            return SubmissionResult(run_id="hpcc_run_external", job_ids=[], message="submitted")
+
+        def status(self, run_id):
+            return RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="ok")
+
+    monkeypatch.setattr(web_api, "HpccDirectExecutor", _FakeHpccExecutor)
 
     client = TestClient(web_api.app)
     r = client.post(
         "/api/actions/run",
         json={"pipeline": "prism/download.yml", "executor": "hpcc_direct", "dry_run": True},
     )
-    assert r.status_code == 400
-    assert "External pipeline asset paths" in str(r.json().get("detail") or "")
+    assert r.status_code == 200
+    assert r.json().get("run_id") == "hpcc_run_external"
+    assert captured["submit_context"]["pipeline_remote_hint"] == "pipelines/prism/download.yml"
 
 
 def test_web_api_run_action_hpcc_direct(monkeypatch, tmp_path: Path):
