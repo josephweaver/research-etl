@@ -209,54 +209,9 @@
 - `--allow-dirty-git` behavior for remote executors is not complete yet:
   - current remote runs are commit-pinned; dirty local workspace changes are not propagated to remote checkout.
 
-## Suggested next steps
-1) Add SSH-backed remote artifact retrieval for SLURM paths in web API.
-2) Add DB-backed pipeline draft/version model.
-3) Add auth guard for web UI if multi-user exposure is planned.
-4) Persist config/catalog snapshots into DB catalog tables at run start.
-5) Add offline event buffering strategy for runs executed without DB connectivity.
-6) Improve AI generation with stronger constrained output schema and optional additional repair retries.
-7) Add remote dirty-overlay support for `--allow-dirty-git`: checkout pinned commit on remote, then apply local dirty files over that checkout before execution.
-8) Wire `geo_vector_filter.py` into `pipelines/yanroy/tiles_of_interest.yml` before tile intersection logic (state prefilter stage).
+## Future Work
 
-## Possible future features
-
-- Dynamic chained fan-out from prior fan-out outputs:
-  - Allow a step to expand from a prior step's `foreach` outputs (for example `foreach_from: <prior_output_list>`), including optional nested fan-out patterns.
-  - Primary use case: geospatial multi-stage chaining where each selected raster/file from stage N drives stage N+1 work.
-  - Constraints for safe implementation:
-    - deterministic expansion manifests persisted before execution,
-    - bounded expansion (`max_items`, `max_depth`, `max_concurrency`),
-    - stable child step instance IDs for resume/retry,
-    - clear parent-child dependency mapping to avoid ambiguous cross-links.
-  - Risk profile:
-    - unbounded job explosion with nested `foreach` + `parallel_with`,
-    - harder retry/resume semantics when dynamic expansion is not persisted,
-    - scheduler pressure (SLURM array/job limits) and reduced debuggability without strict caps.
-
-- Resolved dynamic execution plans (materialized before run):
-  - Current model is mostly static (predefined vars/list-based `foreach`), with `foreach_glob` planned but not fully functional.
-  - Future model should support dynamic discovery while preserving reproducibility:
-    - discovery steps emit explicit manifests (item lists + metadata),
-    - engine resolves and freezes the expanded DAG from those manifests before executing dependent stages,
-    - frozen plan is persisted with stable step-instance IDs for audit, resume, and retry.
-  - UX/API implications:
-    - add a "plan resolution" phase/status before execution starts,
-    - expose planned fan-out counts and cap violations early in builder/validation.
-
-- Adaptive SLURM execution packing from historical runtime telemetry:
-  - After enough run history is recorded, estimate per-step/per-item durations and pack work into configurable target walltime blocks (for example `target_block_minutes`).
-  - Convert many short tasks into fewer scheduler-friendly jobs:
-    - sequential micro-steps can be merged into one block job,
-    - large parallel fan-outs can be repacked into fewer longer-running chunks (for example `100 x ~1 minute` into `4 x ~25 minute` jobs).
-  - Goals:
-    - reduce scheduler overhead and queue pressure,
-    - improve cluster throughput and job-start efficiency,
-    - keep walltime requests closer to real usage.
-  - Guardrails:
-    - preserve deterministic step ordering/dependencies,
-    - enforce max block duration/item count limits,
-    - support fallback to original un-packed plan when estimates are low-confidence.
+Suggested next steps and future features are tracked in `future.todo.md`.
 
 ## Quick commands
 - Install/editable dev env: `python -m pip install -e ".[dev]"`

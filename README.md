@@ -82,8 +82,7 @@ A lightweight ETL tool to construct new pipelines from modular Python "plugin" s
 - Requirements updates for HPCC geospatial runs:
   - added `geopandas`, explicit `python-dateutil`, and `requests` in `requirements.txt`.
 - `hpcc_direct` dependency install now uses `python -m pip install --ignore-installed -r requirements.txt` to prevent partial resolution against cluster-global packages.
-- TODO (execution source behavior):
-  - add explicit `--allow-dirty-git` support for remote execution by checking out pinned commit remotely, then overlaying local dirty files onto that checkout before run start.
+- Future TODO items are tracked in `future.todo.md`.
 
 - Added `plugins/combine_files.py` to merge `csv`, `json`, `yaml/yml`, `xml`, or `text` outputs from fan-out steps.
 - Added generic script/plugin utilities:
@@ -687,15 +686,7 @@ Goal: submit pipelines through interchangeable "executors" (local, SLURM/HPCC, K
 - Security: keep credentials per-backend (env vars/secret store), avoid embedding secrets in pipeline YAML.
 - Scheduling: pipeline YAML stays portable; only the executor block changes when targeting a different platform.
 
-## CI -> SLURM Handoff (future)
+## Future Work
 
-Goal: trigger ETL when a pipeline YAML is committed, but run heavy geospatial work on the HPCC cluster (SLURM).
-
-- Trigger: GitHub push path-filtered to `pipelines/**/*.yml`.
-- Action: lightweight GitHub Action uses SSH (deploy key in repo secrets) to submit an `sbatch` on the HPCC login node.
-- Wrapper script (HPCC): `scripts/run_etl.sh <pipeline.yml>` loads modules/conda, checks out the commit SHA, and runs `python -m etl run <pipeline>`.
-- Logs/artifacts: write to `logs/<pipeline>/<run_id>.out` and `runs/` on the HPCC filesystem.
-- Status return: the Action captures the SLURM job ID and can comment on the PR or fail the workflow on non-zero exit.
-- If SSH is blocked: use a campus-hosted webhook/queue or a cron poller on HPCC to submit `sbatch` for new pipeline commits.
-- Security: use read-only deploy key, minimal privileges; avoid moving data through GitHub - compute and storage stay on HPCC.
+Future items (including CI -> SLURM handoff) are tracked in `future.todo.md`.
 

@@ -44,8 +44,7 @@ I noticed that twe provide both a executor and an enviroment,  I belive the envi
 - [x] `P0` Updated builder default dirs to non-recursive templates.
 
 ## Future cleanup (path resolution)
-- [ ] `P1` Centralize path/glob normalization in shared runtime utilities (after variable resolution), so plugins do not each implement custom path resolution logic.
-- [ ] `P1` Keep plugin-side directory/file traversal logic, but move common `path`/`*_glob` handling to one consistent resolver used by runner + builder test paths.
+- Future cleanup items are tracked in `future.todo.md`.
 
 ## Current status snapshot
 - [x] `P0` Core engine + retry/resume/provenance + SLURM event tracking.
@@ -169,74 +168,4 @@ I noticed that twe provide both a executor and an enviroment,  I belive the envi
 - [ ] `P0` Runs should check code into github, deploy code to working location, then run with explicit github version always. This will enable rerunning code at a specific version.
 
 # things to fix later
-- [ ] Add first-class `Project` object with repo bindings and project-level variables.
-  - Goal:
-    - represent a project as a durable object (not just `project_id` tags on runs);
-    - bind project to source repos (pipelines/scripts and data dictionary);
-    - add project-scoped variable layer in resolver chain.
-  - Proposed data model:
-    - keep `etl_projects` as canonical project identity;
-    - add `etl_project_repos` table:
-      - `project_id` (FK -> `etl_projects.project_id`, PK/unique);
-      - `pipelines_repo_provider`, `pipelines_repo_owner`, `pipelines_repo_name`, `pipelines_repo_ref` (branch/tag/sha default);
-      - `scripts_repo_provider`, `scripts_repo_owner`, `scripts_repo_name`, `scripts_repo_ref` (optional; can equal pipelines repo);
-      - `dictionary_repo_key` (FK-ish logical key to `etl_dictionary_repos.repo_key`);
-      - `is_active`, timestamps;
-    - add `etl_project_vars` table for key/value config:
-      - `project_id`, `var_key`, `var_value_json`, `is_secret`, timestamps;
-      - unique (`project_id`, `var_key`);
-      - store JSON to support scalar/list/object project vars.
-  - Resolver precedence change (target):
-    - `global -> environment -> project -> pipeline -> commandline`;
-    - commandline includes explicit run overrides (`--project-id`, `--workdir`, future `--set key=value` / `--vars-file`);
-    - expose namespaces in context as:
-      - `global.*`, `env.*`, `project.*`, `pipe.*`, plus final flat overlay for backward compatibility.
-  - Parser/runner/API changes:
-    - add optional pipeline metadata key `project_vars` only for local defaults; DB-backed `project` values take precedence over these defaults;
-    - runner resolves project config once per run and stamps effective project config hash in run provenance;
-    - web/API/CLI add project CRUD endpoints/commands (`etl projects list/show/upsert`, repo binding update, vars update);
-    - update project access checks so project metadata and repo bindings respect `etl_user_projects`.
-  - Integration behavior:
-    - `dataset_dictionary_pr` can default `repo_key` from project binding when omitted;
-    - catalog sync/resolve plugins can default `catalog_repo`/dictionary repo from project binding;
-    - remote execution source selection can prefer project repo bindings when enabled.
-  - Migration and rollout:
-    - backfill default bindings for existing `land_core`, `gee_lee`, and `default`;
-    - keep current behavior if project bindings/vars are absent;
-    - emit warnings when pipeline uses hardcoded repo paths that conflict with project binding;
-    - add tests for precedence ordering and project binding fallback paths.
-- [ ] Stat collection on plugin run times is not complete.  We need runtime by pipeline-step, not plugin to right size steps.  case. unzip 250mb file, or 1mb file.  they take significantly different runtimes/hardware.
-- [ ] Add GitHub data dictionary write workflow: auto-create branch, write/update dataset YAML, commit, push, open PR, require human review before merge.
-- [ ] Pipeline builder: add `hpcc_direct` as an executor option everywhere executor is selected.
-- [ ] Pipeline builder: allow overriding `sys.*` runtime values with static user-provided values for deterministic testing.
-- [ ] Evaluate single-step execution mode with persisted step state/outputs so users can resume and continue from current state into next steps.
-- [ ] Add optional step-scoped dependency environments to reduce `.venv` bloat and dependency collisions:
-  - keep current shared environment mode as default;
-  - add `env_mode: shared|per_step` (executor/pipeline setting);
-  - resolve per-step deps from plugin metadata (`meta.deps`) + optional step overrides;
-  - build/reuse cached envs by dependency hash;
-  - execute each step inside its resolved env and log env hash/provenance for reproducibility.
-- [ ] Investigate first-class masked variable objects for secrets (replace raw string dict model).
-  - Problem: current masking relies on string replacement dictionaries and can miss unsafe stringification paths.
-  - Goal: represent sensitive values as typed variable objects (for example `SecretValue`) with controlled `__str__`/print/log behavior.
-  - Design direction:
-    - keep real secret value accessible only via explicit method (`reveal()` / `value()`), not implicit string conversion;
-    - default string/render output should be masked token (for example `"[REDACTED]"`);
-    - provide safe serialization modes (`masked`, `for_runtime_env`) to prevent accidental leakage.
-  - Integration points:
-    - variable resolver namespaces (`secret.*`, future project/env secret scopes),
-    - runner logs and plugin logs,
-    - diagnostics/error reports, web API payloads, and tracking DB writes.
-  - Migration:
-    - add compatibility layer so existing plugins expecting strings still work in runtime env injection;
-    - incrementally adopt typed secrets in parser/runner first, then plugin contract updates.
-- [ ] Add structured progress reporting/progress bars for long-running steps.
-  - Goal: show live step progress in CLI/web for long tasks instead of only start/end logs.
-  - Add plugin progress API (for example `ctx.progress(current, total, message=None)`), plus optional named phases.
-  - Support loop-style reporting (`iteration i of N`) and unknown-total mode (`spinner` / indeterminate progress).
-  - Persist progress events in run tracking so progress survives refresh/reconnect and is visible in live run views.
-  - Render as:
-    - CLI: single-line progress bar with percent + current/total + ETA when total is known.
-    - Web: per-step progress bar + latest progress message.
-  - Backward compatibility:
-    - plugins that do not report progress continue to work unchanged.
+- Future items are tracked in `future.todo.md`.
