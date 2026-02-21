@@ -5,10 +5,21 @@
 			"path": "."
 		},
 		{
+			"name": "RiskModel-etl",
 			"path": "../RiskModel-etl"
 		},
 		{
+			"name": "landcore-data-catalog",
 			"path": "../landcore-data-catalog"
+		},
+		{
+			"path": "../shared-etl-pipelines"
+		},
+		{
+			"path": "../landcore-etl-pipelines"
+		},
+		{
+			"path": "../RiskModel-HPCC"
 		}
 	],
 	"settings": {
