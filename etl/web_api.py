@@ -7214,10 +7214,13 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
     )
     execution_env["step_max_retries"] = max_retries
     execution_env["step_retry_delay_seconds"] = retry_delay_seconds
-    execution_source = args["execution_source"] or str(execution_env.get("execution_source") or "auto")
+    execution_source = str(args["execution_source"] or execution_env.get("execution_source") or "auto").strip().lower()
     source_bundle = args["source_bundle"] or execution_env.get("source_bundle")
     source_snapshot = args["source_snapshot"] or execution_env.get("source_snapshot")
-    allow_workspace_source = bool(args["allow_workspace_source"] or execution_env.get("allow_workspace_source", False))
+    allow_workspace_source = _parse_bool(
+        args["allow_workspace_source"],
+        default=_parse_bool(execution_env.get("allow_workspace_source"), default=False),
+    )
     resolved_pipeline_path, project_id, project_vars, selected_projects_config = _resolve_action_pipeline_context(
         pipeline_path=args["pipeline_path"],
         requested_project_id=requested_project_id,
@@ -7234,6 +7237,11 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
         pipeline_inside_repo = False
     pipeline_remote_hint: Optional[str] = None
     if args["executor"] in {"slurm", "hpcc_direct"} and not pipeline_inside_repo:
+        # Remote executors should run from source control for external pipeline assets;
+        # workspace mode points at local host paths and causes invalid remote paths.
+        if execution_source == "workspace":
+            execution_source = str(execution_env.get("execution_source") or "auto").strip().lower() or "auto"
+            allow_workspace_source = False
         pipeline_remote_hint = _infer_external_pipeline_remote_hint(
             pipeline_path=resolved_pipeline_path,
             project_vars=project_vars,

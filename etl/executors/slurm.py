@@ -1684,7 +1684,7 @@ class SlurmExecutor(Executor):
             asset_dir = f"$CHECKOUT_ROOT/.pipeline_assets/src_{idx}"
             if self.verbose:
                 lines.append(f"log_step {shlex.quote(f'syncing pipeline asset source {idx + 1}: {repo_url} ({ref})')}")
-            lines.append(f"ASSET_DIR_{idx}={shlex.quote(asset_dir)}")
+            lines.append(f"ASSET_DIR_{idx}=\"{asset_dir}\"")
             lines.append(f"ASSET_URL_{idx}={shlex.quote(repo_url)}")
             lines.append(f"ASSET_REF_{idx}={shlex.quote(ref)}")
             lines.append(f"mkdir -p \"$(dirname \\\"$ASSET_DIR_{idx}\\\")\"")
