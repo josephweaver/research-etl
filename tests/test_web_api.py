@@ -1027,6 +1027,8 @@ def test_web_api_builder_git_sync_endpoint(monkeypatch) -> None:
         branch=None,
         push=True,
         create_branch=True,
+        publish_to_main=False,
+        checkout_main_after_publish=True,
         project_id=None,
         projects_config=None,
         pipeline_source=None,
@@ -1035,6 +1037,8 @@ def test_web_api_builder_git_sync_endpoint(monkeypatch) -> None:
         seen["branch"] = branch
         seen["push"] = push
         seen["create_branch"] = create_branch
+        seen["publish_to_main"] = publish_to_main
+        seen["checkout_main_after_publish"] = checkout_main_after_publish
         seen["project_id"] = project_id
         seen["projects_config"] = projects_config
         seen["pipeline_source"] = pipeline_source
@@ -1058,6 +1062,8 @@ def test_web_api_builder_git_sync_endpoint(monkeypatch) -> None:
     assert seen["branch"] == "builder/prism"
     assert seen["push"] is True
     assert seen["create_branch"] is True
+    assert seen["publish_to_main"] is False
+    assert seen["checkout_main_after_publish"] is True
     assert seen["project_id"] == "land_core"
     assert seen["pipeline_source"] == "shared"
 

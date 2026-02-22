@@ -590,6 +590,7 @@ INDEX_HTML = """<!doctype html>
                 <button id="btn_builder_generate">Generate</button>
                 <button id="btn_builder_validate">Validate Draft</button>
                 <button id="btn_builder_run" class="spin-btn"><span>Run Pipeline</span><span class="spin"></span></button>
+                <button id="btn_builder_publish">Publish to Main</button>
                 <button id="btn_builder_terminate">Terminate Run</button>
                 <span id="builder_msg" class="muted"></span>
               </div>
@@ -3395,6 +3396,77 @@ INDEX_HTML = """<!doctype html>
       msg.textContent = `Run ${data.run_id} (${data.state || "submitted"}) [${runMode}]`;
       out.textContent = JSON.stringify(data, null, 2);
     }
+    async function publishBuilderPipeline(){
+      const msg = document.getElementById("builder_msg");
+      const out = document.getElementById("builder_output");
+      const payload = builderPayload();
+      if(builderCreateMode){
+        msg.textContent = "Use Create to create a new pipeline first.";
+        return;
+      }
+      if (!payload.pipeline){
+        msg.textContent = "pipeline path is required to publish.";
+        return;
+      }
+      payload.pipeline = normalizeBuilderPipelineName(payload.pipeline);
+      document.getElementById("b_pipeline_path").value = payload.pipeline;
+
+      msg.textContent = "Saving draft before publish...";
+      const encoded = encodeURIComponent(payload.pipeline);
+      const update = await fetch(`/api/pipelines/${encoded}`, {
+        method:"PUT",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          yaml_text: payload.yaml_text,
+          project_id: payload.project_id || "",
+          pipeline_source: payload.pipeline_source || "",
+        }),
+      });
+      if(update.status === 404){
+        msg.textContent = "Pipeline does not exist yet. Click Create first.";
+        return;
+      }
+      if(!update.ok){
+        msg.textContent = await readMessage(update);
+        return;
+      }
+
+      msg.textContent = "Validating draft before publish...";
+      const validateRes = await fetch(`/api/builder/validate`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(payload),
+      });
+      if(!validateRes.ok){
+        msg.textContent = await readMessage(validateRes);
+        return;
+      }
+
+      msg.textContent = "Publishing branch -> main...";
+      const syncRes = await fetch(`/api/builder/git-sync`, {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          pipeline: payload.pipeline,
+          branch: payload.git_branch,
+          push: true,
+          create_branch: true,
+          project_id: payload.project_id || "",
+          projects_config: payload.projects_config || "",
+          pipeline_source: payload.pipeline_source || "",
+          publish_to_main: true,
+          checkout_main_after_publish: true,
+        }),
+      });
+      if(!syncRes.ok){
+        msg.textContent = await readMessage(syncRes);
+        return;
+      }
+      const data = await syncRes.json();
+      await refreshBuilderGitStatus();
+      msg.textContent = `Published ${payload.pipeline} to main via ${data.branch || "builder branch"}.`;
+      out.textContent = JSON.stringify(data, null, 2);
+    }
     async function terminateBuilderPipeline(){
       const msg = document.getElementById("builder_msg");
       const out = document.getElementById("builder_output");
@@ -4467,6 +4539,7 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("btn_builder_generate").onclick = generateBuilderDraft;
     document.getElementById("btn_builder_validate").onclick = validateBuilderDraft;
     document.getElementById("btn_builder_run").onclick = runBuilderPipeline;
+    document.getElementById("btn_builder_publish").onclick = publishBuilderPipeline;
     document.getElementById("btn_builder_terminate").onclick = terminateBuilderPipeline;
     document.getElementById("btn_plugins_refresh").onclick = tick;
     document.getElementById("plugins_env").onchange = tick;
@@ -5089,6 +5162,8 @@ def _builder_git_sync(
     branch: Optional[str] = None,
     push: bool = True,
     create_branch: bool = True,
+    publish_to_main: bool = False,
+    checkout_main_after_publish: bool = True,
     project_id: Optional[str] = None,
     projects_config: Optional[str] = None,
     pipeline_source: Optional[str] = None,
@@ -5121,21 +5196,30 @@ def _builder_git_sync(
         target_branch = _git_branch_slug(str(branch).strip())
     else:
         stem = _git_branch_slug(Path(pipeline_rel).with_suffix("").as_posix())
-        ts = datetime.utcnow().strftime("%y%m%d-%H%M%S")
-        target_branch = f"builder/{stem}-{ts}" if create_branch else str(status_before.get("branch") or "builder")
+        day = datetime.utcnow().strftime("%y%m%d")
+        target_branch = f"builder/{stem}-{day}" if create_branch else str(status_before.get("branch") or "builder")
     current_branch = str(status_before.get("branch") or "").strip()
 
     if target_branch and target_branch != current_branch:
-        exists = run_logged_subprocess(
+        exists_local = run_logged_subprocess(
             ["git", "-C", str(repo_root), "show-ref", "--verify", "--quiet", f"refs/heads/{target_branch}"],
             logger=_LOG,
             action="web_api.git",
             check=False,
         )
-        if exists.returncode == 0:
+        if exists_local.returncode == 0:
             _git_out(repo_root, "checkout", target_branch)
         else:
-            _git_out(repo_root, "checkout", "-b", target_branch)
+            exists_remote = run_logged_subprocess(
+                ["git", "-C", str(repo_root), "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{target_branch}"],
+                logger=_LOG,
+                action="web_api.git",
+                check=False,
+            )
+            if exists_remote.returncode == 0:
+                _git_out(repo_root, "checkout", "-B", target_branch, f"origin/{target_branch}")
+            else:
+                _git_out(repo_root, "checkout", "-b", target_branch)
 
     _git_out(repo_root, "add", "--", "pipelines", "scripts")
     staged = _git_out(repo_root, "diff", "--cached", "--name-only")
@@ -5149,6 +5233,20 @@ def _builder_git_sync(
     if push:
         _git_out(repo_root, "push", "-u", "origin", target_branch)
 
+    published = False
+    main_branch = "main"
+    if publish_to_main:
+        if not target_branch:
+            raise HTTPException(status_code=400, detail="publish_to_main requires a target builder branch.")
+        _git_out(repo_root, "checkout", main_branch)
+        _git_out(repo_root, "pull", "--ff-only", "origin", main_branch)
+        _git_out(repo_root, "merge", "--no-ff", "--no-edit", target_branch)
+        if push:
+            _git_out(repo_root, "push", "origin", main_branch)
+        published = True
+        if not checkout_main_after_publish:
+            _git_out(repo_root, "checkout", target_branch)
+
     status_after = _git_repo_status(repo_root)
     return {
         "pipeline": pipeline_rel,
@@ -5156,6 +5254,9 @@ def _builder_git_sync(
         "committed": committed,
         "staged_files": staged_files,
         "pushed": bool(push),
+        "published_to_main": bool(published),
+        "main_branch": main_branch,
+        "checkout_main_after_publish": bool(checkout_main_after_publish),
         "repo_root": str(repo_root),
         "status": status_after,
     }
@@ -6817,6 +6918,8 @@ def api_builder_git_sync(payload: Optional[dict[str, Any]] = Body(default=None))
     branch = str(payload.get("branch") or "").strip() or None
     push = _parse_bool(payload.get("push"), default=True)
     create_branch = _parse_bool(payload.get("create_branch"), default=True)
+    publish_to_main = _parse_bool(payload.get("publish_to_main"), default=False)
+    checkout_main_after_publish = _parse_bool(payload.get("checkout_main_after_publish"), default=True)
     project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
     projects_config = str(payload.get("projects_config") or "").strip() or None
     pipeline_source = str(payload.get("pipeline_source") or "").strip() or None
@@ -6825,6 +6928,8 @@ def api_builder_git_sync(payload: Optional[dict[str, Any]] = Body(default=None))
         branch=branch,
         push=push,
         create_branch=create_branch,
+        publish_to_main=publish_to_main,
+        checkout_main_after_publish=checkout_main_after_publish,
         project_id=project_id,
         projects_config=projects_config,
         pipeline_source=pipeline_source,
