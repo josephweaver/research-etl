@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import etl.executors.slurm.executor as slurm_mod
@@ -101,6 +102,61 @@ def test_slurm_submit_uses_array_batches_and_passes_resume_retry(monkeypatch, tm
     assert "#SBATCH --array=0-1%1" in foreach_call["script_text"]
     assert "--steps 3" in foreach_call["script_text"]
     assert "--foreach-item-index ${SLURM_ARRAY_TASK_ID}" in foreach_call["script_text"]
+
+
+def test_slurm_submit_places_setup_and_step_logs_under_run_workdir(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(
+        vars={"name": "sample"},
+        steps=[Step(name="setup", script="echo.py")],
+    )
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append(
+            {
+                "label": label,
+                "remote_dest_dir": remote_dest_dir,
+                "script_text": script_text,
+            }
+        )
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {
+            "workdir": "/tmp/work",
+            "logdir": "/tmp/logs",
+        },
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+    ex.submit("pipelines/sample.yml", {"run_id": "runabc1234"})
+
+    assert len(calls) == 2
+    setup_script = calls[0]["script_text"]
+    step_script = calls[1]["script_text"]
+
+    assert re.search(
+        r"#SBATCH -o /tmp/work/sample/\d{6}/\d{6}-runabc12/logs/setup/etl-setup-runabc1234-%j\.out",
+        setup_script,
+    )
+    assert re.search(
+        r"#SBATCH -o /tmp/work/sample/\d{6}/\d{6}-runabc12/logs/setup/etl-runabc1234-%j\.out",
+        step_script,
+    )
 
 
 def test_slurm_submit_applies_step_resource_hints_and_env_caps(monkeypatch, tmp_path: Path) -> None:

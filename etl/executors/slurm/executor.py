@@ -864,7 +864,10 @@ class SlurmExecutor(Executor):
         if "{" in pipeline_logdir_resolved or "}" in pipeline_logdir_resolved:
             pipeline_logdir_resolved = ""
         use_pipeline_logdir = bool(pipeline_logdir_resolved)
-        base_logdir = Path(pipeline_logdir_resolved or self.env.logdir or (self.workdir / "slurm_logs"))
+        # Default SLURM log layout is run-scoped under the resolved remote workdir:
+        #   <remote_workdir>/logs/<setup|step_name>/...
+        # Pipeline-level dirs.logdir remains the explicit override.
+        base_logdir = Path(pipeline_logdir_resolved) if use_pipeline_logdir else (Path(remote_workdir) / "logs")
 
         if self.env.ssh_host and self.env.sync and not self.enforce_git_checkout:
             self._sync_repo()
@@ -880,10 +883,7 @@ class SlurmExecutor(Executor):
         )
 
         # submit setup job to prep venv and work dirs
-        if use_pipeline_logdir:
-            setup_logdir = (base_logdir / "setup").as_posix()
-        else:
-            setup_logdir = (base_logdir / jobname / "setup" / run_date / run_fs_id).as_posix()
+        setup_logdir = (base_logdir / "setup").as_posix()
         workdirs_to_create = []
         logdirs_to_create = [setup_logdir]
         # gather work/log dirs for batches
@@ -894,10 +894,7 @@ class SlurmExecutor(Executor):
                 step_name = getattr(steps[0], "name", f"step{step_indices[0]}")
                 label = step_name
                 step_workdir = (remote_workdir_root / label).as_posix()
-                if use_pipeline_logdir:
-                    step_logdir = (base_logdir / label).as_posix()
-                else:
-                    step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
+                step_logdir = (base_logdir / label).as_posix()
                 workdirs_to_create.append(step_workdir)
                 logdirs_to_create.append(step_logdir)
             else:
@@ -908,10 +905,7 @@ class SlurmExecutor(Executor):
                     first_name = getattr(chunk[0][1], "name", f"step{chunk[0][0]}")
                     label = f"{first_name}_array{batch_idx}_chunk{start}"
                     step_workdir = (remote_workdir_root / label).as_posix()
-                    if use_pipeline_logdir:
-                        step_logdir = (base_logdir / label).as_posix()
-                    else:
-                        step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
+                    step_logdir = (base_logdir / label).as_posix()
                     workdirs_to_create.append(step_workdir)
                     logdirs_to_create.append(step_logdir)
                     start += chunk_size
@@ -953,10 +947,7 @@ class SlurmExecutor(Executor):
                         chunk_n = min(chunk_size, int(foreach_count) - start)
                         label = f"{step_name}_foreach_chunk{start}"
                         step_workdir = (remote_workdir_root / step_name).as_posix()
-                        if use_pipeline_logdir:
-                            step_logdir = (base_logdir / step_name).as_posix()
-                        else:
-                            step_logdir = (base_logdir / jobname / step_name / run_date / run_fs_id).as_posix()
+                        step_logdir = (base_logdir / step_name).as_posix()
                         batch_resources = self._resolve_batch_resources(steps)
                         script_text = self._render_batch_script(
                             run_id,
@@ -1002,10 +993,7 @@ class SlurmExecutor(Executor):
                     continue
                 label = step_name
                 step_workdir = (remote_workdir_root / step_name).as_posix()
-                if use_pipeline_logdir:
-                    step_logdir = (base_logdir / step_name).as_posix()
-                else:
-                    step_logdir = (base_logdir / jobname / step_name / run_date / run_fs_id).as_posix()
+                step_logdir = (base_logdir / step_name).as_posix()
                 batch_resources = self._resolve_batch_resources(steps)
                 script_text = self._render_batch_script(
                     run_id,
@@ -1047,10 +1035,7 @@ class SlurmExecutor(Executor):
                     first_name = getattr(chunk_steps[0], "name", f"step{chunk_indices[0]}")
                     label = f"{first_name}_array{batch_idx}_chunk{start}"
                     step_workdir = (remote_workdir_root / label).as_posix()
-                    if use_pipeline_logdir:
-                        step_logdir = (base_logdir / label).as_posix()
-                    else:
-                        step_logdir = (base_logdir / jobname / label / run_date / run_fs_id).as_posix()
+                    step_logdir = (base_logdir / label).as_posix()
                     batch_resources = self._resolve_batch_resources(chunk_steps)
                     script_text = self._render_batch_script(
                         run_id,
