@@ -1021,24 +1021,68 @@ def test_web_api_builder_git_sync_endpoint(monkeypatch) -> None:
 
     seen = {}
 
-    def _fake_sync(*, pipeline, branch=None, push=True, create_branch=True):
+    def _fake_sync(
+        *,
+        pipeline,
+        branch=None,
+        push=True,
+        create_branch=True,
+        project_id=None,
+        projects_config=None,
+        pipeline_source=None,
+    ):
         seen["pipeline"] = pipeline
         seen["branch"] = branch
         seen["push"] = push
         seen["create_branch"] = create_branch
+        seen["project_id"] = project_id
+        seen["projects_config"] = projects_config
+        seen["pipeline_source"] = pipeline_source
         return {"pipeline": pipeline, "branch": branch or "builder/demo", "committed": True, "pushed": push}
 
     monkeypatch.setattr(web_api, "_builder_git_sync", _fake_sync)
     client = TestClient(web_api.app)
     r = client.post(
         "/api/builder/git-sync",
-        json={"pipeline": "prism/download.yml", "branch": "builder/prism", "push": True, "create_branch": True},
+        json={
+            "pipeline": "prism/download.yml",
+            "branch": "builder/prism",
+            "push": True,
+            "create_branch": True,
+            "project_id": "land_core",
+            "pipeline_source": "shared",
+        },
     )
     assert r.status_code == 200
     assert seen["pipeline"] == "prism/download.yml"
     assert seen["branch"] == "builder/prism"
     assert seen["push"] is True
     assert seen["create_branch"] is True
+    assert seen["project_id"] == "land_core"
+    assert seen["pipeline_source"] == "shared"
+
+
+def test_web_api_builder_git_sync_repo_root_from_project_source(monkeypatch, tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+
+    repo = tmp_path / "shared-etl-pipelines"
+    repo.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(web_api, "_builder_project_context", lambda **_k: ("land_core", {}, None))
+    monkeypatch.setattr(
+        web_api,
+        "_builder_pipeline_source_views",
+        lambda **_k: (
+            [{"label": "shared", "pipelines_root": (repo / "pipelines"), "repo_root": repo.resolve()}],
+            [],
+        ),
+    )
+    resolved = web_api._builder_git_sync_repo_root_from_project_source(
+        project_id="land_core",
+        projects_config=None,
+        pipeline_source="shared",
+    )
+    assert resolved == repo.resolve()
 
 
 def test_web_api_builder_validate_allows_foreach_glob_item_tokens() -> None:

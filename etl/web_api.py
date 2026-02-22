@@ -3109,7 +3109,15 @@ INDEX_HTML = """<!doctype html>
         const syncRes = await fetch(`/api/builder/git-sync`, {
           method:"POST",
           headers: {"Content-Type":"application/json"},
-          body: JSON.stringify({ pipeline: payload.pipeline, branch: payload.git_branch, push: true, create_branch: true }),
+          body: JSON.stringify({
+            pipeline: payload.pipeline,
+            branch: payload.git_branch,
+            push: true,
+            create_branch: true,
+            project_id: payload.project_id || "",
+            projects_config: payload.projects_config || "",
+            pipeline_source: payload.pipeline_source || "",
+          }),
         });
         if(!syncRes.ok){
           builderPipelineRunState = "failed";
@@ -3382,7 +3390,15 @@ INDEX_HTML = """<!doctype html>
         const syncRes = await fetch(`/api/builder/git-sync`, {
           method:"POST",
           headers: {"Content-Type":"application/json"},
-          body: JSON.stringify({ pipeline: payload.pipeline, branch: payload.git_branch, push: true, create_branch: true }),
+          body: JSON.stringify({
+            pipeline: payload.pipeline,
+            branch: payload.git_branch,
+            push: true,
+            create_branch: true,
+            project_id: payload.project_id || "",
+            projects_config: payload.projects_config || "",
+            pipeline_source: payload.pipeline_source || "",
+          }),
         });
         if(!syncRes.ok){
           builderStepStatus[idx] = "failed";
@@ -4819,14 +4835,52 @@ def _builder_git_sync_repo_root_from_env() -> Optional[Path]:
     return root
 
 
+def _builder_git_sync_repo_root_from_project_source(
+    *,
+    project_id: Optional[str],
+    projects_config: Optional[str],
+    pipeline_source: Optional[str],
+) -> Optional[Path]:
+    pid = normalize_project_id(project_id)
+    if not pid:
+        return None
+    repo_root = Path(".").resolve()
+    _pid, project_vars, _cfg = _builder_project_context(project_id=pid, projects_config=projects_config)
+    views, _warnings = _builder_pipeline_source_views(project_vars=project_vars, repo_root=repo_root)
+    if not views:
+        return None
+    requested = str(pipeline_source or "").strip()
+    if requested:
+        selected = next((v for v in views if str(v.get("label") or "") == requested), None)
+        if selected is None:
+            raise HTTPException(status_code=400, detail=f"Unknown pipeline_source '{requested}'.")
+        return Path(selected["repo_root"]).resolve()
+    if len(views) == 1:
+        return Path(views[0]["repo_root"]).resolve()
+    labels = [str(v.get("label") or "") for v in views]
+    raise HTTPException(
+        status_code=400,
+        detail=f"Multiple project pipeline sources available {labels}. Pass pipeline_source for git sync.",
+    )
+
+
 def _builder_git_sync(
     *,
     pipeline: str,
     branch: Optional[str] = None,
     push: bool = True,
     create_branch: bool = True,
+    project_id: Optional[str] = None,
+    projects_config: Optional[str] = None,
+    pipeline_source: Optional[str] = None,
 ) -> dict[str, Any]:
-    repo_root = _builder_git_sync_repo_root_from_env()
+    repo_root = _builder_git_sync_repo_root_from_project_source(
+        project_id=project_id,
+        projects_config=projects_config,
+        pipeline_source=pipeline_source,
+    )
+    if repo_root is None:
+        repo_root = _builder_git_sync_repo_root_from_env()
     if repo_root is None:
         raise HTTPException(
             status_code=400,
@@ -4883,6 +4937,7 @@ def _builder_git_sync(
         "committed": committed,
         "staged_files": staged_files,
         "pushed": bool(push),
+        "repo_root": str(repo_root),
         "status": status_after,
     }
 
@@ -5897,7 +5952,7 @@ def _builder_pipeline_source_views(
         if not root.exists() or not root.is_dir():
             warnings.append(f"{label}: pipelines dir not found: {root}")
             continue
-        views.append({"label": label, "pipelines_root": root})
+        views.append({"label": label, "pipelines_root": root, "repo_root": repo_dir})
     return views, warnings
 
 
@@ -6514,11 +6569,17 @@ def api_builder_git_sync(payload: Optional[dict[str, Any]] = Body(default=None))
     branch = str(payload.get("branch") or "").strip() or None
     push = _parse_bool(payload.get("push"), default=True)
     create_branch = _parse_bool(payload.get("create_branch"), default=True)
+    project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
+    projects_config = str(payload.get("projects_config") or "").strip() or None
+    pipeline_source = str(payload.get("pipeline_source") or "").strip() or None
     return _builder_git_sync(
         pipeline=pipeline,
         branch=branch,
         push=push,
         create_branch=create_branch,
+        project_id=project_id,
+        projects_config=projects_config,
+        pipeline_source=pipeline_source,
     )
 
 
