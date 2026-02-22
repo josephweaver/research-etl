@@ -67,6 +67,8 @@ def test_geo_raster_polygonize_excludes_na_value(tmp_path: Path) -> None:
     assert outputs["output_feature_count"] > 0
     gdf = gpd.read_file(out)
     assert "field_id" in gdf.columns
+    assert "source_name" in gdf.columns
+    assert set(gdf["source_name"].tolist()) == {"field_id.tif"}
     values = sorted(set(int(v) for v in gdf["field_id"].tolist()))
     assert values == [1, 2]
 
@@ -96,5 +98,7 @@ def test_geo_raster_polygonize_applies_selector_mask(tmp_path: Path) -> None:
 
     assert outputs["selector_count"] == 1
     gdf = gpd.read_file(out)
+    assert "source_name" in gdf.columns
+    assert set(gdf["source_name"].tolist()) == {"field_id2.tif"}
     values = set(int(v) for v in gdf["field_id"].tolist())
     assert values == {1}

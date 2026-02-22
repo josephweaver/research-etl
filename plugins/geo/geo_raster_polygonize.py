@@ -49,12 +49,14 @@ meta = {
         "output_feature_count",
         "excluded_value_count",
         "selector_count",
+        "source_name_field",
     ],
     "params": {
         "input_raster": {"type": "str", "default": ""},
         "output_path": {"type": "str", "default": ""},
         "band": {"type": "int", "default": 1},
         "value_field": {"type": "str", "default": "value"},
+        "source_name_field": {"type": "str", "default": "source_name"},
         "exclude_values": {"type": "str", "default": ""},
         "exclude_nodata": {"type": "bool", "default": True},
         "nodata_value": {"type": "str", "default": ""},
@@ -192,6 +194,7 @@ def run(args, ctx):
 
     band = int(args.get("band") or 1)
     value_field = str(args.get("value_field") or "value").strip() or "value"
+    source_name_field = str(args.get("source_name_field") or "source_name").strip() or "source_name"
     exclude_values = _parse_numeric_values(str(args.get("exclude_values") or ""))
     exclude_nodata = bool(args.get("exclude_nodata", True))
     nodata_override_raw = str(args.get("nodata_value") or "").strip()
@@ -213,6 +216,7 @@ def run(args, ctx):
         raise FileExistsError(f"output_path exists and overwrite=false: {output_path}")
 
     records: list[dict[str, Any]] = []
+    source_name = input_path.name
     with rasterio.open(input_path) as ds:
         if ds.crs is None:
             raise ValueError("input raster CRS is required")
@@ -234,13 +238,13 @@ def run(args, ctx):
             if geom.is_empty:
                 continue
             value = raw_val.item() if hasattr(raw_val, "item") else raw_val
-            records.append({value_field: value, "geometry": geom})
+            records.append({value_field: value, source_name_field: source_name, "geometry": geom})
 
     source_count = len(records)
     if records:
         gdf = gpd.GeoDataFrame(records, geometry="geometry", crs=src_crs_text)
     else:
-        gdf = gpd.GeoDataFrame({value_field: []}, geometry=[], crs=src_crs_text)
+        gdf = gpd.GeoDataFrame({value_field: [], source_name_field: []}, geometry=[], crs=src_crs_text)
 
     if target_crs:
         gdf = gdf.to_crs(target_crs)
@@ -267,7 +271,9 @@ def run(args, ctx):
     filtered = _apply_selector_filter(gdf, selector_geoms, selector_mode, predicate)
 
     if dissolve_by_value and len(filtered):
-        grouped = filtered[[value_field, "geometry"]].dissolve(by=value_field).reset_index()
+        grouped = filtered[[value_field, source_name_field, "geometry"]].dissolve(
+            by=[value_field, source_name_field]
+        ).reset_index()
         filtered = grouped
 
     if overwrite:
@@ -297,4 +303,5 @@ def run(args, ctx):
         "output_feature_count": int(len(filtered)),
         "excluded_value_count": int(excluded_count),
         "selector_count": int(len(selector_geoms)),
+        "source_name_field": source_name_field,
     }
