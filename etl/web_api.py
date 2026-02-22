@@ -6101,18 +6101,25 @@ def api_builder_source(
                         ),
                     )
     selected_source_label = str(pipeline_source or "").strip()
-    if (not path.exists() or not path.is_file()) and normalize_project_id(project_id):
+    pid = normalize_project_id(project_id)
+    if pid:
         _pid, project_vars, _cfg = _builder_project_context(project_id=project_id, projects_config=projects_config)
         source_views, _warnings = _builder_pipeline_source_views(project_vars=project_vars, repo_root=repo_root)
         view_by_label = {str(v["label"]): v for v in source_views}
         if selected_source_label and selected_source_label not in view_by_label:
             raise HTTPException(status_code=400, detail=f"Unknown pipeline_source '{selected_source_label}'.")
         source_label = selected_source_label
-        source_rel = raw.replace("\\", "/").strip()
+        source_rel = _normalize_pipeline_relpath(raw).as_posix()
         source_parts = [p for p in source_rel.split("/") if p]
         if source_parts and source_parts[0] in view_by_label and len(source_parts) > 1:
             source_label = source_parts[0]
             source_rel = "/".join(source_parts[1:])
+
+        # Explicit source selection should take precedence over local-repo path
+        # matches when loading builder content.
+        should_resolve_from_source = bool(source_label) or (not path.exists() or not path.is_file())
+        if not should_resolve_from_source:
+            source_label = ""
 
         def _candidates(rel_text: str) -> list[Path]:
             rel = Path(rel_text)
@@ -6122,53 +6129,54 @@ def api_builder_source(
                 out.append(rel.with_suffix(".yaml"))
             return out
 
-        selected_views = [view_by_label[source_label]] if source_label and source_label in view_by_label else list(source_views)
-        matches: list[tuple[str, Path]] = []
-        has_path_hint = ("/" in source_rel) or ("\\" in source_rel)
-        if has_path_hint:
-            for view in selected_views:
-                root = Path(view["pipelines_root"]).resolve()
-                for rel_candidate in _candidates(source_rel):
-                    cand = (root / rel_candidate).resolve()
-                    if cand.exists() and cand.is_file():
-                        matches.append((str(view["label"]), cand))
-        else:
-            raw_name = Path(source_rel).name
-            candidate_names = [raw_name]
-            if Path(raw_name).suffix.lower() not in {".yml", ".yaml"}:
-                candidate_names.extend([f"{raw_name}.yml", f"{raw_name}.yaml"])
-            for view in selected_views:
-                root = Path(view["pipelines_root"]).resolve()
-                for name in candidate_names:
-                    for cand in sorted(root.rglob(name)):
-                        if cand.is_file():
-                            matches.append((str(view["label"]), cand.resolve()))
-        uniq: list[tuple[str, Path]] = []
-        seen: set[str] = set()
-        for label, m in matches:
-            key = f"{label}|{m.as_posix().lower()}"
-            if key in seen:
-                continue
-            seen.add(key)
-            uniq.append((label, m))
-        if len(uniq) == 1:
-            selected_source_label = str(uniq[0][0])
-            path = uniq[0][1]
-        elif len(uniq) > 1:
-            rels: list[str] = []
-            for label, m in uniq[:10]:
-                try:
-                    root = Path(view_by_label[label]["pipelines_root"]).resolve()
-                    rels.append(f"{label}/{m.relative_to(root).as_posix()}")
-                except Exception:
-                    rels.append(f"{label}/{m.name}")
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Ambiguous pipeline filename '{raw}'. "
-                    f"Matches: {rels}. Pass a relative path like '{rels[0]}' if desired."
-                ),
-            )
+        if should_resolve_from_source:
+            selected_views = [view_by_label[source_label]] if source_label and source_label in view_by_label else list(source_views)
+            matches: list[tuple[str, Path]] = []
+            has_path_hint = ("/" in source_rel) or ("\\" in source_rel)
+            if has_path_hint:
+                for view in selected_views:
+                    root = Path(view["pipelines_root"]).resolve()
+                    for rel_candidate in _candidates(source_rel):
+                        cand = (root / rel_candidate).resolve()
+                        if cand.exists() and cand.is_file():
+                            matches.append((str(view["label"]), cand))
+            else:
+                raw_name = Path(source_rel).name
+                candidate_names = [raw_name]
+                if Path(raw_name).suffix.lower() not in {".yml", ".yaml"}:
+                    candidate_names.extend([f"{raw_name}.yml", f"{raw_name}.yaml"])
+                for view in selected_views:
+                    root = Path(view["pipelines_root"]).resolve()
+                    for name in candidate_names:
+                        for cand in sorted(root.rglob(name)):
+                            if cand.is_file():
+                                matches.append((str(view["label"]), cand.resolve()))
+            uniq: list[tuple[str, Path]] = []
+            seen: set[str] = set()
+            for label, m in matches:
+                key = f"{label}|{m.as_posix().lower()}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                uniq.append((label, m))
+            if len(uniq) == 1:
+                selected_source_label = str(uniq[0][0])
+                path = uniq[0][1]
+            elif len(uniq) > 1:
+                rels: list[str] = []
+                for label, m in uniq[:10]:
+                    try:
+                        root = Path(view_by_label[label]["pipelines_root"]).resolve()
+                        rels.append(f"{label}/{m.relative_to(root).as_posix()}")
+                    except Exception:
+                        rels.append(f"{label}/{m.name}")
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Ambiguous pipeline filename '{raw}'. "
+                        f"Matches: {rels}. Pass a relative path like '{rels[0]}' if desired."
+                    ),
+                )
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"Pipeline file not found: {path}")
     try:
