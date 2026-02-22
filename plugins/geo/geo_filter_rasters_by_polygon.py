@@ -42,6 +42,7 @@ meta = {
         "selected_raster_count",
         "skipped_no_crs_count",
         "error_raster_count",
+        "error_samples",
     ],
     "params": {
         "raster_dir": {"type": "str", "default": ""},
@@ -133,14 +134,31 @@ def run(args, ctx):
     selector_cache: dict[str, Any] = {}
     skipped_no_crs_count = 0
     error_raster_count = 0
+    error_samples: list[str] = []
     inspected_raster_count = 0
 
-    candidates = sorted(p for p in raster_dir.rglob("*") if p.is_file() and p.suffix.lower() in ext_set)
-    for path in candidates:
-        rel = path.relative_to(raster_dir).as_posix()
+    raw_candidates = sorted(p for p in raster_dir.rglob("*") if p.is_file() and p.suffix.lower() in ext_set)
+    candidates: list[tuple[Path, Path]] = []
+    seen_inspect_paths: set[str] = set()
+    for candidate_path in raw_candidates:
+        inspect_path = candidate_path
+        # ENVI-style rasters often use a no-extension data file with a .hdr sidecar.
+        # When candidate is .hdr, inspect the paired data file if present.
+        if candidate_path.suffix.lower() == ".hdr":
+            paired = candidate_path.with_suffix("")
+            if paired.exists() and paired.is_file():
+                inspect_path = paired
+        inspect_key = inspect_path.resolve().as_posix().lower()
+        if inspect_key in seen_inspect_paths:
+            continue
+        seen_inspect_paths.add(inspect_key)
+        candidates.append((candidate_path, inspect_path))
+
+    for candidate_path, inspect_path in candidates:
+        rel = candidate_path.relative_to(raster_dir).as_posix()
         try:
-            with rasterio.open(path) as ds:
-                inspected_raster_count += 1
+            inspected_raster_count += 1
+            with rasterio.open(inspect_path) as ds:
                 bounds = getattr(ds, "bounds", None)
                 if bounds is None:
                     raise ValueError("missing bounds")
@@ -159,8 +177,8 @@ def run(args, ctx):
                     geom_selector_crs = gpd.GeoSeries([geom], crs=crs_text).to_crs(selector.crs).iloc[0]
                     selected_rows.append(
                         {
-                            "relative_path": rel,
-                            "raster_path": path.resolve().as_posix(),
+                            "relative_path": inspect_path.relative_to(raster_dir).as_posix(),
+                            "raster_path": inspect_path.resolve().as_posix(),
                             "crs": crs_text,
                             "minx": float(bounds.left),
                             "miny": float(bounds.bottom),
@@ -171,6 +189,8 @@ def run(args, ctx):
                     selected_geoms.append(geom_selector_crs)
         except Exception as exc:  # noqa: BLE001
             error_raster_count += 1
+            if len(error_samples) < 10:
+                error_samples.append(f"{rel}: {exc}")
             if verbose:
                 ctx.log(f"[geo_filter_rasters_by_polygon] skip {rel}: {exc}")
 
@@ -200,6 +220,8 @@ def run(args, ctx):
         f"[geo_filter_rasters_by_polygon] candidates={len(candidates)} inspected={inspected_raster_count} "
         f"selected={len(selected_rows)} skipped_no_crs={skipped_no_crs_count} errors={error_raster_count}"
     )
+    if error_samples:
+        ctx.log(f"[geo_filter_rasters_by_polygon] error_samples={error_samples}", "WARN")
 
     return {
         "input_raster_dir": raster_dir.resolve().as_posix(),
@@ -212,5 +234,6 @@ def run(args, ctx):
         "selected_raster_count": int(len(selected_rows)),
         "skipped_no_crs_count": int(skipped_no_crs_count),
         "error_raster_count": int(error_raster_count),
+        "error_samples": error_samples,
     }
 

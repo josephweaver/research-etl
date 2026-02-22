@@ -1,0 +1,21 @@
+project_id: land_core
+vars:
+  dataset_id: raw.yanroy_download_v1
+  name: yanroy_download
+  gdrive_remote: gdrive
+  gdrive_src: Data/Field_Boundaries
+  gdrive_glob: ReleaseData.7z
+  workdir: /mnt/scratch/weave151/work/yanroy_download/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}
+  logdir: /mnt/scratch/weave151/work/yanroy_download/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}/logs
+  yanroy_dir: /mnt/scratch/weave151/data/yanroy
+  archivedir: /mnt/scratch/weave151/data/yanroy/archive
+  rawdir: /mnt/scratch/weave151/data/yanroy/raw
+dirs:
+  workdir: /mnt/scratch/weave151/work/yanroy_download/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}
+  logdir: /mnt/scratch/weave151/work/yanroy_download/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}/logs
+steps:
+- name: 02_extract_release_archive
+  script: archive_extract 'archive_glob=/mnt/scratch/weave151/data/yanroy/archive/*.7z'
+    'out=/mnt/scratch/weave151/data/yanroy/raw' 'include_glob=**/WELD_*_2010_field_segments
+    **/WELD_*_2010_field_segments.* ' overwrite=true
+  output_var: extracted_raw

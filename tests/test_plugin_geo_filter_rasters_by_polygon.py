@@ -57,6 +57,8 @@ class _FakeRasterio:
             return _FakeDataset("EPSG:4326", (-101.0, 39.0, -99.0, 41.0))
         if name == "tile_out.tif":
             return _FakeDataset("EPSG:4326", (-120.0, 10.0, -118.0, 12.0))
+        if name == "tile_pair":
+            return _FakeDataset("EPSG:4326", (-101.0, 39.0, -99.0, 41.0))
         raise FileNotFoundError(name)
 
 
@@ -104,3 +106,36 @@ def test_geo_filter_rasters_by_polygon_smoke(tmp_path: Path, monkeypatch) -> Non
     footprints = gpd.read_file(outputs["selected_footprints_path"])
     assert len(footprints) == 1
     assert footprints.iloc[0]["relative_path"] == "tile_in.tif"
+
+
+def test_geo_filter_rasters_by_polygon_hdr_uses_paired_data_file(tmp_path: Path, monkeypatch) -> None:
+    plugin = load_plugin(Path("plugins/geo_filter_rasters_by_polygon.py"))
+    assert plugin.module is not None
+    monkeypatch.setattr(plugin.module, "rasterio", _FakeRasterio())
+
+    raster_dir = tmp_path / "rasters"
+    raster_dir.mkdir(parents=True, exist_ok=True)
+    (raster_dir / "tile_pair").write_bytes(b"fake")
+    (raster_dir / "tile_pair.hdr").write_text("ENVI", encoding="utf-8")
+
+    selector = tmp_path / "selector.gpkg"
+    _write_selector(selector)
+
+    output_dir = tmp_path / "out_hdr"
+    outputs = plugin.run(
+        {
+            "raster_dir": str(raster_dir),
+            "selector_path": str(selector),
+            "output_dir": str(output_dir),
+            "raster_extensions": ".hdr",
+        },
+        _ctx(tmp_path),
+    )
+
+    assert outputs["candidate_raster_count"] == 1
+    assert outputs["inspected_raster_count"] == 1
+    assert outputs["selected_raster_count"] == 1
+    with Path(outputs["selected_rasters_csv"]).open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert rows[0]["relative_path"] == "tile_pair"
