@@ -42,6 +42,7 @@ Last updated: 2026-02-21
 ### Future cleanup (path resolution)
 - [ ] Centralize path/glob normalization in shared runtime utilities (post-resolution), instead of per-plugin ad hoc handling.
 - [ ] Keep plugin traversal logic, but move common `path`/`*_glob` handling to one resolver shared by runner + builder test paths.
+- [ ] SLURM path model cleanup: remove implicit step workdir/logdir generation and support explicit per-step templates (for example `{workdir}/{step.name}` with co-located logs).
 
 ### Things to fix later
 - [ ] Add first-class `Project` object with repo bindings and project-level variables.

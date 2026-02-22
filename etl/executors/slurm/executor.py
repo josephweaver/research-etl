@@ -645,6 +645,7 @@ class SlurmExecutor(Executor):
         )
         batches = self._group_steps_with_indices(pipeline.steps)
         submission_records = []
+        submitted_step_jobs = 0
         prev_jobid = None
         jobname = str(pipeline.vars.get("jobname") or pipeline.vars.get("name") or "run")
         pipeline_workdir_template = str((getattr(pipeline, "dirs", {}) or {}).get("workdir") or "").strip()
@@ -1003,6 +1004,7 @@ class SlurmExecutor(Executor):
                         )
                         prev_jobid = jobid
                         submission_records.append(jobid)
+                        submitted_step_jobs += 1
                         start += chunk_size
                     continue
                 label = step_name
@@ -1038,6 +1040,7 @@ class SlurmExecutor(Executor):
                 jobid = self._submit_script(script_text, run_id, label=label, prev_dependency=prev_jobid, remote_dest_dir=step_workdir)
                 prev_jobid = jobid
                 submission_records.append(jobid)
+                submitted_step_jobs += 1
             else:
                 # array: chunk if exceeds array_task_limit
                 chunk_size = min(self.array_task_limit, len(batch))
@@ -1080,7 +1083,14 @@ class SlurmExecutor(Executor):
                     jobid = self._submit_script(script_text, run_id, label=label, prev_dependency=prev_jobid, array_bounds=(0, len(chunk)-1), remote_dest_dir=step_workdir)
                     prev_jobid = jobid
                     submission_records.append(jobid)
+                    submitted_step_jobs += 1
                     start += chunk_size
+
+        if pipeline.steps and submitted_step_jobs == 0:
+            raise SlurmSubmitError(
+                "SLURM submit produced no step jobs for a non-empty pipeline. "
+                "Check step parsing and batch expansion."
+            )
 
         if self.enable_controller_job:
             controller_script = self._render_controller_script(
@@ -1101,7 +1111,15 @@ class SlurmExecutor(Executor):
             prev_jobid = controller_jobid
             submission_records.append(controller_jobid)
 
-        status = RunStatus(run_id=run_id, state=RunState.QUEUED, message=f"submitted {len(submission_records)} jobs")
+        controller_jobs = 1 if self.enable_controller_job else 0
+        status = RunStatus(
+            run_id=run_id,
+            state=RunState.QUEUED,
+            message=(
+                f"submitted {len(submission_records)} jobs "
+                f"(setup=1, steps={submitted_step_jobs}, controller={controller_jobs})"
+            ),
+        )
         self._statuses[run_id] = status
         upsert_run_status(
             run_id=run_id,
@@ -1118,7 +1136,12 @@ class SlurmExecutor(Executor):
             event_type="run_queued",
             event_details={"job_ids": submission_records},
         )
-        return SubmissionResult(run_id=run_id, backend_run_id=",".join(submission_records), job_ids=submission_records, message="submitted")
+        return SubmissionResult(
+            run_id=run_id,
+            backend_run_id=",".join(submission_records),
+            job_ids=submission_records,
+            message=status.message,
+        )
 
     def status(self, run_id: str) -> RunStatus:
         # Simple cache; future: query sacct/squeue with stored job id.

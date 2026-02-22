@@ -134,6 +134,15 @@ A lightweight ETL tool to construct new pipelines from modular Python "plugin" s
 
 This project has moved from a local prototype toward an operational research runner:
 
+## Logging and error-handling objectives
+
+- All execution paths should emit an `INFO` log immediately before each meaningful action (step start, external command invocation, file mutation, network call, state transition).
+- External subprocesses (including `git`, `rclone`, and similar tools) should have both `stdout` and `stderr` captured and routed into the ETL logging stream.
+- Every entry point (`etl` CLI commands, `run_batch`, web handlers, executor launch paths, helper scripts) should include a generic top-level exception trap that logs the error plus full stack trace before returning failure.
+- Logging should be backed by a configurable logging engine that writes to both:
+  - console/stdout (for live operator visibility)
+  - step/run log files (for post-run diagnostics and provenance)
+
 ## Pre-1.0 Stability
 
 This project is currently in a high-flux pre-1.0 phase.

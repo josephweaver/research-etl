@@ -209,6 +209,16 @@
 - `--allow-dirty-git` behavior for remote executors is not complete yet:
   - current remote runs are commit-pinned; dirty local workspace changes are not propagated to remote checkout.
 
+## Design objectives (logging/error model)
+- Log intent before action:
+  - emit `INFO` right before every meaningful action (step execution, command execution, file operations, network calls, status transitions).
+- Capture subprocess output uniformly:
+  - when invoking child processes (`git`, `rclone`, etc.), capture and route both `stdout` and `stderr` into the ETL logger/step log.
+- Add generic entry-point exception traps:
+  - every top-level entry point should catch unhandled exceptions, log the error and full traceback, then fail with consistent diagnostics.
+- Centralize logging configuration:
+  - use a configurable logging engine/adapter that writes to both stdout and step/run log files by default.
+
 ## Future Work
 
 Suggested next steps and future features are tracked in `future.todo.md`.
