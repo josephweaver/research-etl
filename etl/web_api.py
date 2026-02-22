@@ -3087,7 +3087,15 @@ INDEX_HTML = """<!doctype html>
       builderValidationState = "valid";
       renderBuilderPipelineStatus();
 
-      if(payload.git_sync){
+      const hintedExecutor = String(payload.executor || "").trim().toLowerCase();
+      const envExecutor = payload.env && builderEnvExecutorMap[payload.env]
+        ? String(builderEnvExecutorMap[payload.env] || "").trim().toLowerCase()
+        : "";
+      const effectiveExecutor = hintedExecutor || envExecutor || "local";
+      const remoteExecutor = effectiveExecutor === "slurm" || effectiveExecutor === "hpcc_direct";
+      const shouldGitSync = !!payload.git_sync || remoteExecutor;
+
+      if(shouldGitSync){
         if(!payload.pipeline){
           builderPipelineRunState = "failed";
           builderPipelineRunning = false;
@@ -3095,7 +3103,9 @@ INDEX_HTML = """<!doctype html>
           msg.textContent = "git_sync requires a pipeline path.";
           return;
         }
-        msg.textContent = "Syncing git branch (commit/push)...";
+        msg.textContent = payload.git_sync
+          ? "Syncing git branch (commit/push)..."
+          : "Remote run selected; syncing git branch (commit/push)...";
         const syncRes = await fetch(`/api/builder/git-sync`, {
           method:"POST",
           headers: {"Content-Type":"application/json"},
@@ -3128,7 +3138,7 @@ INDEX_HTML = """<!doctype html>
       if(payload.retry_delay_seconds !== undefined) runBody.retry_delay_seconds = payload.retry_delay_seconds;
       runBody.dry_run = !!payload.dry_run;
       runBody.verbose = !!payload.verbose;
-      if(payload.git_sync){
+      if(shouldGitSync){
         runBody.execution_source = "git_remote";
         runBody.allow_workspace_source = false;
       } else if(runMode === "repro"){
@@ -3349,7 +3359,15 @@ INDEX_HTML = """<!doctype html>
       payload.step_index = idx;
       const runMode = String((document.getElementById("b_run_mode") || {}).value || "draft").trim().toLowerCase();
       payload.allow_dirty_git = runMode !== "repro";
-      if(payload.git_sync){
+      const hintedExecutor = String(payload.executor || "").trim().toLowerCase();
+      const envExecutor = payload.env && builderEnvExecutorMap[payload.env]
+        ? String(builderEnvExecutorMap[payload.env] || "").trim().toLowerCase()
+        : "";
+      const effectiveExecutor = hintedExecutor || envExecutor || "local";
+      const remoteExecutor = effectiveExecutor === "slurm" || effectiveExecutor === "hpcc_direct";
+      const shouldGitSync = !!payload.git_sync || remoteExecutor;
+
+      if(shouldGitSync){
         if(!payload.pipeline){
           builderStepStatus[idx] = "failed";
           delete builderStepTesting[idx];
@@ -3358,7 +3376,9 @@ INDEX_HTML = """<!doctype html>
           msg.textContent = "git_sync requires a pipeline path.";
           return;
         }
-        msg.textContent = `Syncing git branch before step ${idx + 1} test...`;
+        msg.textContent = payload.git_sync
+          ? `Syncing git branch before step ${idx + 1} test...`
+          : `Remote executor selected; syncing git branch before step ${idx + 1} test...`;
         const syncRes = await fetch(`/api/builder/git-sync`, {
           method:"POST",
           headers: {"Content-Type":"application/json"},
