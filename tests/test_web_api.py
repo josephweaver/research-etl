@@ -1328,6 +1328,42 @@ def test_web_api_builder_source_resolves_project_prefixed_pipeline(monkeypatch, 
     assert Path(s.json()["pipeline"]).resolve() == target.resolve()
 
 
+def test_web_api_builder_source_infers_var_types(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    p = tmp_path / "pipelines" / "typed.yml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        "\n".join(
+            [
+                "vars:",
+                "  workdir: \"{env.workdir}/demo\"",
+                "  count: 7",
+                "  enabled: true",
+                "  tags: [\"A\", \"B\"]",
+                "  opts:",
+                "    mode: fast",
+                "steps: []",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    client = TestClient(web_api.app)
+    s = client.get("/api/builder/source", params={"pipeline": "typed.yml"})
+    assert s.status_code == 200
+    model = s.json()["model"]
+    assert model["var_types"]["workdir"] == "path"
+    assert model["var_types"]["count"] == "number"
+    assert model["var_types"]["enabled"] == "bool"
+    assert model["var_types"]["tags"] == "list"
+    assert model["var_types"]["opts"] == "dict"
+
+
 def test_web_api_builder_source_prefers_selected_project_source_over_local(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

@@ -3057,7 +3057,7 @@ INDEX_HTML = """<!doctype html>
         exitBuilderCreateMode();
         document.getElementById("b_pipeline_path").value = "";
         builderModel = normalizeBuilderModelPlugins(
-          ensureBuilderDefaultDirs({ project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] })
+          ensureBuilderDefaultDirs({ project_id: "", vars: {}, var_types: {}, dirs: {}, requires_pipelines: [], steps: [] })
         );
         const projectSel = document.getElementById("b_project_id");
         if(projectSel){
@@ -3087,7 +3087,7 @@ INDEX_HTML = """<!doctype html>
       if(!res.ok){
         document.getElementById("builder_msg").textContent = await readMessage(res);
         builderModel = normalizeBuilderModelPlugins(
-          ensureBuilderDefaultDirs({ project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] })
+          ensureBuilderDefaultDirs({ project_id: "", vars: {}, var_types: {}, dirs: {}, requires_pipelines: [], steps: [] })
         );
         if(projectSel){
           builderModel.project_id = String(projectSel.value || "").trim();
@@ -3098,7 +3098,7 @@ INDEX_HTML = """<!doctype html>
         builderSelectedPipelineSource = String(payload.pipeline_source || builderSelectedPipelineSource || "").trim();
         setBuilderPipelineSourceValue(builderSelectedPipelineSource);
         builderModel = normalizeBuilderModelPlugins(
-          ensureBuilderDefaultDirs(payload.model || { project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] })
+          ensureBuilderDefaultDirs(payload.model || { project_id: "", vars: {}, var_types: {}, dirs: {}, requires_pipelines: [], steps: [] })
         );
         if(projectSel){
           const pid = String((builderModel && builderModel.project_id) || "").trim();

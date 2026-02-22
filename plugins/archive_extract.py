@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 import zipfile
 import glob
 import fnmatch
 import re
 from pathlib import Path
 from typing import List
+
+from etl.subprocess_logging import run_logged_subprocess
 
 try:
     import py7zr  # type: ignore
@@ -203,7 +204,7 @@ def _extract_7z(
         cmd.append("-aos")
     ctx.log(f"[archive_extract] running: {shlex.join(cmd)}")
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = run_logged_subprocess(cmd, action="plugin.archive_extract.7z", check=False)
     except FileNotFoundError as exc:
         raise RuntimeError(
             f"7z binary not found: {seven_zip}. Install 7-Zip, set seven_zip_bin/ETL_7Z_BIN, or install py7zr."
@@ -227,7 +228,7 @@ def _extract_7z(
                 "WARN",
             )
             ctx.log(f"[archive_extract] retry running: {shlex.join(retry_cmd)}", "WARN")
-            retry = subprocess.run(retry_cmd, capture_output=True, text=True, check=False)
+            retry = run_logged_subprocess(retry_cmd, action="plugin.archive_extract.7z_retry", check=False)
             if retry.returncode != 0:
                 retry_stderr = (retry.stderr or "").strip()
                 retry_stdout = (retry.stdout or "").strip()

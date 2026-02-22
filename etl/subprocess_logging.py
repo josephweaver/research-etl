@@ -64,3 +64,32 @@ def run_logged_subprocess(
     if check and proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, cmd_list, output=proc.stdout, stderr=proc.stderr)
     return proc
+
+
+def spawn_logged_subprocess(
+    cmd: Sequence[str],
+    *,
+    logger: logging.Logger | None = None,
+    action: str = "subprocess",
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    stdout=None,
+    stderr=None,
+    text: bool = True,
+) -> subprocess.Popen:
+    log = logger or get_app_logger("process")
+    cmd_list = [str(x) for x in cmd]
+    log.info("[%s] spawning command: %s", action, _cmd_text(cmd_list))
+    if cwd is not None:
+        log.info("[%s] cwd=%s", action, str(cwd))
+
+    popen_kwargs = {
+        "stdout": stdout,
+        "stderr": stderr,
+        "text": text,
+    }
+    if cwd is not None:
+        popen_kwargs["cwd"] = str(cwd)
+    if env is not None:
+        popen_kwargs["env"] = dict(env)
+    return subprocess.Popen(cmd_list, **popen_kwargs)  # noqa: S603

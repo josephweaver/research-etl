@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from etl.subprocess_logging import run_logged_subprocess
+from etl.subprocess_logging import run_logged_subprocess, spawn_logged_subprocess
 
 
 meta = {
@@ -197,7 +197,13 @@ def run(args, ctx):
     child_log.parent.mkdir(parents=True, exist_ok=True)
     ctx.log(f"[pipeline_execute] fire_and_forget child log: {child_log.as_posix()}")
     log_f = child_log.open("a", encoding="utf-8")
-    proc2 = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT, text=True)  # noqa: S603
+    proc2 = spawn_logged_subprocess(
+        cmd,
+        action="plugin.pipeline_execute.fire_and_forget",
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
     log_f.close()
     return {
         "mode": mode,
