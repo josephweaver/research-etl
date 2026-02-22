@@ -1232,7 +1232,7 @@ INDEX_HTML = """<!doctype html>
     }
     function _builderCanonicalType(raw){
       const t = String(raw || "").trim().toLowerCase();
-      if(t === "list" || t === "dict" || t === "bool" || t === "number") return t;
+      if(t === "list" || t === "dict" || t === "bool" || t === "number" || t === "path") return t;
       return "string";
     }
     function _builderVarValueDisplay(value, type){
@@ -1262,7 +1262,7 @@ INDEX_HTML = """<!doctype html>
     function _parseBuilderVarValue(rawValue, type){
       const t = _builderCanonicalType(type);
       const raw = String(rawValue ?? "");
-      if(t === "string"){
+      if(t === "string" || t === "path"){
         return { ok: true, value: raw };
       }
       if(t === "number"){

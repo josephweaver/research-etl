@@ -43,6 +43,7 @@ environments:
     basedir: /mnt/scratch/weave151
     remote_repo: "{basedir}/etl"
     workdir: "{basedir}/work"
+    datadir: "{basedir}/data"
     logdir: "{workdir}/logs"
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
     propagate_db_secret: false
