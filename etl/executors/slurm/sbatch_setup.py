@@ -244,7 +244,7 @@ def render_setup_script(
         template_path,
         {
             "sbatch_lines": "\n".join(sbatch_lines),
-            "chunk_runtime_flags": _render_chunk("runtime_flags", _with_chunk_logs(chunk_runtime_flags, "runtime_flags", executor.verbose)),
+            "chunk_runtime_flags": _render_chunk("runtime_flags", chunk_runtime_flags),
             "chunk_dirs": _render_chunk("dirs", _with_chunk_logs(chunk_dirs, "dirs", executor.verbose)),
             "chunk_modules": _render_chunk("modules", _with_chunk_logs(chunk_modules, "modules", executor.verbose)),
             "chunk_source_checkout": _render_chunk("source_checkout", _with_chunk_logs(chunk_source_checkout, "source_checkout", executor.verbose)),

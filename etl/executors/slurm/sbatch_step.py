@@ -214,7 +214,7 @@ def render_step_script(
         template_path,
         {
             "sbatch_lines": "\n".join(sbatch_lines),
-            "chunk_runtime_flags": _render_chunk("runtime_flags", _with_chunk_logs(chunk_runtime_flags, "runtime_flags", executor.verbose)),
+            "chunk_runtime_flags": _render_chunk("runtime_flags", chunk_runtime_flags),
             "chunk_runtime_bootstrap": _render_chunk("runtime_bootstrap", _with_chunk_logs(chunk_runtime_bootstrap, "runtime_bootstrap", executor.verbose)),
             "chunk_modules": _render_chunk("modules", _with_chunk_logs(chunk_modules, "modules", executor.verbose)),
             "chunk_step_scope": _render_chunk("step_scope", _with_chunk_logs(chunk_step_scope, "step_scope", executor.verbose)),
