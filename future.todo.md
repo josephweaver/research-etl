@@ -13,6 +13,69 @@ Last updated: 2026-02-21
   - Allow associating users to the new project.
   - Auto-add the creating user to project membership by default.
 
+## Incremental Reuse / Skip Reexecution Plan
+Goal: avoid re-running prerequisite pipelines unless relevant inputs/logic changed, with explicit force overrides.
+
+### Phase 0 (run-level prerequisite skip, minimal risk)
+- [ ] Define a `pipeline_fingerprint` spec for prerequisite reuse decisions:
+  - pipeline YAML checksum (resolved file content)
+  - referenced plugin/script checksums
+  - effective config checksums (`global`, `env`, `project`)
+  - execution identity fields (`executor`, selected env name)
+- [ ] Persist `pipeline_fingerprint` (and fingerprint components) with run metadata/events.
+- [ ] Update dependency auto-run logic:
+  - if latest successful prerequisite run has matching `pipeline_fingerprint`, skip reexecution
+  - otherwise reexecute prerequisite
+- [ ] Add CLI controls:
+  - `--force` (force target + dependencies)
+  - `--force-deps` (force prerequisite reexecution only)
+  - optional `--no-skip-deps` alias for clarity
+- [ ] Emit explicit decision logs before dependency handling:
+  - `skip` vs `rerun`
+  - exact mismatch reasons (which fingerprint component changed)
+- [ ] Add web/API parity for run actions (same default skip behavior + force override fields).
+
+Acceptance criteria:
+- [ ] Re-running the same pipeline with unchanged code/config skips prerequisite runs.
+- [ ] Any fingerprint component change triggers prerequisite rerun.
+- [ ] `--force` and `--force-deps` override skip behavior deterministically.
+- [ ] Run logs/UI clearly explain every skip/rerun decision.
+
+### Phase 1 (input/data-aware invalidation)
+- [ ] Add optional input fingerprinting for prerequisite pipelines:
+  - dataset version ids when using dataset registry
+  - optional file fingerprints (size/mtime or checksum policy)
+- [ ] Add plugin/pipeline metadata flags:
+  - `cacheable: true|false`
+  - `nondeterministic: true|false`
+  - `side_effect_only: true|false`
+- [ ] Enforce conservative default:
+  - if determinism cannot be established, rerun (or require explicit opt-in to skip).
+
+Acceptance criteria:
+- [ ] Prerequisite skip decisions can include data version/fingerprint checks.
+- [ ] Pipelines marked nondeterministic are never auto-skipped unless explicitly forced.
+
+### Phase 2 (step-level incremental execution)
+- [ ] Introduce step fingerprints and reusable step output manifests.
+- [ ] Reuse prior successful step outputs when step fingerprint matches.
+- [ ] Add per-step invalidation traces in UI/CLI diagnostics.
+
+Acceptance criteria:
+- [ ] Partial rerun works for modified pipelines without recomputing unchanged steps.
+- [ ] UI shows "why step reran" and "why step reused".
+
+### Guardrails / policy
+- [ ] Treat `sys.now.*`, random seeds, external "latest" APIs as nondeterministic inputs unless pinned.
+- [ ] Include Python/runtime dependency signature (or lockfile checksum) in fingerprint policy.
+- [ ] Keep skip decisions auditable: persist `decision_reason` + component diffs.
+- [ ] Default to safety over speed when fingerprint data is incomplete.
+
+### Effort estimate
+- [ ] Phase 0: ~2-4 dev days
+- [ ] Phase 1: ~3-7 dev days
+- [ ] Phase 2: ~1-2+ weeks
+
 ## From README.md
 - [ ] Add explicit `--allow-dirty-git` support for remote execution by checking out pinned commit remotely, then overlaying local dirty files before run start.
 
