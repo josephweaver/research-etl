@@ -161,6 +161,21 @@ def _format_mb_as_slurm_mem(mb: int) -> str:
     return f"{value}M"
 
 
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return bool(default)
+    if text in {"1", "true", "yes", "on", "y"}:
+        return True
+    if text in {"0", "false", "no", "off", "n"}:
+        return False
+    return bool(default)
+
+
 @dataclass
 class SlurmEnv:
     partition: Optional[str] = None
@@ -277,12 +292,12 @@ class SlurmExecutor(Executor):
         )
         self.source_bundle = source_bundle or env_config.get("source_bundle")
         self.source_snapshot = source_snapshot or env_config.get("source_snapshot")
-        self.propagate_db_secret = bool(env_config.get("propagate_db_secret", True))
-        self.load_secrets_file = bool(env_config.get("load_secrets_file", True))
+        self.propagate_db_secret = _parse_bool(env_config.get("propagate_db_secret"), default=True)
+        self.load_secrets_file = _parse_bool(env_config.get("load_secrets_file"), default=True)
         if allow_workspace_source is None:
-            self.allow_workspace_source = bool(env_config.get("allow_workspace_source", False))
+            self.allow_workspace_source = _parse_bool(env_config.get("allow_workspace_source"), default=False)
         else:
-            self.allow_workspace_source = bool(allow_workspace_source)
+            self.allow_workspace_source = _parse_bool(allow_workspace_source, default=False)
         config_database_url = str(env_config.get("database_url") or "").strip()
         self.database_url = config_database_url or self._load_database_url()
         self.db_tunnel_command = str(env_config.get("db_tunnel_command") or "").strip()
@@ -651,7 +666,10 @@ class SlurmExecutor(Executor):
         source_mode = str(context.get("execution_source") or self.execution_source or "auto").strip().lower()
         source_bundle = context.get("source_bundle") or self.source_bundle
         source_snapshot = context.get("source_snapshot") or self.source_snapshot
-        allow_workspace_source = bool(context.get("allow_workspace_source", self.allow_workspace_source))
+        allow_workspace_source = _parse_bool(
+            context.get("allow_workspace_source", self.allow_workspace_source),
+            default=self.allow_workspace_source,
+        )
         selected_source_mode = "workspace"
         git_origin_url = None
         git_commit_sha = None
@@ -1571,7 +1589,13 @@ class SlurmExecutor(Executor):
         lines.append("  git_bundle) prepare_git_bundle ;;")
         lines.append("  snapshot) prepare_snapshot ;;")
         lines.append("  workspace) prepare_workspace ;;")
-        lines.append("  auto) prepare_git_remote || prepare_git_bundle || prepare_snapshot || prepare_workspace || { echo \"[etl][setup][source] auto source resolution failed\" >&2; exit 1; } ;;")
+        lines.append("  auto)")
+        lines.append("    if [ \"$ALLOW_WORKSPACE\" = \"1\" ]; then")
+        lines.append("      prepare_git_remote || prepare_git_bundle || prepare_snapshot || prepare_workspace || { echo \"[etl][setup][source] auto source resolution failed\" >&2; exit 1; }")
+        lines.append("    else")
+        lines.append("      prepare_git_remote || prepare_git_bundle || prepare_snapshot || { echo \"[etl][setup][source] auto source resolution failed\" >&2; exit 1; }")
+        lines.append("    fi")
+        lines.append("    ;;")
         lines.append("  *) echo \"Unsupported execution_source: $SOURCE_MODE\" >&2; exit 1 ;;")
         lines.append("esac")
         if self.verbose:
