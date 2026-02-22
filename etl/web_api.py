@@ -5195,9 +5195,10 @@ def _builder_git_sync(
     if branch and str(branch).strip():
         target_branch = _git_branch_slug(str(branch).strip())
     else:
-        stem = _git_branch_slug(Path(pipeline_rel).with_suffix("").as_posix())
         day = datetime.utcnow().strftime("%y%m%d")
-        target_branch = f"builder/{stem}-{day}" if create_branch else str(status_before.get("branch") or "builder")
+        # Reuse one branch per day across builder edits so switching pipelines/plugins
+        # does not jump to fresh per-pipeline branches.
+        target_branch = f"builder/day-{day}" if create_branch else str(status_before.get("branch") or "builder")
     current_branch = str(status_before.get("branch") or "").strip()
 
     if target_branch and target_branch != current_branch:
