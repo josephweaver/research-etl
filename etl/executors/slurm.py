@@ -1149,7 +1149,10 @@ class SlurmExecutor(Executor):
         lines.append(f"mkdir -p {logdir}")
         lines.append(f"mkdir -p {workdir}")
         lines.append(f"cd {checkout_root}")
-        lines.append(f"export PYTHONPATH={checkout_root}:$PYTHONPATH")
+        lines.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
+        lines.append("if ! python -c 'import etl.run_batch' >/dev/null 2>&1; then")
+        lines.append("  python -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
+        lines.append("fi")
 
         if self.env.modules:
             for mod in self.env.modules:
@@ -1288,7 +1291,10 @@ class SlurmExecutor(Executor):
                 lines.append("log_step 'loading optional secrets file (values hidden)'")
             lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
         lines.append("source \"$VENV/bin/activate\"")
-        lines.append(f"export PYTHONPATH={checkout_root}:$PYTHONPATH")
+        lines.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
+        lines.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
+        lines.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
+        lines.append("fi")
 
         if self.env.modules:
             for mod in self.env.modules:
@@ -1574,7 +1580,10 @@ class SlurmExecutor(Executor):
         if self.verbose:
             lines.append("log_step 'installing requirements if present'")
         lines.append(f"if [ -f \"{req_path}\" ]; then pip install -r \"{req_path}\"; fi")
-        lines.append(f"export PYTHONPATH={checkout_root}:$PYTHONPATH")
+        lines.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
+        lines.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
+        lines.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
+        lines.append("fi")
         lines.append(f"mkdir -p {workdir}")
         if self.verbose:
             lines.append("log_step 'setup complete'")
