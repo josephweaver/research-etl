@@ -2013,7 +2013,7 @@ INDEX_HTML = """<!doctype html>
             : (vtype === "number"
                 ? `<input data-kind="var-val" data-key="${esc(k)}" type="number" step="any" value="${esc(vdisp)}" placeholder="number" />`
                 : ((vtype === "list" || vtype === "dict")
-                    ? `<textarea data-kind="var-val" data-key="${esc(k)}" rows="2" placeholder='${vtype === "list" ? "[\"A\",\"B\"]" : "{\"k\":\"v\"}"}'>${esc(vdisp)}</textarea>`
+                    ? `<textarea data-kind="var-val" data-key="${esc(k)}" rows="2" placeholder='${vtype === "list" ? "[&quot;A&quot;,&quot;B&quot;]" : "{&quot;k&quot;:&quot;v&quot;}"}'>${esc(vdisp)}</textarea>`
                     : `<input data-kind="var-val" data-key="${esc(k)}" value="${esc(vdisp)}" placeholder="${vtype === "path" ? "path template/value" : "value"}" />`));
         const row = document.createElement("div");
         row.className = "builder-item";
