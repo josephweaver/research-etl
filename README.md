@@ -134,6 +134,14 @@ A lightweight ETL tool to construct new pipelines from modular Python "plugin" s
 
 This project has moved from a local prototype toward an operational research runner:
 
+## Pre-1.0 Stability
+
+This project is currently in a high-flux pre-1.0 phase.
+
+- Backward compatibility for older pipelines/scripts is not guaranteed between updates.
+- Interfaces and behavior may change aggressively while architecture and execution flows are being finalized.
+- Compatibility and interface guarantees begin at `1.0`.
+
 - Execution: local + remote SLURM (setup + dependent batch/array jobs).
 - Completion tracking: event-driven from `etl/run_batch.py` (`batch_started`, `batch_completed`, `batch_failed`, `run_completed`), without scheduler polling.
 - Persistence: JSONL (`.runs/runs.jsonl`) plus Postgres tables when `ETL_DATABASE_URL` is configured:

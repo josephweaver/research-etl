@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import etl.executors.slurm as slurm_mod
+import etl.executors.slurm.executor as slurm_mod
 from etl.executors.slurm import SlurmExecutor
 from etl.pipeline import Pipeline, Step
 from etl.git_checkout import GitExecutionSpec

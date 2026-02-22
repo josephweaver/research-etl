@@ -21,7 +21,6 @@ import shlex
 import subprocess
 import tempfile
 import math
-import time
 import re
 from datetime import datetime
 from dataclasses import dataclass, replace
@@ -29,15 +28,25 @@ from pathlib import Path
 from typing import Any, Dict, Optional, List, Tuple
 from urllib.parse import urlparse
 
-from .base import Executor, RunState, RunStatus, SubmissionResult
-from ..git_checkout import GitExecutionSpec
-from ..pipeline import Pipeline
-from ..pipeline import parse_pipeline
-from ..pipeline_assets import pipeline_asset_sources_from_project_vars
-from ..plugins.base import load_plugin
-from ..source_control import SourceControlError, SourceExecutionSpec, make_git_source_provider
-from ..tracking import fetch_plugin_resource_stats, upsert_run_status
-from ..variable_solver import VariableSolver
+from ..base import Executor, RunState, RunStatus, SubmissionResult
+from ...git_checkout import GitExecutionSpec
+from ...pipeline import Pipeline
+from ...pipeline import parse_pipeline
+from ...pipeline_assets import pipeline_asset_sources_from_project_vars
+from ...plugins.base import load_plugin
+from ...source_control import SourceControlError, SourceExecutionSpec, make_git_source_provider
+from ...tracking import fetch_plugin_resource_stats, upsert_run_status
+from ...variable_solver import VariableSolver
+from .ssh import (
+    build_scp_cmd,
+    build_ssh_cmd,
+    build_ssh_common_args,
+    build_target_host,
+    run_cmd_with_retries,
+)
+from .sbatch_setup import write_setup_sbatch, render_setup_script
+from .sbatch_step import write_step_sbatch, render_step_script
+from .sbatch_controller import write_controller_sbatch, render_controller_script
 
 _SOURCE_PROVIDER = make_git_source_provider()
 
@@ -377,63 +386,28 @@ class SlurmExecutor(Executor):
         retries: int,
         op_name: str,
     ) -> subprocess.CompletedProcess:
-        attempts = max(1, int(retries) + 1)
-        last_timeout: Optional[subprocess.TimeoutExpired] = None
-        for attempt in range(1, attempts + 1):
-            try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
-                last_timeout = exc
-                if attempt < attempts:
-                    if self.verbose:
-                        print(f"{op_name} timeout (attempt {attempt}/{attempts}); retrying")
-                    time.sleep(self.remote_retry_delay_seconds * attempt)
-                    continue
-                raise SlurmSubmitError(
-                    f"{op_name} timed out after {timeout}s (attempt {attempt}/{attempts})"
-                ) from exc
-
-            if proc.returncode == 0:
-                return proc
-
-            if attempt < attempts:
-                if self.verbose:
-                    err = (proc.stderr or proc.stdout or "").strip()
-                    print(f"{op_name} failed (attempt {attempt}/{attempts}): {err} | retrying")
-                time.sleep(self.remote_retry_delay_seconds * attempt)
-                continue
-            return proc
-
-        # Unreachable in normal flow; keep a defensive error.
-        if last_timeout is not None:
-            raise SlurmSubmitError(f"{op_name} timed out after {attempts} attempts")
-        raise SlurmSubmitError(f"{op_name} failed after {attempts} attempts")
+        return run_cmd_with_retries(
+            cmd,
+            timeout=timeout,
+            retries=retries,
+            op_name=op_name,
+            retry_delay_seconds=self.remote_retry_delay_seconds,
+            verbose=self.verbose,
+            error_factory=SlurmSubmitError,
+        )
 
     def _ssh_common_args(self) -> List[str]:
-        args: List[str] = []
-        if self.env.ssh_jump:
-            args += ["-J", self.env.ssh_jump]
-        args += [
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            f"ConnectTimeout={int(self.ssh_connect_timeout)}",
-            "-o",
-            "ConnectionAttempts=1",
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=2",
-        ]
-        if self.ssh_strict_host_key_checking:
-            args += ["-o", f"StrictHostKeyChecking={self.ssh_strict_host_key_checking}"]
-        return args
+        return build_ssh_common_args(
+            ssh_jump=self.env.ssh_jump,
+            ssh_connect_timeout=self.ssh_connect_timeout,
+            ssh_strict_host_key_checking=self.ssh_strict_host_key_checking,
+        )
 
     def _build_ssh_cmd(self, target: str, *remote_parts: str) -> List[str]:
-        return ["ssh"] + self._ssh_common_args() + [target, *remote_parts]
+        return build_ssh_cmd(target, *remote_parts, common_args=self._ssh_common_args())
 
     def _build_scp_cmd(self, *parts: str) -> List[str]:
-        return ["scp"] + self._ssh_common_args() + list(parts)
+        return build_scp_cmd(*parts, common_args=self._ssh_common_args())
 
     @staticmethod
     def _group_steps_with_indices(steps: List[Any]) -> List[List[Tuple[int, Any]]]:
@@ -1205,97 +1179,6 @@ class SlurmExecutor(Executor):
         workdir: str,
         plugins_dir: str,
         logdir: str,
-        array_index: bool = False,
-    ) -> str:
-        logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
-        lines = ["#!/bin/bash --login"]
-        if self.env.partition:
-            lines.append(f"#SBATCH -p {self.env.partition}")
-        if self.env.account:
-            lines.append(f"#SBATCH -A {self.env.account}")
-        if self.env.time:
-            lines.append(f"#SBATCH -t {self.env.time}")
-        if self.env.cpus_per_task:
-            lines.append(f"#SBATCH -c {self.env.cpus_per_task}")
-        if self.env.mem:
-            lines.append(f"#SBATCH --mem={self.env.mem}")
-        lines.append(f"#SBATCH -J etl-{run_id[:8]}")
-        lines.append(f"#SBATCH -o {logdir}/etl-{run_id}-%j.%a.out" if array_index else f"#SBATCH -o {logdir}/etl-{run_id}-%j.out")
-        if array_index:
-            lines.append(f"#SBATCH --array=0-{len(steps)-1}")
-        if self.env.sbatch_extra:
-            for extra in self.env.sbatch_extra:
-                lines.append(f"#SBATCH {extra}")
-
-        lines.append("set -euo pipefail")
-        lines.append(f"mkdir -p {logdir}")
-        lines.append(f"mkdir -p {workdir}")
-        lines.append(f"cd {checkout_root}")
-        lines.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
-        lines.append("if ! python -c 'import etl.run_batch' >/dev/null 2>&1; then")
-        lines.append("  python -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
-        lines.append("fi")
-
-        if self.env.modules:
-            for mod in self.env.modules:
-                lines.append(f"module load {mod}")
-        if self.env.conda_env:
-            lines.append(f"source activate {self.env.conda_env}")
-
-        env_workdir = Path(workdir).as_posix()
-        lines.append(f"cd {env_workdir}")
-        if array_index:
-            indices_str = " ".join(str(i) for i in step_indices)
-            lines.append(f"step_indices=({indices_str})")
-            step_arg = "${step_indices[$SLURM_ARRAY_TASK_ID]}"
-        else:
-            step_arg = ",".join(str(i) for i in step_indices)
-
-        cmd = [
-            "python",
-            "-m",
-            "etl.run_batch",
-            pipeline_path,
-            "--steps",
-            step_arg,
-            "--plugins-dir",
-            plugins_dir,
-            "--workdir",
-            env_workdir,
-        ]
-        cmd += ["--context-file", context_file]
-        cmd += ["--run-id", run_id]
-        cmd += ["--max-retries", str(self.step_max_retries)]
-        cmd += ["--retry-delay-seconds", str(self.step_retry_delay_seconds)]
-        if self.global_config:
-            gc_path = Path(self.global_config)
-            gc_arg = ((Path(checkout_root) / gc_path).as_posix() if not gc_path.is_absolute() else gc_path.as_posix())
-            cmd += ["--global-config", gc_arg]
-        if self.projects_config:
-            pc_path = Path(self.projects_config)
-            pc_arg = ((Path(checkout_root) / pc_path).as_posix() if not pc_path.is_absolute() else pc_path.as_posix())
-            cmd += ["--projects-config", pc_arg]
-        if self.environments_config and self.env_name:
-            ec_path = Path(self.environments_config)
-            ec_arg = ((Path(checkout_root) / ec_path).as_posix() if not ec_path.is_absolute() else ec_path.as_posix())
-            cmd += ["--environments-config", ec_arg, "--env", self.env_name]
-
-        lines.append(" ".join(cmd))
-
-        return "\n".join(lines)
-
-    # Override render to add venv/provisioning and absolute python
-    def _render_batch_script(
-        self,
-        run_id: str,
-        checkout_root: str,
-        pipeline_path: str,
-        steps: list,
-        step_indices: List[int],
-        context_file: str,
-        workdir: str,
-        plugins_dir: str,
-        logdir: str,
         venv_path: str,
         req_path: str,
         python_bin: str,
@@ -1316,150 +1199,39 @@ class SlurmExecutor(Executor):
         foreach_from_array: bool = False,
         foreach_item_offset: int = 0,
     ) -> str:
-        logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
-        lines = ["#!/bin/bash --login"]
-        eff_time = str(sbatch_time or self.env.time or "").strip() or None
-        eff_cpus = sbatch_cpus_per_task if sbatch_cpus_per_task not in (None, 0) else self.env.cpus_per_task
-        eff_mem = str(sbatch_mem or self.env.mem or "").strip() or None
-        if self.env.partition:
-            lines.append(f"#SBATCH -p {self.env.partition}")
-        if self.env.account:
-            lines.append(f"#SBATCH -A {self.env.account}")
-        if eff_time:
-            lines.append(f"#SBATCH -t {eff_time}")
-        if eff_cpus:
-            lines.append(f"#SBATCH -c {int(eff_cpus)}")
-        if eff_mem:
-            lines.append(f"#SBATCH --mem={eff_mem}")
-        lines.append(f"#SBATCH -J etl-{run_id[:8]}")
-        lines.append(f"#SBATCH -o {logdir}/etl-{run_id}-%j.%a.out" if array_index else f"#SBATCH -o {logdir}/etl-{run_id}-%j.out")
-        if array_index:
-            array_n = int(array_count or len(steps))
-            array_upper = max(0, array_n - 1)
-            if array_max_parallel not in (None, ""):
-                try:
-                    arr_cap = int(array_max_parallel)
-                except (TypeError, ValueError):
-                    arr_cap = 0
-                if arr_cap > 0:
-                    lines.append(f"#SBATCH --array=0-{array_upper}%{arr_cap}")
-                else:
-                    lines.append(f"#SBATCH --array=0-{array_upper}")
-            else:
-                lines.append(f"#SBATCH --array=0-{array_upper}")
-        if self.env.sbatch_extra:
-            for extra in self.env.sbatch_extra:
-                lines.append(f"#SBATCH {extra}")
-
-        lines.append("set -euo pipefail")
-        if self.verbose:
-            lines.append("ETL_VERBOSE=1")
-            lines.append("log_step(){ [ \"$ETL_VERBOSE\" = \"1\" ] && echo \"[etl][$(date -u +%Y-%m-%dT%H:%M:%SZ)] $1\"; }")
-            lines.append("log_step 'batch bootstrap started'")
-        if self.verbose:
-            lines.append("log_step 'creating log and work directories'")
-        lines.append(f"mkdir -p {logdir}")
-        lines.append(f"cd {checkout_root}")
-        if self.verbose:
-            lines.append("log_step 'activating runtime environment'")
-        lines.append(f"PYTHON={python_bin}")
-        lines.append(f"VENV={venv_path}")
-        lines.append(f"export ETL_REPO_ROOT={checkout_root}")
-        self._append_db_tunnel_lines(lines)
-        if child_jobs_file:
-            lines.append(f"export ETL_CHILD_JOBS_FILE={child_jobs_file}")
-        if self.load_secrets_file:
-            if self.verbose:
-                lines.append("log_step 'loading optional secrets file (values hidden)'")
-            lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
-        lines.append("source \"$VENV/bin/activate\"")
-        lines.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
-        lines.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
-        lines.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
-        lines.append("fi")
-
-        if self.env.modules:
-            for mod in self.env.modules:
-                if self.verbose:
-                    lines.append(f"log_step {shlex.quote(f'loading module: {mod}')}")
-                lines.append(f"module load {mod}")
-        if self.env.conda_env:
-            if self.verbose:
-                lines.append("log_step 'activating conda environment'")
-            lines.append(f"source activate {self.env.conda_env}")
-
-        env_workdir = Path(workdir).as_posix()
-        if self.verbose:
-            lines.append("log_step 'ensuring step workdir exists'")
-        lines.append(f"mkdir -p {env_workdir}")
-        if self.verbose:
-            lines.append("log_step 'switching to step workdir'")
-        lines.append(f"cd {env_workdir}")
-        foreach_arg: Optional[str] = None
-        if array_index and foreach_from_array:
-            step_arg = ",".join(str(i) for i in step_indices)
-            if int(foreach_item_offset or 0) > 0:
-                foreach_arg = f"$((SLURM_ARRAY_TASK_ID+{int(foreach_item_offset)}))"
-            else:
-                foreach_arg = "${SLURM_ARRAY_TASK_ID}"
-        elif array_index:
-            indices_str = " ".join(str(i) for i in step_indices)
-            lines.append(f"step_indices=({indices_str})")
-            step_arg = "${step_indices[$SLURM_ARRAY_TASK_ID]}"
-        else:
-            step_arg = ",".join(str(i) for i in step_indices)
-        run_started_expr = ""
-        if run_started_at:
-            # Backward-compatible runtime feature detection:
-            # older checkouts may not yet expose --run-started-at on run_batch.py.
-            lines.append("RUN_STARTED_OPT=''")
-            lines.append("RUN_STARTED_VAL=''")
-            lines.append("if \"$VENV/bin/python\" -m etl.run_batch -h 2>&1 | grep -q -- '--run-started-at'; then")
-            lines.append("  RUN_STARTED_OPT='--run-started-at'")
-            lines.append(f"  RUN_STARTED_VAL={shlex.quote(str(run_started_at))}")
-            lines.append("fi")
-            run_started_expr = "${RUN_STARTED_OPT:+$RUN_STARTED_OPT $RUN_STARTED_VAL}"
-
-        cmd = [
-            "$VENV/bin/python",
-            "-m",
-            "etl.run_batch",
-            pipeline_path,
-            "--steps",
-            step_arg,
-            "--plugins-dir",
-            plugins_dir,
-            "--workdir",
-            env_workdir,
-        ]
-        cmd += ["--context-file", context_file]
-        cmd += ["--run-id", run_id]
-        if project_id:
-            cmd += ["--project-id", str(project_id)]
-        if resume_run_id:
-            cmd += ["--resume-run-id", str(resume_run_id)]
-        if run_started_expr:
-            cmd += [run_started_expr]
-        cmd += ["--max-retries", str(self.step_max_retries)]
-        cmd += ["--retry-delay-seconds", str(self.step_retry_delay_seconds)]
-        if global_config_path:
-            cmd += ["--global-config", global_config_path]
-        if projects_config_path:
-            cmd += ["--projects-config", projects_config_path]
-        if environments_config_path and self.env_name:
-            cmd += ["--environments-config", environments_config_path, "--env", self.env_name]
-        if foreach_arg:
-            cmd += ["--foreach-item-index", foreach_arg]
-        for key, value in _flatten_vars_for_cli(dict(commandline_vars or {})):
-            cmd += ["--var", f"{key}={value}"]
-        if self.verbose:
-            cmd += ["--verbose"]
-
-        if self.verbose:
-            lines.append("log_step 'running etl.run_batch'")
-        lines.append(" ".join(cmd))
-
-        return "\n".join(lines)
+        return render_step_script(
+            executor=self,
+            run_id=run_id,
+            checkout_root=checkout_root,
+            pipeline_path=pipeline_path,
+            steps=steps,
+            step_indices=step_indices,
+            context_file=context_file,
+            workdir=workdir,
+            plugins_dir=plugins_dir,
+            logdir=logdir,
+            venv_path=venv_path,
+            req_path=req_path,
+            python_bin=python_bin,
+            project_id=project_id,
+            resume_run_id=resume_run_id,
+            run_started_at=run_started_at,
+            global_config_path=global_config_path,
+            projects_config_path=projects_config_path,
+            environments_config_path=environments_config_path,
+            commandline_vars=commandline_vars,
+            child_jobs_file=child_jobs_file,
+            sbatch_time=sbatch_time,
+            sbatch_cpus_per_task=sbatch_cpus_per_task,
+            sbatch_mem=sbatch_mem,
+            array_index=array_index,
+            array_count=array_count,
+            array_max_parallel=array_max_parallel,
+            foreach_from_array=foreach_from_array,
+            foreach_item_offset=foreach_item_offset,
+            flatten_vars_for_cli=_flatten_vars_for_cli,
+        )
+        
 
     def _render_controller_script(
         self,
@@ -1471,62 +1243,15 @@ class SlurmExecutor(Executor):
         wait_children: bool,
         poll_seconds: int,
     ) -> str:
-        lines = ["#!/bin/bash --login"]
-        if self.env.partition:
-            lines.append(f"#SBATCH -p {self.env.partition}")
-        if self.env.account:
-            lines.append(f"#SBATCH -A {self.env.account}")
-        lines.append("#SBATCH -t 00:20:00")
-        lines.append("#SBATCH -c 1")
-        lines.append("#SBATCH --mem=512M")
-        lines.append(f"#SBATCH -J etl-ctl-{run_id[:8]}")
-        lines.append(f"#SBATCH -o {logdir}/etl-controller-{run_id}-%j.out")
-        if self.env.sbatch_extra:
-            for extra in self.env.sbatch_extra:
-                lines.append(f"#SBATCH {extra}")
-        lines.append("set -euo pipefail")
-        lines.append(f"mkdir -p {logdir}")
-        lines.append(f"mkdir -p {workdir}")
-        lines.append(f"CHILD_FILE={shlex.quote(child_jobs_file)}")
-        lines.append(f"POLL={int(poll_seconds)}")
-        lines.append(f"WAIT_CHILDREN={'1' if wait_children else '0'}")
-        lines.append("echo '[controller] started'")
-        lines.append("if [ \"$WAIT_CHILDREN\" != \"1\" ]; then")
-        lines.append("  echo '[controller] wait_children disabled; exiting'")
-        lines.append("  exit 0")
-        lines.append("fi")
-        lines.append("if [ ! -f \"$CHILD_FILE\" ]; then")
-        lines.append("  echo '[controller] no child job file found; exiting'")
-        lines.append("  exit 0")
-        lines.append("fi")
-        lines.append("mapfile -t RAW_IDS < <(grep -Eo '[0-9]+(_[0-9]+)?' \"$CHILD_FILE\" | awk '!seen[$0]++')")
-        lines.append("if [ ${#RAW_IDS[@]} -eq 0 ]; then")
-        lines.append("  echo '[controller] no child ids registered; exiting'")
-        lines.append("  exit 0")
-        lines.append("fi")
-        lines.append("echo \"[controller] waiting on ${#RAW_IDS[@]} child job ids\"")
-        lines.append("for jid in \"${RAW_IDS[@]}\"; do")
-        lines.append("  while squeue -h -j \"$jid\" >/dev/null 2>&1 && [ -n \"$(squeue -h -j \"$jid\")\" ]; do")
-        lines.append("    sleep \"$POLL\"")
-        lines.append("  done")
-        lines.append("done")
-        lines.append("FAILED=0")
-        lines.append("for jid in \"${RAW_IDS[@]}\"; do")
-        lines.append("  if command -v sacct >/dev/null 2>&1; then")
-        lines.append("    state=$(sacct -n -P -j \"$jid\" --format=State 2>/dev/null | head -n 1 | cut -d'|' -f1 | tr -d '[:space:]')")
-        lines.append("    if [ -n \"$state\" ] && [[ \"$state\" != COMPLETED* ]]; then")
-        lines.append("      echo \"[controller] child job $jid state=$state\"")
-        lines.append("      FAILED=1")
-        lines.append("    fi")
-        lines.append("  fi")
-        lines.append("done")
-        lines.append("if [ \"$FAILED\" = \"1\" ]; then")
-        lines.append("  echo '[controller] child job failures detected'")
-        lines.append("  exit 1")
-        lines.append("fi")
-        lines.append("echo '[controller] all child jobs complete'")
-        lines.append("exit 0")
-        return "\n".join(lines)
+        return render_controller_script(
+            executor=self,
+            run_id=run_id,
+            workdir=workdir,
+            logdir=logdir,
+            child_jobs_file=child_jobs_file,
+            wait_children=wait_children,
+            poll_seconds=poll_seconds,
+        )
 
     def _render_setup_script(
         self,
@@ -1547,180 +1272,30 @@ class SlurmExecutor(Executor):
         allow_workspace_source: bool = False,
         pipeline_asset_overlays: Optional[List[Dict[str, str]]] = None,
     ) -> str:
-        logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
-        lines = ["#!/bin/bash --login"]
-        setup_time = str(self.env.setup_time or self.env.time or "00:10:00").strip() or "00:10:00"
-        setup_cpus = int(self.env.cpus_per_task or 0) or None
-        setup_mem = str(self.env.mem or "").strip() or None
-        max_time_min = _parse_slurm_time_to_minutes(str(self.env.max_time or ""))
-        max_cpus = int(self.env.max_cpus_per_task or 0) or None
-        max_mem_mb = _parse_mem_to_mb(str(self.env.max_mem or ""))
-        if setup_time and max_time_min is not None:
-            cur_min = _parse_slurm_time_to_minutes(setup_time)
-            if cur_min is not None:
-                setup_time = _format_minutes_as_slurm_time(min(cur_min, max_time_min))
-        if setup_cpus and max_cpus is not None:
-            setup_cpus = min(setup_cpus, max_cpus)
-        if setup_mem and max_mem_mb is not None:
-            cur_mem_mb = _parse_mem_to_mb(setup_mem)
-            if cur_mem_mb is not None:
-                setup_mem = _format_mb_as_slurm_mem(min(cur_mem_mb, max_mem_mb))
-        if self.env.partition:
-            lines.append(f"#SBATCH -p {self.env.partition}")
-        if self.env.account:
-            lines.append(f"#SBATCH -A {self.env.account}")
-        if setup_time:
-            lines.append(f"#SBATCH -t {setup_time}")
-        if setup_cpus:
-            lines.append(f"#SBATCH -c {setup_cpus}")
-        if setup_mem:
-            lines.append(f"#SBATCH --mem={setup_mem}")
-        lines.append(f"#SBATCH -J etl-setup-{run_id[:6]}")
-        lines.append(f"#SBATCH -o {logdir}/etl-setup-{run_id}-%j.out")
-        if self.env.sbatch_extra:
-            for extra in self.env.sbatch_extra:
-                lines.append(f"#SBATCH {extra}")
-
-        lines.append("set -euo pipefail")
-        if self.verbose:
-            lines.append("ETL_VERBOSE=1")
-            lines.append("log_step(){ [ \"$ETL_VERBOSE\" = \"1\" ] && echo \"[etl][$(date -u +%Y-%m-%dT%H:%M:%SZ)] $1\"; }")
-            lines.append("log_step 'setup bootstrap started'")
-        if self.verbose:
-            lines.append("log_step 'creating setup directories'")
-        lines.append(f"mkdir -p {logdir}")
-        lines.append(f"mkdir -p {workdir}")
-        for d in workdirs_to_create:
-            lines.append(f"mkdir -p {d}")
-        for d in logdirs_to_create:
-            lines.append(f"mkdir -p {d}")
-        if self.env.modules:
-            for mod in self.env.modules:
-                if self.verbose:
-                    lines.append(f"log_step {shlex.quote(f'loading module: {mod}')}")
-                lines.append(f"module load {mod}")
-        if self.env.conda_env:
-            if self.verbose:
-                lines.append("log_step 'activating conda environment'")
-            lines.append(f"source activate {self.env.conda_env}")
-        if self.verbose:
-            lines.append("log_step 'preparing execution source'")
-        mode = str(execution_source or "auto").strip().lower() or "auto"
-        repo_url_q = shlex.quote(str(git_origin_url or "").strip())
-        repo_sha_q = shlex.quote(str(git_commit_sha or "").strip())
-        source_bundle_q = shlex.quote(str(source_bundle_path or "").strip())
-        source_snapshot_q = shlex.quote(str(source_snapshot_path or "").strip())
-        lines.append(f"CHECKOUT_ROOT={shlex.quote(checkout_root)}")
-        lines.append(f"REPO_URL={repo_url_q}")
-        lines.append(f"REPO_SHA={repo_sha_q}")
-        lines.append(f"SOURCE_BUNDLE={source_bundle_q}")
-        lines.append(f"SOURCE_SNAPSHOT={source_snapshot_q}")
-        lines.append("mkdir -p \"$(dirname \\\"$CHECKOUT_ROOT\\\")\"")
-        lines.append("prepare_git_remote(){")
-        lines.append(f"  [ -n {repo_url_q} ] && [ -n {repo_sha_q} ] || {{ echo \"[etl][setup][source] missing repo_url or repo_sha for git_remote\" >&2; return 1; }}")
-        lines.append("  if [ ! -d \"$CHECKOUT_ROOT\" ]; then mkdir -p \"$CHECKOUT_ROOT\"; fi")
-        lines.append("  if [ -d \"$CHECKOUT_ROOT\" ] && [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then rm -rf \"$CHECKOUT_ROOT\"; fi")
-        lines.append(f"  if [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then git clone --no-checkout {repo_url_q} \"$CHECKOUT_ROOT\" || {{ echo \"[etl][setup][source] git clone failed\" >&2; return 1; }}; fi")
-        lines.append("  cd \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] cannot cd checkout root: $CHECKOUT_ROOT\" >&2; return 1; }")
-        lines.append("  git fetch --tags --prune origin || { echo \"[etl][setup][source] git fetch failed\" >&2; return 1; }")
-        lines.append(f"  git checkout --detach {repo_sha_q} || {{ echo \"[etl][setup][source] git checkout failed for requested SHA\" >&2; return 1; }}")
-        lines.append(f"  git reset --hard {repo_sha_q} || {{ echo \"[etl][setup][source] git reset failed for requested SHA\" >&2; return 1; }}")
-        lines.append("}")
-        lines.append("prepare_git_bundle(){")
-        lines.append(f"  [ -n {source_bundle_q} ] && [ -n {repo_sha_q} ] || {{ echo \"[etl][setup][source] missing source_bundle or repo_sha for git_bundle\" >&2; return 1; }}")
-        lines.append(f"  if [ ! -f {source_bundle_q} ]; then echo \"[etl][setup][source] source bundle not found\" >&2; return 1; fi")
-        lines.append("  if [ -d \"$CHECKOUT_ROOT\" ] && [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then rm -rf \"$CHECKOUT_ROOT\"; fi")
-        lines.append(f"  if [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then git clone --no-checkout {source_bundle_q} \"$CHECKOUT_ROOT\" || {{ echo \"[etl][setup][source] git clone from bundle failed\" >&2; return 1; }}; fi")
-        lines.append("  cd \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] cannot cd checkout root: $CHECKOUT_ROOT\" >&2; return 1; }")
-        lines.append(f"  git fetch {source_bundle_q} --tags || {{ echo \"[etl][setup][source] git fetch from bundle failed\" >&2; return 1; }}")
-        lines.append(f"  git checkout --detach {repo_sha_q} || {{ echo \"[etl][setup][source] git checkout failed for requested SHA\" >&2; return 1; }}")
-        lines.append(f"  git reset --hard {repo_sha_q} || {{ echo \"[etl][setup][source] git reset failed for requested SHA\" >&2; return 1; }}")
-        lines.append("}")
-        lines.append("prepare_snapshot(){")
-        lines.append(f"  [ -n {source_snapshot_q} ] || {{ echo \"[etl][setup][source] missing source_snapshot for snapshot mode\" >&2; return 1; }}")
-        lines.append(f"  if [ ! -f {source_snapshot_q} ]; then echo \"[etl][setup][source] source snapshot not found\" >&2; return 1; fi")
-        lines.append("  rm -rf \"$CHECKOUT_ROOT\"")
-        lines.append("  mkdir -p \"$CHECKOUT_ROOT\"")
-        lines.append(f"  case {source_snapshot_q} in")
-        lines.append(f"    *.zip) unzip -q {source_snapshot_q} -d \"$CHECKOUT_ROOT\" || return 1 ;;")
-        lines.append(f"    *.tar|*.tar.gz|*.tgz|*.tar.bz2|*.tbz2|*.tar.xz|*.txz) tar -xf {source_snapshot_q} -C \"$CHECKOUT_ROOT\" || return 1 ;;")
-        lines.append("    *) echo \"[etl][setup][source] unsupported snapshot extension\" >&2; return 1 ;;")
-        lines.append("  esac")
-        lines.append("  cd \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] cannot cd checkout root: $CHECKOUT_ROOT\" >&2; return 1; }")
-        lines.append("}")
-        lines.append("prepare_workspace(){")
-        lines.append(f"  [ {'1' if allow_workspace_source else '0'} = \"1\" ] || {{ echo \"[etl][setup][source] workspace source not allowed\" >&2; return 1; }}")
-        lines.append("  [ -d \"$CHECKOUT_ROOT\" ] || { echo \"[etl][setup][source] workspace checkout missing: $CHECKOUT_ROOT\" >&2; return 1; }")
-        lines.append("  cd \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] cannot cd checkout root: $CHECKOUT_ROOT\" >&2; return 1; }")
-        lines.append("}")
-        if mode == "git_remote":
-            lines.append("prepare_git_remote")
-        elif mode == "git_bundle":
-            lines.append("prepare_git_bundle")
-        elif mode == "snapshot":
-            lines.append("prepare_snapshot")
-        elif mode == "workspace":
-            lines.append("prepare_workspace")
-        elif mode == "auto":
-            if allow_workspace_source:
-                lines.append(
-                    "prepare_git_remote || prepare_git_bundle || prepare_snapshot || prepare_workspace || { echo \"[etl][setup][source] auto source resolution failed\" >&2; exit 1; }"
-                )
-            else:
-                lines.append(
-                    "prepare_git_remote || prepare_git_bundle || prepare_snapshot || { echo \"[etl][setup][source] auto source resolution failed\" >&2; exit 1; }"
-                )
-        else:
-            lines.append(f"echo \"Unsupported execution_source: {shlex.quote(mode)}\" >&2")
-            lines.append("exit 1")
-        overlays = list(pipeline_asset_overlays or [])
-        for idx, overlay in enumerate(overlays):
-            repo_url = str((overlay or {}).get("repo_url") or "").strip()
-            if not repo_url:
-                continue
-            ref = str((overlay or {}).get("ref") or "main").strip() or "main"
-            pipelines_dir = str((overlay or {}).get("pipelines_dir") or "pipelines").strip() or "pipelines"
-            scripts_dir = str((overlay or {}).get("scripts_dir") or "scripts").strip() or "scripts"
-            asset_dir = f"$CHECKOUT_ROOT/.pipeline_assets/src_{idx}"
-            if self.verbose:
-                lines.append(f"log_step {shlex.quote(f'syncing pipeline asset source {idx + 1}: {repo_url} ({ref})')}")
-            lines.append(f"ASSET_DIR_{idx}=\"{asset_dir}\"")
-            lines.append(f"ASSET_URL_{idx}={shlex.quote(repo_url)}")
-            lines.append(f"ASSET_REF_{idx}={shlex.quote(ref)}")
-            lines.append(f"mkdir -p \"$(dirname \\\"$ASSET_DIR_{idx}\\\")\"")
-            lines.append(f"if [ ! -d \"$ASSET_DIR_{idx}\" ]; then mkdir -p \"$ASSET_DIR_{idx}\"; fi")
-            lines.append(f"if [ -d \"$ASSET_DIR_{idx}\" ] && [ ! -d \"$ASSET_DIR_{idx}/.git\" ]; then rm -rf \"$ASSET_DIR_{idx}\"; fi")
-            lines.append(f"if [ ! -d \"$ASSET_DIR_{idx}/.git\" ]; then git clone \"$ASSET_URL_{idx}\" \"$ASSET_DIR_{idx}\" || {{ echo \"[etl][setup][source] pipeline asset clone failed: $ASSET_URL_{idx}\" >&2; exit 1; }}; fi")
-            lines.append(f"git -C \"$ASSET_DIR_{idx}\" fetch --tags --prune origin || {{ echo \"[etl][setup][source] pipeline asset fetch failed: $ASSET_URL_{idx}\" >&2; exit 1; }}")
-            lines.append(f"git -C \"$ASSET_DIR_{idx}\" checkout \"$ASSET_REF_{idx}\" || {{ echo \"[etl][setup][source] pipeline asset checkout failed: $ASSET_REF_{idx}\" >&2; exit 1; }}")
-            lines.append(f"git -C \"$ASSET_DIR_{idx}\" pull --ff-only origin \"$ASSET_REF_{idx}\" >/dev/null 2>&1 || true")
-            lines.append(f"if [ -d \"$ASSET_DIR_{idx}/{pipelines_dir}\" ]; then mkdir -p \"$CHECKOUT_ROOT/pipelines\"; cp -a \"$ASSET_DIR_{idx}/{pipelines_dir}/.\" \"$CHECKOUT_ROOT/pipelines/\"; fi")
-            lines.append(f"if [ -d \"$ASSET_DIR_{idx}/{scripts_dir}\" ]; then mkdir -p \"$CHECKOUT_ROOT/scripts\"; cp -a \"$ASSET_DIR_{idx}/{scripts_dir}/.\" \"$CHECKOUT_ROOT/scripts/\"; fi")
-        if self.verbose:
-            lines.append("log_step 'bootstrapping venv'")
-        lines.append(f"PYTHON={python_bin}")
-        lines.append(f"VENV={venv_path}")
-        lines.append(f"export ETL_REPO_ROOT={checkout_root}")
-        self._append_db_tunnel_lines(lines)
-        if self.load_secrets_file:
-            if self.verbose:
-                lines.append("log_step 'loading optional secrets file (values hidden)'")
-            lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
-        lines.append("if [ ! -f \"$VENV/bin/activate\" ]; then")
-        lines.append("  $PYTHON -m venv \"$VENV\"")
-        lines.append("fi")
-        lines.append("if [ ! -f \"$VENV/bin/activate\" ]; then echo \"[etl][setup] venv activation script missing: $VENV/bin/activate\" >&2; exit 1; fi")
-        if self.verbose:
-            lines.append("log_step 'installing requirements if present'")
-        lines.append(f"if [ -f \"{req_path}\" ]; then \"$VENV/bin/python\" -m pip install -r \"{req_path}\"; fi")
-        lines.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
-        lines.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
-        lines.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
-        lines.append("fi")
-        if self.verbose:
-            lines.append("log_step 'setup complete'")
-        lines.append("echo setup complete")
-        return "\n".join(lines)
+        return render_setup_script(
+            executor=self,
+            run_id=run_id,
+            checkout_root=checkout_root,
+            workdir=workdir,
+            logdir=logdir,
+            venv_path=venv_path,
+            req_path=req_path,
+            python_bin=python_bin,
+            workdirs_to_create=workdirs_to_create,
+            logdirs_to_create=logdirs_to_create,
+            execution_source=execution_source,
+            git_origin_url=git_origin_url,
+            git_commit_sha=git_commit_sha,
+            source_bundle_path=source_bundle_path,
+            source_snapshot_path=source_snapshot_path,
+            allow_workspace_source=allow_workspace_source,
+            pipeline_asset_overlays=pipeline_asset_overlays or [],
+            parse_slurm_time_to_minutes=_parse_slurm_time_to_minutes,
+            parse_mem_to_mb=_parse_mem_to_mb,
+            format_minutes_as_slurm_time=_format_minutes_as_slurm_time,
+            format_mb_as_slurm_mem=_format_mb_as_slurm_mem,
+        )
+        
 
     def _stage_source_asset(self, asset_path: Optional[str], remote_workdir: str, run_id: str, label: str) -> Optional[str]:
         if not asset_path:
@@ -1732,7 +1307,7 @@ class SlurmExecutor(Executor):
             # Assume caller provided a remote-visible path.
             return asset_path
 
-        target = f"{self.env.ssh_user + '@' if self.env.ssh_user else ''}{self.env.ssh_host}"
+        target = build_target_host(self.env.ssh_user, self.env.ssh_host)
         remote_dir = f"{remote_workdir}/source"
         remote_file = f"{remote_dir}/{local_candidate.name}"
         mkdir_cmd = self._build_ssh_cmd(target, f"mkdir -p {remote_dir}")
@@ -1764,7 +1339,7 @@ class SlurmExecutor(Executor):
             return "dry-run"
 
         if self.env.ssh_host:
-            target = f"{self.env.ssh_user + '@' if self.env.ssh_user else ''}{self.env.ssh_host}"
+            target = build_target_host(self.env.ssh_user, self.env.ssh_host)
             if self.propagate_db_secret:
                 self._ensure_remote_secrets_file(target)
             remote_dir = remote_dest_dir or self.env.remote_repo or "/tmp"
@@ -1783,8 +1358,13 @@ class SlurmExecutor(Executor):
                 raise SlurmSubmitError(proc.stderr or proc.stdout)
             # write temp file locally with LF and scp it
             with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch", prefix="etl-", newline="\n") as tmp:
-                tmp.write(script_text.replace("\r\n", "\n"))
                 tmp_path = Path(tmp.name)
+            if label == "setup":
+                write_setup_sbatch(tmp_path, script_text)
+            elif label == "controller":
+                write_controller_sbatch(tmp_path, script_text)
+            else:
+                write_step_sbatch(tmp_path, script_text)
             scp_cmd = self._build_scp_cmd(str(tmp_path), f"{target}:{remote_file}")
             if self.verbose:
                 print("SCP script:", " ".join(scp_cmd))
@@ -1815,8 +1395,13 @@ class SlurmExecutor(Executor):
             return out[-1] if out else "unknown"
         else:
             with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch", prefix=f"etl-{label}-", dir=self.workdir, newline="\n") as tmp:
-                tmp.write(script_text.replace("\r\n", "\n"))
                 tmp_path = Path(tmp.name)
+            if label == "setup":
+                write_setup_sbatch(tmp_path, script_text)
+            elif label == "controller":
+                write_controller_sbatch(tmp_path, script_text)
+            else:
+                write_step_sbatch(tmp_path, script_text)
             cmd = ["sbatch"] + dependency_arg + [str(tmp_path)]
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
@@ -1910,7 +1495,7 @@ class SlurmExecutor(Executor):
     def _sync_repo(self) -> None:
         if not self.env.remote_repo:
             raise SlurmSubmitError("remote_repo must be set to sync code")
-        target = f"{self.env.ssh_user + '@' if self.env.ssh_user else ''}{self.env.ssh_host}"
+        target = build_target_host(self.env.ssh_user, self.env.ssh_host)
         remote_path = f"{target}:{self.env.remote_repo}"
         # Create remote dir then copy
         mkdir_cmd = self._build_ssh_cmd(target, f"mkdir -p {self.env.remote_repo}")

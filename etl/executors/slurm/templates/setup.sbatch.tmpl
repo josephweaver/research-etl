@@ -1,0 +1,11 @@
+#!/bin/bash --login
+{{sbatch_lines}}
+set -euo pipefail
+{{chunk_runtime_flags}}
+{{chunk_dirs}}
+{{chunk_modules}}
+{{chunk_source_checkout}}
+{{chunk_asset_overlays}}
+{{chunk_venv_bootstrap}}
+{{chunk_install}}
+{{chunk_finalize}}

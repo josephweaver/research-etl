@@ -1,0 +1,8 @@
+#!/bin/bash --login
+{{sbatch_lines}}
+set -euo pipefail
+{{chunk_runtime_flags}}
+{{chunk_runtime_bootstrap}}
+{{chunk_modules}}
+{{chunk_step_scope}}
+{{chunk_run_batch}}
