@@ -3142,6 +3142,7 @@ INDEX_HTML = """<!doctype html>
       if(payload.plugins_dir) runBody.plugins_dir = payload.plugins_dir;
       if(payload.workdir) runBody.workdir = payload.workdir;
       if(payload.project_id) runBody.project_id = payload.project_id;
+      if(payload.pipeline_source) runBody.pipeline_source = payload.pipeline_source;
       if(payload.max_retries !== undefined) runBody.max_retries = payload.max_retries;
       if(payload.retry_delay_seconds !== undefined) runBody.retry_delay_seconds = payload.retry_delay_seconds;
       runBody.dry_run = !!payload.dry_run;
@@ -5028,6 +5029,7 @@ def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
         "source_snapshot": str(payload.get("source_snapshot") or "").strip() or None,
         "allow_workspace_source": _parse_bool(payload.get("allow_workspace_source"), default=False),
         "project_id": normalize_project_id(str(payload.get("project_id") or "").strip() or None),
+        "pipeline_source": str(payload.get("pipeline_source") or "").strip() or None,
         "run_id": run_id,
         "run_started_at": run_started_at,
     }
@@ -5087,6 +5089,7 @@ def _resolve_action_pipeline_context(
     *,
     pipeline_path: Path,
     requested_project_id: Optional[str],
+    pipeline_source: Optional[str],
     projects_config_path: Optional[Path],
     global_vars: dict[str, Any],
     execution_env: dict[str, Any],
@@ -5109,14 +5112,23 @@ def _resolve_action_pipeline_context(
     except ProjectConfigError as exc:
         raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
 
-    try:
-        resolved_pipeline_path = resolve_pipeline_path_from_project_sources(
-            pipeline_path,
-            project_vars=tentative_project_vars,
-            repo_root=Path(".").resolve(),
+    resolved_pipeline_path: Path
+    if tentative_project_id and pipeline_source:
+        resolved_pipeline_path = _resolve_project_writable_pipeline_path(
+            pipeline=str(pipeline_path.as_posix()),
+            project_id=tentative_project_id,
+            projects_config=str(selected_projects_config) if selected_projects_config else None,
+            pipeline_source=pipeline_source,
         )
-    except PipelineAssetError as exc:
-        raise HTTPException(status_code=400, detail=f"Pipeline asset resolution error: {exc}") from exc
+    else:
+        try:
+            resolved_pipeline_path = resolve_pipeline_path_from_project_sources(
+                pipeline_path,
+                project_vars=tentative_project_vars,
+                repo_root=Path(".").resolve(),
+            )
+        except PipelineAssetError as exc:
+            raise HTTPException(status_code=400, detail=f"Pipeline asset resolution error: {exc}") from exc
     if not resolved_pipeline_path.exists():
         raise HTTPException(status_code=400, detail=f"Pipeline path not found: {pipeline_path}")
 
@@ -7240,6 +7252,7 @@ def api_action_validate(request: Request, payload: Optional[dict[str, Any]] = Bo
     resolved_pipeline_path, project_id, project_vars, _selected_projects_config = _resolve_action_pipeline_context(
         pipeline_path=args["pipeline_path"],
         requested_project_id=requested_project_id,
+        pipeline_source=args.get("pipeline_source"),
         projects_config_path=args["projects_config_path"],
         global_vars=global_vars,
         execution_env=execution_env,
@@ -7313,6 +7326,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]] = Body(de
     resolved_pipeline_path, project_id, project_vars, selected_projects_config = _resolve_action_pipeline_context(
         pipeline_path=args["pipeline_path"],
         requested_project_id=requested_project_id,
+        pipeline_source=args.get("pipeline_source"),
         projects_config_path=args["projects_config_path"],
         global_vars=global_vars,
         execution_env=execution_env,

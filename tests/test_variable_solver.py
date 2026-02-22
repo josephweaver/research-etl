@@ -98,3 +98,51 @@ def test_variable_solver_expr_daterange_returns_daily_strings() -> None:
     payload = {"days": "{expr.daterange(expr.date(2025,1,1), expr.date(2025,1,3))}"}
     resolved = solver.resolve(payload)
     assert resolved["days"] == ["20250101", "20250102", "20250103"]
+
+
+def test_variable_solver_overlay_order_global_project_env_pipe_cmdline() -> None:
+    solver = VariableSolver(max_passes=20)
+    # Order contract: global -> project -> env -> pipe -> cmdline
+    solver.overlay("global", {"workdir": "/g/work", "token": "g"}, add_namespace=True, add_flat=True)
+    solver.overlay(
+        "project",
+        {"workdir": "{global.workdir}/p-{project.token}", "token": "p"},
+        add_namespace=True,
+        add_flat=True,
+    )
+    solver.overlay("env", {"workdir": "{project.workdir}/e-{env.token}", "token": "e"}, add_namespace=True, add_flat=True)
+    solver.overlay("pipe", {"name": "sample", "workdir": "{env.workdir}/{pipe.name}", "token": "pipe"}, add_namespace=True, add_flat=True)
+    solver.overlay(
+        "commandline",
+        {"workdir": "{pipe.workdir}/c-{commandline.token}", "token": "cmd"},
+        add_namespace=True,
+        add_flat=True,
+    )
+
+    # Each namespace resolves using the full context.
+    assert solver.get("global.workdir") == "/g/work"
+    assert solver.get("project.workdir") == "/g/work/p-p"
+    assert solver.get("env.workdir") == "/g/work/p-p/e-e"
+    assert solver.get("pipe.workdir") == "/g/work/p-p/e-e/sample"
+    assert solver.get("commandline.workdir") == "/g/work/p-p/e-e/sample/c-cmd"
+
+    # Flat keys reflect last overlay wins.
+    assert solver.get("workdir") == "/g/work/p-p/e-e/sample/c-cmd"
+    assert solver.get("token") == "cmd"
+
+
+def test_variable_solver_iterative_converges_across_multiple_passes() -> None:
+    solver = VariableSolver(max_passes=20)
+    solver.update(
+        {
+            "a": "{b}",
+            "b": "{c}",
+            "c": "{d}",
+            "d": "done",
+        }
+    )
+    # Requires multiple passes: a -> b -> c -> d -> done
+    assert solver.get("a") == "done"
+    assert solver.get("b") == "done"
+    assert solver.get("c") == "done"
+    assert solver.get("d") == "done"

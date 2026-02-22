@@ -1985,6 +1985,64 @@ def test_web_api_run_action_allows_external_pipeline_for_remote_executor_with_pr
     assert captured["submit_context"]["pipeline_remote_hint"] == "pipelines/prism/download.yml"
 
 
+def test_web_api_run_pipeline_scoped_prefers_selected_pipeline_source(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.executors.base import RunState, RunStatus, SubmissionResult
+    from etl.pipeline import Pipeline, Step
+    from fastapi.testclient import TestClient
+    from urllib.parse import quote
+
+    monkeypatch.chdir(tmp_path)
+    local_pipeline = tmp_path / "pipelines" / "sample.yml"
+    local_pipeline.parent.mkdir(parents=True, exist_ok=True)
+    local_pipeline.write_text("steps:\n  - name: local\n    script: echo.py\n", encoding="utf-8")
+
+    shared_pipeline = tmp_path / "shared-etl-pipelines" / "pipelines" / "sample.yml"
+    shared_pipeline.parent.mkdir(parents=True, exist_ok=True)
+    shared_pipeline.write_text("steps:\n  - name: shared\n    script: echo.py\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_api, "resolve_projects_config_path", lambda path: None)
+    monkeypatch.setattr(web_api, "resolve_project_id", lambda **_k: "land_core")
+    monkeypatch.setattr(web_api, "load_project_vars", lambda **_k: {"pipeline_asset_sources": []})
+    monkeypatch.setattr(web_api, "_resolve_execution_env", lambda *a, **k: ({"executor": "slurm"}, None, "hpcc_msu"))
+    monkeypatch.setattr(
+        web_api,
+        "_resolve_project_writable_pipeline_path",
+        lambda **_k: shared_pipeline.resolve(),
+    )
+    monkeypatch.setattr(web_api, "collect_run_provenance", lambda **k: {"git_commit_sha": "abc"})
+    monkeypatch.setattr(web_api, "parse_pipeline", lambda *a, **k: Pipeline(steps=[Step(name="s1", script="echo.py")]))
+    captured = {}
+
+    class _FakeSlurmExecutor:
+        def __init__(self, *a, **k):
+            pass
+
+        def submit(self, pipeline_path_text, context):
+            captured["submit_pipeline"] = str(pipeline_path_text)
+            return SubmissionResult(run_id="slurm_source_pick", job_ids=["1"], message="ok")
+
+        def status(self, run_id):
+            return RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="ok")
+
+    monkeypatch.setattr(web_api, "SlurmExecutor", _FakeSlurmExecutor)
+
+    client = TestClient(web_api.app)
+    pipeline_id = quote("pipelines/sample.yml", safe="")
+    r = client.post(
+        f"/api/pipelines/{pipeline_id}/run",
+        json={
+            "executor": "slurm",
+            "project_id": "land_core",
+            "pipeline_source": "shared",
+            "dry_run": True,
+        },
+    )
+    assert r.status_code == 200
+    assert Path(captured["submit_pipeline"]).resolve() == shared_pipeline.resolve()
+
+
 def test_web_api_run_action_hpcc_direct(monkeypatch, tmp_path: Path):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

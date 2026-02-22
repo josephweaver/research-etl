@@ -1,5 +1,0 @@
-vars:
-  fail_message: "sample intentional failure"
-steps:
-  - name: fail_now
-    script: 'fail_always.py message="{fail_message}"'
