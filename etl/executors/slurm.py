@@ -33,6 +33,7 @@ from .base import Executor, RunState, RunStatus, SubmissionResult
 from ..git_checkout import GitExecutionSpec
 from ..pipeline import Pipeline
 from ..pipeline import parse_pipeline
+from ..pipeline_assets import pipeline_asset_sources_from_project_vars
 from ..plugins.base import load_plugin
 from ..source_control import SourceControlError, SourceExecutionSpec, make_git_source_provider
 from ..tracking import fetch_plugin_resource_stats, upsert_run_status
@@ -174,6 +175,64 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     if text in {"0", "false", "no", "off", "n"}:
         return False
     return bool(default)
+
+
+def _git_current_branch(repo_path: Path) -> Optional[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if proc.returncode != 0:
+        return None
+    branch = str(proc.stdout or "").strip()
+    if not branch or branch == "HEAD":
+        return None
+    return branch
+
+
+def _resolve_pipeline_asset_overlays(project_vars: Dict[str, Any], repo_root: Path) -> List[Dict[str, str]]:
+    try:
+        sources = pipeline_asset_sources_from_project_vars(project_vars)
+    except Exception:  # noqa: BLE001
+        return []
+
+    overlays: List[Dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    base_root = Path(repo_root).resolve()
+    for src in sources:
+        repo_url = str(getattr(src, "repo_url", "") or "").strip()
+        if not repo_url:
+            continue
+        ref = str(getattr(src, "ref", "") or "main").strip() or "main"
+        local_repo_path = str(getattr(src, "local_repo_path", "") or "").strip()
+        if local_repo_path:
+            local = Path(local_repo_path).expanduser()
+            if not local.is_absolute():
+                local = (base_root / local).resolve()
+            if local.exists() and local.is_dir():
+                local_branch = _git_current_branch(local)
+                if local_branch:
+                    ref = local_branch
+        pipelines_dir = str(getattr(src, "pipelines_dir", "") or "pipelines").strip() or "pipelines"
+        scripts_dir = str(getattr(src, "scripts_dir", "") or "scripts").strip() or "scripts"
+        key = (repo_url, ref, pipelines_dir, scripts_dir)
+        if key in seen:
+            continue
+        seen.add(key)
+        overlays.append(
+            {
+                "repo_url": repo_url,
+                "ref": ref,
+                "pipelines_dir": pipelines_dir,
+                "scripts_dir": scripts_dir,
+            }
+        )
+    return overlays
 
 
 @dataclass
@@ -841,6 +900,10 @@ class SlurmExecutor(Executor):
         source_snapshot_remote = self._stage_source_asset(
             source_snapshot, remote_workdir, run_id=run_id, label="source-snapshot"
         )
+        pipeline_asset_overlays = _resolve_pipeline_asset_overlays(
+            dict(context.get("project_vars") or {}),
+            source_repo_root,
+        )
 
         # submit setup job to prep venv and work dirs
         if use_pipeline_logdir:
@@ -895,6 +958,7 @@ class SlurmExecutor(Executor):
             source_bundle_path=source_bundle_remote,
             source_snapshot_path=source_snapshot_remote,
             allow_workspace_source=allow_workspace_source,
+            pipeline_asset_overlays=pipeline_asset_overlays,
         )
         setup_jobid = self._submit_script(setup_script, run_id, label="setup", remote_dest_dir=remote_workdir)
         prev_jobid = setup_jobid
@@ -1481,6 +1545,7 @@ class SlurmExecutor(Executor):
         source_bundle_path: Optional[str] = None,
         source_snapshot_path: Optional[str] = None,
         allow_workspace_source: bool = False,
+        pipeline_asset_overlays: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
         lines = ["#!/bin/bash --login"]
@@ -1540,64 +1605,97 @@ class SlurmExecutor(Executor):
             lines.append(f"source activate {self.env.conda_env}")
         if self.verbose:
             lines.append("log_step 'preparing execution source'")
+        mode = str(execution_source or "auto").strip().lower() or "auto"
+        repo_url_q = shlex.quote(str(git_origin_url or "").strip())
+        repo_sha_q = shlex.quote(str(git_commit_sha or "").strip())
+        source_bundle_q = shlex.quote(str(source_bundle_path or "").strip())
+        source_snapshot_q = shlex.quote(str(source_snapshot_path or "").strip())
         lines.append(f"CHECKOUT_ROOT={shlex.quote(checkout_root)}")
-        lines.append(f"SOURCE_MODE={shlex.quote(execution_source)}")
-        lines.append(f"ALLOW_WORKSPACE={'1' if allow_workspace_source else '0'}")
-        lines.append(f"REPO_URL={shlex.quote(git_origin_url or '')}")
-        lines.append(f"REPO_SHA={shlex.quote(git_commit_sha or '')}")
-        lines.append(f"SOURCE_BUNDLE={shlex.quote(source_bundle_path or '')}")
-        lines.append(f"SOURCE_SNAPSHOT={shlex.quote(source_snapshot_path or '')}")
+        lines.append(f"REPO_URL={repo_url_q}")
+        lines.append(f"REPO_SHA={repo_sha_q}")
+        lines.append(f"SOURCE_BUNDLE={source_bundle_q}")
+        lines.append(f"SOURCE_SNAPSHOT={source_snapshot_q}")
         lines.append("mkdir -p \"$(dirname \\\"$CHECKOUT_ROOT\\\")\"")
         lines.append("prepare_git_remote(){")
-        lines.append("  [ -n \"$REPO_URL\" ] && [ -n \"$REPO_SHA\" ] || { echo \"[etl][setup][source] missing REPO_URL or REPO_SHA for git_remote\" >&2; return 1; }")
+        lines.append(f"  [ -n {repo_url_q} ] && [ -n {repo_sha_q} ] || {{ echo \"[etl][setup][source] missing repo_url or repo_sha for git_remote\" >&2; return 1; }}")
+        lines.append("  if [ ! -d \"$CHECKOUT_ROOT\" ]; then mkdir -p \"$CHECKOUT_ROOT\"; fi")
         lines.append("  if [ -d \"$CHECKOUT_ROOT\" ] && [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then rm -rf \"$CHECKOUT_ROOT\"; fi")
-        lines.append("  if [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then git clone --no-checkout \"$REPO_URL\" \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] git clone failed: $REPO_URL -> $CHECKOUT_ROOT\" >&2; return 1; }; fi")
+        lines.append(f"  if [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then git clone --no-checkout {repo_url_q} \"$CHECKOUT_ROOT\" || {{ echo \"[etl][setup][source] git clone failed\" >&2; return 1; }}; fi")
         lines.append("  cd \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] cannot cd checkout root: $CHECKOUT_ROOT\" >&2; return 1; }")
         lines.append("  git fetch --tags --prune origin || { echo \"[etl][setup][source] git fetch failed\" >&2; return 1; }")
-        lines.append("  git checkout --detach \"$REPO_SHA\" || { echo \"[etl][setup][source] git checkout failed for SHA: $REPO_SHA\" >&2; return 1; }")
-        lines.append("  git reset --hard \"$REPO_SHA\" || { echo \"[etl][setup][source] git reset failed for SHA: $REPO_SHA\" >&2; return 1; }")
+        lines.append(f"  git checkout --detach {repo_sha_q} || {{ echo \"[etl][setup][source] git checkout failed for requested SHA\" >&2; return 1; }}")
+        lines.append(f"  git reset --hard {repo_sha_q} || {{ echo \"[etl][setup][source] git reset failed for requested SHA\" >&2; return 1; }}")
         lines.append("}")
         lines.append("prepare_git_bundle(){")
-        lines.append("  [ -n \"$SOURCE_BUNDLE\" ] && [ -n \"$REPO_SHA\" ] || { echo \"[etl][setup][source] missing SOURCE_BUNDLE or REPO_SHA for git_bundle\" >&2; return 1; }")
-        lines.append("  if [ ! -f \"$SOURCE_BUNDLE\" ]; then echo \"[etl][setup][source] source bundle not found: $SOURCE_BUNDLE\" >&2; return 1; fi")
+        lines.append(f"  [ -n {source_bundle_q} ] && [ -n {repo_sha_q} ] || {{ echo \"[etl][setup][source] missing source_bundle or repo_sha for git_bundle\" >&2; return 1; }}")
+        lines.append(f"  if [ ! -f {source_bundle_q} ]; then echo \"[etl][setup][source] source bundle not found\" >&2; return 1; fi")
         lines.append("  if [ -d \"$CHECKOUT_ROOT\" ] && [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then rm -rf \"$CHECKOUT_ROOT\"; fi")
-        lines.append("  if [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then git clone --no-checkout \"$SOURCE_BUNDLE\" \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] git clone from bundle failed\" >&2; return 1; }; fi")
+        lines.append(f"  if [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then git clone --no-checkout {source_bundle_q} \"$CHECKOUT_ROOT\" || {{ echo \"[etl][setup][source] git clone from bundle failed\" >&2; return 1; }}; fi")
         lines.append("  cd \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] cannot cd checkout root: $CHECKOUT_ROOT\" >&2; return 1; }")
-        lines.append("  git fetch \"$SOURCE_BUNDLE\" --tags || { echo \"[etl][setup][source] git fetch from bundle failed\" >&2; return 1; }")
-        lines.append("  git checkout --detach \"$REPO_SHA\" || { echo \"[etl][setup][source] git checkout failed for SHA: $REPO_SHA\" >&2; return 1; }")
-        lines.append("  git reset --hard \"$REPO_SHA\" || { echo \"[etl][setup][source] git reset failed for SHA: $REPO_SHA\" >&2; return 1; }")
+        lines.append(f"  git fetch {source_bundle_q} --tags || {{ echo \"[etl][setup][source] git fetch from bundle failed\" >&2; return 1; }}")
+        lines.append(f"  git checkout --detach {repo_sha_q} || {{ echo \"[etl][setup][source] git checkout failed for requested SHA\" >&2; return 1; }}")
+        lines.append(f"  git reset --hard {repo_sha_q} || {{ echo \"[etl][setup][source] git reset failed for requested SHA\" >&2; return 1; }}")
         lines.append("}")
         lines.append("prepare_snapshot(){")
-        lines.append("  [ -n \"$SOURCE_SNAPSHOT\" ] || { echo \"[etl][setup][source] missing SOURCE_SNAPSHOT for snapshot mode\" >&2; return 1; }")
-        lines.append("  if [ ! -f \"$SOURCE_SNAPSHOT\" ]; then echo \"[etl][setup][source] source snapshot not found: $SOURCE_SNAPSHOT\" >&2; return 1; fi")
+        lines.append(f"  [ -n {source_snapshot_q} ] || {{ echo \"[etl][setup][source] missing source_snapshot for snapshot mode\" >&2; return 1; }}")
+        lines.append(f"  if [ ! -f {source_snapshot_q} ]; then echo \"[etl][setup][source] source snapshot not found\" >&2; return 1; fi")
         lines.append("  rm -rf \"$CHECKOUT_ROOT\"")
         lines.append("  mkdir -p \"$CHECKOUT_ROOT\"")
-        lines.append("  case \"$SOURCE_SNAPSHOT\" in")
-        lines.append("    *.zip) unzip -q \"$SOURCE_SNAPSHOT\" -d \"$CHECKOUT_ROOT\" || return 1 ;;")
-        lines.append("    *.tar|*.tar.gz|*.tgz|*.tar.bz2|*.tbz2|*.tar.xz|*.txz) tar -xf \"$SOURCE_SNAPSHOT\" -C \"$CHECKOUT_ROOT\" || return 1 ;;")
-        lines.append("    *) echo \"[etl][setup][source] unsupported snapshot extension: $SOURCE_SNAPSHOT\" >&2; return 1 ;;")
+        lines.append(f"  case {source_snapshot_q} in")
+        lines.append(f"    *.zip) unzip -q {source_snapshot_q} -d \"$CHECKOUT_ROOT\" || return 1 ;;")
+        lines.append(f"    *.tar|*.tar.gz|*.tgz|*.tar.bz2|*.tbz2|*.tar.xz|*.txz) tar -xf {source_snapshot_q} -C \"$CHECKOUT_ROOT\" || return 1 ;;")
+        lines.append("    *) echo \"[etl][setup][source] unsupported snapshot extension\" >&2; return 1 ;;")
         lines.append("  esac")
         lines.append("  cd \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] cannot cd checkout root: $CHECKOUT_ROOT\" >&2; return 1; }")
         lines.append("}")
         lines.append("prepare_workspace(){")
-        lines.append("  [ \"$ALLOW_WORKSPACE\" = \"1\" ] || { echo \"[etl][setup][source] workspace source not allowed\" >&2; return 1; }")
+        lines.append(f"  [ {'1' if allow_workspace_source else '0'} = \"1\" ] || {{ echo \"[etl][setup][source] workspace source not allowed\" >&2; return 1; }}")
         lines.append("  [ -d \"$CHECKOUT_ROOT\" ] || { echo \"[etl][setup][source] workspace checkout missing: $CHECKOUT_ROOT\" >&2; return 1; }")
         lines.append("  cd \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] cannot cd checkout root: $CHECKOUT_ROOT\" >&2; return 1; }")
         lines.append("}")
-        lines.append("case \"$SOURCE_MODE\" in")
-        lines.append("  git_remote) prepare_git_remote ;;")
-        lines.append("  git_bundle) prepare_git_bundle ;;")
-        lines.append("  snapshot) prepare_snapshot ;;")
-        lines.append("  workspace) prepare_workspace ;;")
-        lines.append("  auto)")
-        lines.append("    if [ \"$ALLOW_WORKSPACE\" = \"1\" ]; then")
-        lines.append("      prepare_git_remote || prepare_git_bundle || prepare_snapshot || prepare_workspace || { echo \"[etl][setup][source] auto source resolution failed\" >&2; exit 1; }")
-        lines.append("    else")
-        lines.append("      prepare_git_remote || prepare_git_bundle || prepare_snapshot || { echo \"[etl][setup][source] auto source resolution failed\" >&2; exit 1; }")
-        lines.append("    fi")
-        lines.append("    ;;")
-        lines.append("  *) echo \"Unsupported execution_source: $SOURCE_MODE\" >&2; exit 1 ;;")
-        lines.append("esac")
+        if mode == "git_remote":
+            lines.append("prepare_git_remote")
+        elif mode == "git_bundle":
+            lines.append("prepare_git_bundle")
+        elif mode == "snapshot":
+            lines.append("prepare_snapshot")
+        elif mode == "workspace":
+            lines.append("prepare_workspace")
+        elif mode == "auto":
+            if allow_workspace_source:
+                lines.append(
+                    "prepare_git_remote || prepare_git_bundle || prepare_snapshot || prepare_workspace || { echo \"[etl][setup][source] auto source resolution failed\" >&2; exit 1; }"
+                )
+            else:
+                lines.append(
+                    "prepare_git_remote || prepare_git_bundle || prepare_snapshot || { echo \"[etl][setup][source] auto source resolution failed\" >&2; exit 1; }"
+                )
+        else:
+            lines.append(f"echo \"Unsupported execution_source: {shlex.quote(mode)}\" >&2")
+            lines.append("exit 1")
+        overlays = list(pipeline_asset_overlays or [])
+        for idx, overlay in enumerate(overlays):
+            repo_url = str((overlay or {}).get("repo_url") or "").strip()
+            if not repo_url:
+                continue
+            ref = str((overlay or {}).get("ref") or "main").strip() or "main"
+            pipelines_dir = str((overlay or {}).get("pipelines_dir") or "pipelines").strip() or "pipelines"
+            scripts_dir = str((overlay or {}).get("scripts_dir") or "scripts").strip() or "scripts"
+            asset_dir = f"$CHECKOUT_ROOT/.pipeline_assets/src_{idx}"
+            if self.verbose:
+                lines.append(f"log_step {shlex.quote(f'syncing pipeline asset source {idx + 1}: {repo_url} ({ref})')}")
+            lines.append(f"ASSET_DIR_{idx}={shlex.quote(asset_dir)}")
+            lines.append(f"ASSET_URL_{idx}={shlex.quote(repo_url)}")
+            lines.append(f"ASSET_REF_{idx}={shlex.quote(ref)}")
+            lines.append(f"mkdir -p \"$(dirname \\\"$ASSET_DIR_{idx}\\\")\"")
+            lines.append(f"if [ ! -d \"$ASSET_DIR_{idx}\" ]; then mkdir -p \"$ASSET_DIR_{idx}\"; fi")
+            lines.append(f"if [ -d \"$ASSET_DIR_{idx}\" ] && [ ! -d \"$ASSET_DIR_{idx}/.git\" ]; then rm -rf \"$ASSET_DIR_{idx}\"; fi")
+            lines.append(f"if [ ! -d \"$ASSET_DIR_{idx}/.git\" ]; then git clone \"$ASSET_URL_{idx}\" \"$ASSET_DIR_{idx}\" || {{ echo \"[etl][setup][source] pipeline asset clone failed: $ASSET_URL_{idx}\" >&2; exit 1; }}; fi")
+            lines.append(f"git -C \"$ASSET_DIR_{idx}\" fetch --tags --prune origin || {{ echo \"[etl][setup][source] pipeline asset fetch failed: $ASSET_URL_{idx}\" >&2; exit 1; }}")
+            lines.append(f"git -C \"$ASSET_DIR_{idx}\" checkout \"$ASSET_REF_{idx}\" || {{ echo \"[etl][setup][source] pipeline asset checkout failed: $ASSET_REF_{idx}\" >&2; exit 1; }}")
+            lines.append(f"git -C \"$ASSET_DIR_{idx}\" pull --ff-only origin \"$ASSET_REF_{idx}\" >/dev/null 2>&1 || true")
+            lines.append(f"if [ -d \"$ASSET_DIR_{idx}/{pipelines_dir}\" ]; then mkdir -p \"$CHECKOUT_ROOT/pipelines\"; cp -a \"$ASSET_DIR_{idx}/{pipelines_dir}/.\" \"$CHECKOUT_ROOT/pipelines/\"; fi")
+            lines.append(f"if [ -d \"$ASSET_DIR_{idx}/{scripts_dir}\" ]; then mkdir -p \"$CHECKOUT_ROOT/scripts\"; cp -a \"$ASSET_DIR_{idx}/{scripts_dir}/.\" \"$CHECKOUT_ROOT/scripts/\"; fi")
         if self.verbose:
             lines.append("log_step 'bootstrapping venv'")
         lines.append(f"PYTHON={python_bin}")
@@ -1611,15 +1709,14 @@ class SlurmExecutor(Executor):
         lines.append("if [ ! -f \"$VENV/bin/activate\" ]; then")
         lines.append("  $PYTHON -m venv \"$VENV\"")
         lines.append("fi")
-        lines.append("source \"$VENV/bin/activate\"")
+        lines.append("if [ ! -f \"$VENV/bin/activate\" ]; then echo \"[etl][setup] venv activation script missing: $VENV/bin/activate\" >&2; exit 1; fi")
         if self.verbose:
             lines.append("log_step 'installing requirements if present'")
-        lines.append(f"if [ -f \"{req_path}\" ]; then pip install -r \"{req_path}\"; fi")
+        lines.append(f"if [ -f \"{req_path}\" ]; then \"$VENV/bin/python\" -m pip install -r \"{req_path}\"; fi")
         lines.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
         lines.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
         lines.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
         lines.append("fi")
-        lines.append(f"mkdir -p {workdir}")
         if self.verbose:
             lines.append("log_step 'setup complete'")
         lines.append("echo setup complete")
