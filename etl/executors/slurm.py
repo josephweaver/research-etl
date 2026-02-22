@@ -1511,6 +1511,15 @@ class SlurmExecutor(Executor):
             lines.append(f"mkdir -p {d}")
         for d in logdirs_to_create:
             lines.append(f"mkdir -p {d}")
+        if self.env.modules:
+            for mod in self.env.modules:
+                if self.verbose:
+                    lines.append(f"log_step {shlex.quote(f'loading module: {mod}')}")
+                lines.append(f"module load {mod}")
+        if self.env.conda_env:
+            if self.verbose:
+                lines.append("log_step 'activating conda environment'")
+            lines.append(f"source activate {self.env.conda_env}")
         if self.verbose:
             lines.append("log_step 'preparing execution source'")
         lines.append(f"CHECKOUT_ROOT={shlex.quote(checkout_root)}")
