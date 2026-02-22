@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import os
 import shlex
-import subprocess
 import sys
 from pathlib import Path
+
+from etl.subprocess_logging import run_logged_subprocess
 
 
 meta = {
@@ -68,19 +69,22 @@ def run(args, ctx):
         cmd.extend(shlex.split(script_args))
 
     ctx.log(f"[exec_script] running: {shlex.join(cmd)} cwd={cwd.as_posix()}")
-    proc = subprocess.run(
+    proc = run_logged_subprocess(
         cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
+        action="plugin.exec_script",
+        cwd=cwd,
         check=False,
         timeout=timeout_seconds if timeout_seconds > 0 else None,
         env=dict(os.environ),
     )
-    if verbose and (proc.stdout or "").strip():
+    if (proc.stdout or "").strip():
         ctx.log(f"[exec_script] stdout: {(proc.stdout or '').strip()[:4000]}")
-    if verbose and (proc.stderr or "").strip():
+    if (proc.stderr or "").strip():
         ctx.log(f"[exec_script] stderr: {(proc.stderr or '').strip()[:4000]}")
+    if verbose and (proc.stdout or "").strip():
+        ctx.log(f"[exec_script] verbose stdout echoed")
+    if verbose and (proc.stderr or "").strip():
+        ctx.log(f"[exec_script] verbose stderr echoed")
     if proc.returncode != 0:
         raise RuntimeError(
             f"script failed rc={proc.returncode}: {(proc.stderr or proc.stdout or '').strip()[:1000]}"

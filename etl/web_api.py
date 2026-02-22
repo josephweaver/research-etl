@@ -626,19 +626,10 @@ INDEX_HTML = """<!doctype html>
               </div>
               <div id="b_vars" class="builder-list"></div>
               <div class="builder-head">
-                <h4>Directories</h4>
-                <select id="b_dir_type">
-                  <option value="workdir">workdir</option>
-                  <option value="logdir">logdir</option>
-                  <option value="artifact">artifact</option>
-                  <option value="tmp">tmp</option>
-                  <option value="stage">stage</option>
-                  <option value="custom">&lt;enter custom name&gt;</option>
-                </select>
-                <input id="b_dir_custom" placeholder="custom dir key" />
-                <button id="btn_builder_add_dir">Add Dir</button>
+                <h4>Directories (Deprecated)</h4>
+                <span class="muted">Use vars `workdir`/`logdir` with type `path`.</span>
               </div>
-              <div id="b_dirs" class="builder-list"></div>
+              <div id="b_dirs" class="builder-list" style="display:none;"></div>
               <div class="builder-head">
                 <h4>Steps</h4>
                 <button id="btn_builder_add_step">Add Step</button>
@@ -757,7 +748,7 @@ INDEX_HTML = """<!doctype html>
       ? decodeURIComponent(window.location.pathname.slice("/datasets/".length))
       : null;
     let builderLoaded = false;
-    let builderModel = { project_id: "", vars: {}, dirs: {}, requires_pipelines: [], steps: [] };
+    let builderModel = { project_id: "", vars: {}, var_types: {}, dirs: {}, requires_pipelines: [], steps: [] };
     let builderPlugins = [];
     let builderPluginMeta = {};
     let builderPluginStats = {};
@@ -916,6 +907,8 @@ INDEX_HTML = """<!doctype html>
     }
     function ensureBuilderDefaultDirs(model){
       const out = model || {};
+      out.vars = (out.vars && typeof out.vars === "object") ? out.vars : {};
+      out.var_types = (out.var_types && typeof out.var_types === "object") ? out.var_types : {};
       out.dirs = out.dirs || {};
       if(Object.keys(out.dirs).length){
         return out;
@@ -934,8 +927,13 @@ INDEX_HTML = """<!doctype html>
       return out;
     }
     function deriveBuilderWorkdir(){
+      const varsMap = (builderModel && builderModel.vars) || {};
       const dirs = (builderModel && builderModel.dirs) || {};
       const candidates = ["workdir", "work", "work_dir"];
+      for(const k of candidates){
+        const v = String(varsMap[k] ?? "").trim();
+        if(v) return v;
+      }
       for(const k of candidates){
         const v = String(dirs[k] || "").trim();
         if(v) return v;
@@ -1221,6 +1219,158 @@ INDEX_HTML = """<!doctype html>
       if (typeof v === "number" && Number.isFinite(v)) return String(v);
       return _yamlEsc(v);
     }
+    function _yamlKey(k){
+      const s = String(k ?? "");
+      return /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(s) ? s : _yamlEsc(s);
+    }
+    function _builderVarTypeForValue(v){
+      if(Array.isArray(v)) return "list";
+      if(v && typeof v === "object") return "dict";
+      if(typeof v === "boolean") return "bool";
+      if(typeof v === "number" && Number.isFinite(v)) return "number";
+      return "string";
+    }
+    function _builderCanonicalType(raw){
+      const t = String(raw || "").trim().toLowerCase();
+      if(t === "list" || t === "dict" || t === "bool" || t === "number") return t;
+      return "string";
+    }
+    function _builderVarValueDisplay(value, type){
+      const t = _builderCanonicalType(type);
+      if(t === "list" || t === "dict"){
+        try {
+          return JSON.stringify(value === undefined ? (t === "list" ? [] : {}) : value);
+        } catch {
+          return t === "list" ? "[]" : "{}";
+        }
+      }
+      if(t === "bool"){
+        if(typeof value === "boolean") return value ? "true" : "false";
+        const s = String(value ?? "").trim().toLowerCase();
+        return (s === "true" || s === "1" || s === "yes" || s === "on") ? "true" : "false";
+      }
+      return String(value ?? "");
+    }
+    function _builderVarValueToken(value){
+      try {
+        if(value && typeof value === "object"){
+          return JSON.stringify(value);
+        }
+      } catch {}
+      return String(value ?? "");
+    }
+    function _parseBuilderVarValue(rawValue, type){
+      const t = _builderCanonicalType(type);
+      const raw = String(rawValue ?? "");
+      if(t === "string"){
+        return { ok: true, value: raw };
+      }
+      if(t === "number"){
+        const text = raw.trim();
+        if(!text.length){
+          return { ok: true, value: "" };
+        }
+        const n = Number(text);
+        if(Number.isNaN(n)){
+          return { ok: false, error: "Invalid number literal." };
+        }
+        return { ok: true, value: n };
+      }
+      if(t === "bool"){
+        const s = raw.trim().toLowerCase();
+        if(!s.length) return { ok: true, value: false };
+        if(s === "true" || s === "1" || s === "yes" || s === "on") return { ok: true, value: true };
+        if(s === "false" || s === "0" || s === "no" || s === "off") return { ok: true, value: false };
+        return { ok: false, error: "Invalid boolean literal; use true/false." };
+      }
+      const text = raw.trim();
+      if(!text.length){
+        return { ok: true, value: t === "list" ? [] : {} };
+      }
+      let parsed = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return { ok: false, error: `Invalid ${t} JSON.` };
+      }
+      if(t === "list" && !Array.isArray(parsed)){
+        return { ok: false, error: "List value must be a JSON array." };
+      }
+      if(t === "dict" && (!parsed || typeof parsed !== "object" || Array.isArray(parsed))){
+        return { ok: false, error: "Dict value must be a JSON object." };
+      }
+      return { ok: true, value: parsed };
+    }
+    function _yamlPushNode(lines, indent, node){
+      if(Array.isArray(node)){
+        if(!node.length){
+          lines.push(`${indent}[]`);
+          return;
+        }
+        for(const item of node){
+          if(item && typeof item === "object"){
+            lines.push(`${indent}-`);
+            _yamlPushNode(lines, `${indent}  `, item);
+          } else {
+            lines.push(`${indent}- ${_yamlArgVal(item)}`);
+          }
+        }
+        return;
+      }
+      if(node && typeof node === "object"){
+        const keys = Object.keys(node);
+        if(!keys.length){
+          lines.push(`${indent}{}`);
+          return;
+        }
+        for(const k of keys){
+          const v = node[k];
+          if(v && typeof v === "object"){
+            lines.push(`${indent}${_yamlKey(k)}:`);
+            _yamlPushNode(lines, `${indent}  `, v);
+          } else {
+            lines.push(`${indent}${_yamlKey(k)}: ${_yamlArgVal(v)}`);
+          }
+        }
+        return;
+      }
+      lines.push(`${indent}${_yamlArgVal(node)}`);
+    }
+    function _yamlPushTypedKey(lines, indent, key, value, type){
+      const t = _builderCanonicalType(type || _builderVarTypeForValue(value));
+      if(t === "list"){
+        const arr = Array.isArray(value) ? value : [];
+        if(!arr.length){
+          lines.push(`${indent}${_yamlKey(key)}: []`);
+          return;
+        }
+        lines.push(`${indent}${_yamlKey(key)}:`);
+        _yamlPushNode(lines, `${indent}  `, arr);
+        return;
+      }
+      if(t === "dict"){
+        const obj = (value && typeof value === "object" && !Array.isArray(value)) ? value : {};
+        const keys = Object.keys(obj);
+        if(!keys.length){
+          lines.push(`${indent}${_yamlKey(key)}: {}`);
+          return;
+        }
+        lines.push(`${indent}${_yamlKey(key)}:`);
+        _yamlPushNode(lines, `${indent}  `, obj);
+        return;
+      }
+      if(t === "bool"){
+        lines.push(`${indent}${_yamlKey(key)}: ${value ? "true" : "false"}`);
+        return;
+      }
+      if(t === "number"){
+        if(typeof value === "number" && Number.isFinite(value)){
+          lines.push(`${indent}${_yamlKey(key)}: ${String(value)}`);
+          return;
+        }
+      }
+      lines.push(`${indent}${_yamlKey(key)}: ${_yamlEsc(value)}`);
+    }
     function _scriptFromStep(st){
       const base = (st.plugin || "").trim();
       const parts = [];
@@ -1232,7 +1382,7 @@ INDEX_HTML = """<!doctype html>
       return [base, ...parts].filter(Boolean).join(" ");
     }
     function buildYamlFromModel(){
-      const m = builderModel || { project_id:"", vars:{}, dirs:{}, requires_pipelines:[], steps:[] };
+      const m = builderModel || { project_id:"", vars:{}, var_types:{}, dirs:{}, requires_pipelines:[], steps:[] };
       const lines = [];
       if ((m.project_id || "").trim()){
         lines.push(`project_id: ${_yamlEsc(m.project_id)}`);
@@ -1243,16 +1393,22 @@ INDEX_HTML = """<!doctype html>
       }
       lines.push("vars:");
       const vars = m.vars || {};
+      const varTypes = m.var_types || {};
       const vkeys = Object.keys(vars);
       if(!vkeys.length){ lines.push("  {}"); } else {
-        for(const k of vkeys){ lines.push(`  ${k}: ${_yamlEsc(vars[k])}`); }
+        for(const k of vkeys){
+          _yamlPushTypedKey(lines, "  ", k, vars[k], varTypes[k]);
+        }
       }
+      // Builder now derives directory contract from typed vars.
+      // `workdir`/`logdir` live in vars (typically type=path).
       lines.push("dirs:");
-      const dirs = m.dirs || {};
-      const dkeys = Object.keys(dirs);
-      if(!dkeys.length){ lines.push("  {}"); } else {
-        for(const k of dkeys){ lines.push(`  ${k}: ${_yamlEsc(dirs[k])}`); }
-      }
+      const varsWorkdir = String(vars.workdir ?? "").trim();
+      const varsLogdir = String(vars.logdir ?? "").trim();
+      const derivedWorkdir = varsWorkdir || "{env.workdir}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}";
+      const derivedLogdir = varsLogdir || "{workdir}/logs";
+      lines.push(`  workdir: ${_yamlEsc(derivedWorkdir)}`);
+      lines.push(`  logdir: ${_yamlEsc(derivedLogdir)}`);
       lines.push("steps:");
       const steps = m.steps || [];
       if(!steps.length){
@@ -1472,10 +1628,15 @@ INDEX_HTML = """<!doctype html>
         return;
       }
       builderModel.vars = builderModel.vars || {};
+      builderModel.var_types = builderModel.var_types || {};
       // Remove previously injected project vars only when unchanged by user edits.
       for(const [k, injectedVal] of Object.entries(builderProjectInjectedVarValues || {})){
-        if(Object.prototype.hasOwnProperty.call(builderModel.vars, k) && String(builderModel.vars[k]) === String(injectedVal)){
+        if(
+          Object.prototype.hasOwnProperty.call(builderModel.vars, k) &&
+          _builderVarValueToken(builderModel.vars[k]) === String(injectedVal)
+        ){
           delete builderModel.vars[k];
+          delete builderModel.var_types[k];
         }
       }
       builderProjectInjectedVarValues = {};
@@ -1494,14 +1655,11 @@ INDEX_HTML = """<!doctype html>
       const payload = await res.json();
       const projectVars = flattenBuilderProjectVars(payload.project_vars || {});
       for(const [k, rawVal] of Object.entries(projectVars)){
-        const value =
-          rawVal === null || rawVal === undefined
-            ? ""
-            : (typeof rawVal === "string" || typeof rawVal === "number" || typeof rawVal === "boolean")
-              ? String(rawVal)
-              : JSON.stringify(rawVal);
+        const value = rawVal === null || rawVal === undefined ? "" : rawVal;
+        const vtype = _builderVarTypeForValue(value);
         builderModel.vars[k] = value;
-        builderProjectInjectedVarValues[k] = value;
+        builderModel.var_types[k] = vtype;
+        builderProjectInjectedVarValues[k] = _builderVarValueToken(value);
       }
       renderBuilderModel();
       syncYamlPreview();
@@ -1684,41 +1842,15 @@ INDEX_HTML = """<!doctype html>
       syncYamlPreview();
     }
     function addBuilderDir(){
-      builderModel.dirs = builderModel.dirs || {};
-      const dtype = String(document.getElementById("b_dir_type").value || "custom").trim().toLowerCase();
-      const defaults = defaultBuilderDirs();
-      if(dtype && dtype !== "custom"){
-        if(!Object.prototype.hasOwnProperty.call(builderModel.dirs, dtype)){
-          builderModel.dirs[dtype] = defaults[dtype] || "";
-        } else {
-          let i = 2;
-          while(Object.prototype.hasOwnProperty.call(builderModel.dirs, `${dtype}_${i}`)) i++;
-          builderModel.dirs[`${dtype}_${i}`] = defaults[dtype] || "";
-        }
-      } else {
-        const customRaw = String(document.getElementById("b_dir_custom").value || "").trim();
-        const custom = customRaw.replaceAll(" ", "_");
-        if(!custom){
-          document.getElementById("builder_msg").textContent = "Enter a custom directory name.";
-          return;
-        }
-        if(!Object.prototype.hasOwnProperty.call(builderModel.dirs, custom)){
-          builderModel.dirs[custom] = "";
-        } else {
-          let i = 2;
-          while(Object.prototype.hasOwnProperty.call(builderModel.dirs, `${custom}_${i}`)) i++;
-          builderModel.dirs[`${custom}_${i}`] = "";
-        }
-      }
-      document.getElementById("builder_msg").textContent = "";
-      renderBuilderModel();
-      syncYamlPreview();
+      document.getElementById("builder_msg").textContent = "Directory section is deprecated. Use vars `workdir`/`logdir` with type `path`.";
     }
     function addBuilderVar(){
       builderModel.vars = builderModel.vars || {};
+      builderModel.var_types = builderModel.var_types || {};
       let i = 1;
       while(Object.prototype.hasOwnProperty.call(builderModel.vars, `var_${i}`)) i++;
       builderModel.vars[`var_${i}`] = "";
+      builderModel.var_types[`var_${i}`] = "string";
       renderBuilderModel();
       syncYamlPreview();
     }
@@ -1868,10 +2000,24 @@ INDEX_HTML = """<!doctype html>
         reqEl.appendChild(row);
       });
 
+      const varTypes = builderModel.var_types || {};
       Object.entries(builderModel.vars || {}).forEach(([k,v]) => {
+        const vtype = _builderCanonicalType(varTypes[k] || _builderVarTypeForValue(v));
+        const vdisp = _builderVarValueDisplay(v, vtype);
+        const valueControl =
+          vtype === "bool"
+            ? `<select data-kind="var-val" data-key="${esc(k)}">
+                 <option value="true" ${String(vdisp) === "true" ? "selected" : ""}>true</option>
+                 <option value="false" ${String(vdisp) === "false" ? "selected" : ""}>false</option>
+               </select>`
+            : (vtype === "number"
+                ? `<input data-kind="var-val" data-key="${esc(k)}" type="number" step="any" value="${esc(vdisp)}" placeholder="number" />`
+                : ((vtype === "list" || vtype === "dict")
+                    ? `<textarea data-kind="var-val" data-key="${esc(k)}" rows="2" placeholder='${vtype === "list" ? "[\"A\",\"B\"]" : "{\"k\":\"v\"}"}'>${esc(vdisp)}</textarea>`
+                    : `<input data-kind="var-val" data-key="${esc(k)}" value="${esc(vdisp)}" placeholder="${vtype === "path" ? "path template/value" : "value"}" />`));
         const row = document.createElement("div");
         row.className = "builder-item";
-        row.innerHTML = `<div class="controls"><input data-kind="var-key" data-key="${esc(k)}" value="${esc(k)}" placeholder="var key" /><input data-kind="var-val" data-key="${esc(k)}" value="${esc(v)}" placeholder="value" /><button data-del-var="${esc(k)}">Remove</button></div>`;
+        row.innerHTML = `<div class="controls"><input data-kind="var-key" data-key="${esc(k)}" value="${esc(k)}" placeholder="var key" /><select data-kind="var-type" data-key="${esc(k)}"><option value="string" ${vtype==="string"?"selected":""}>string</option><option value="path" ${vtype==="path"?"selected":""}>path</option><option value="number" ${vtype==="number"?"selected":""}>number</option><option value="bool" ${vtype==="bool"?"selected":""}>bool</option><option value="list" ${vtype==="list"?"selected":""}>list</option><option value="dict" ${vtype==="dict"?"selected":""}>dict</option></select>${valueControl}<button data-del-var="${esc(k)}">Remove</button></div>`;
         varEl.appendChild(row);
       });
 
@@ -2091,16 +2237,42 @@ INDEX_HTML = """<!doctype html>
         const newKey = String(t.value || "").trim();
         if(oldKey && newKey && oldKey !== newKey){
           const val = builderModel.vars[oldKey];
+          const oldType = (builderModel.var_types || {})[oldKey];
           delete builderModel.vars[oldKey];
+          if(builderModel.var_types){ delete builderModel.var_types[oldKey]; }
           builderModel.vars[newKey] = val;
+          builderModel.var_types = builderModel.var_types || {};
+          builderModel.var_types[newKey] = _builderCanonicalType(oldType || _builderVarTypeForValue(val));
+          renderBuilderModel();
+          changed = true;
+        }
+      } else if (kind === "var-type"){
+        const key = t.getAttribute("data-key") || "";
+        if(key){
+          builderModel.var_types = builderModel.var_types || {};
+          const nextType = _builderCanonicalType(t.value);
+          builderModel.var_types[key] = nextType;
+          const parsed = _parseBuilderVarValue(_builderVarValueDisplay(builderModel.vars[key], nextType), nextType);
+          if(parsed.ok){
+            builderModel.vars[key] = parsed.value;
+            document.getElementById("builder_msg").textContent = "";
+          }
           renderBuilderModel();
           changed = true;
         }
       } else if (kind === "var-val"){
-        if (eventType === "input") return;
         const key = t.getAttribute("data-key") || "";
         if(key){
-          builderModel.vars[key] = t.value;
+          if (eventType === "input" && !(t instanceof HTMLTextAreaElement)) return;
+          builderModel.var_types = builderModel.var_types || {};
+          const vtype = _builderCanonicalType(builderModel.var_types[key] || _builderVarTypeForValue(builderModel.vars[key]));
+          const parsed = _parseBuilderVarValue(t.value, vtype);
+          if(!parsed.ok){
+            document.getElementById("builder_msg").textContent = `Var '${key}': ${parsed.error}`;
+            return;
+          }
+          builderModel.vars[key] = parsed.value;
+          document.getElementById("builder_msg").textContent = "";
           changed = true;
         }
       } else if (kind === "dir-key"){
@@ -2288,7 +2460,13 @@ INDEX_HTML = """<!doctype html>
       const delReq = t.getAttribute("data-del-req");
       if (delReq !== null){ builderModel.requires_pipelines.splice(Number(delReq),1); renderBuilderModel(); syncYamlPreview(); return; }
       const delVar = t.getAttribute("data-del-var");
-      if (delVar !== null){ delete builderModel.vars[delVar]; renderBuilderModel(); syncYamlPreview(); return; }
+      if (delVar !== null){
+        delete builderModel.vars[delVar];
+        if(builderModel.var_types){ delete builderModel.var_types[delVar]; }
+        renderBuilderModel();
+        syncYamlPreview();
+        return;
+      }
       const delDir = t.getAttribute("data-del-dir");
       if (delDir !== null){ delete builderModel.dirs[delDir]; renderBuilderModel(); syncYamlPreview(); return; }
       const delStep = t.getAttribute("data-del-step");
@@ -4247,7 +4425,8 @@ INDEX_HTML = """<!doctype html>
     };
     document.getElementById("btn_builder_add_req").onclick = addBuilderRequire;
     document.getElementById("btn_builder_add_var").onclick = addBuilderVar;
-    document.getElementById("btn_builder_add_dir").onclick = addBuilderDir;
+    const addDirBtn = document.getElementById("btn_builder_add_dir");
+    if(addDirBtn){ addDirBtn.onclick = addBuilderDir; }
     document.getElementById("btn_builder_add_step").onclick = addBuilderStep;
     document.getElementById("btn_builder_create").onclick = createBuilderPipeline;
     document.getElementById("btn_builder_save").onclick = saveBuilderDraft;
@@ -4279,10 +4458,11 @@ INDEX_HTML = """<!doctype html>
     };
     document.getElementById("b_requires").addEventListener("input", handleBuilderInput);
     document.getElementById("b_vars").addEventListener("input", handleBuilderInput);
-    document.getElementById("b_dirs").addEventListener("input", handleBuilderInput);
+    const dirsEl = document.getElementById("b_dirs");
+    if(dirsEl){ dirsEl.addEventListener("input", handleBuilderInput); }
     document.getElementById("b_requires").addEventListener("change", handleBuilderInput);
     document.getElementById("b_vars").addEventListener("change", handleBuilderInput);
-    document.getElementById("b_dirs").addEventListener("change", handleBuilderInput);
+    if(dirsEl){ dirsEl.addEventListener("change", handleBuilderInput); }
     document.getElementById("b_steps").addEventListener("input", handleBuilderInput);
     document.getElementById("b_steps").addEventListener("change", handleBuilderInput);
     document.getElementById("b_steps").addEventListener("focusin", handleBuilderStepPluginPickerFocus, true);
@@ -4290,7 +4470,7 @@ INDEX_HTML = """<!doctype html>
     document.addEventListener("mousedown", handleBuilderStepPluginPickerOutsideMouseDown);
     document.getElementById("b_requires").addEventListener("click", handleBuilderClicks);
     document.getElementById("b_vars").addEventListener("click", handleBuilderClicks);
-    document.getElementById("b_dirs").addEventListener("click", handleBuilderClicks);
+    if(dirsEl){ dirsEl.addEventListener("click", handleBuilderClicks); }
     document.getElementById("b_steps").addEventListener("click", handleBuilderClicks);
     document.getElementById("b_file_picker").addEventListener("change", async () => { await loadBuilderSourceFromFilePicker(); });
     renderBuilderPreviewPanel();
@@ -5430,6 +5610,24 @@ def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
     return {
         "project_id": project_id,
         "vars": vars_section if isinstance(vars_section, dict) else {},
+        "var_types": (
+            {
+                str(k): (
+                    "list"
+                    if isinstance(v, list)
+                    else "dict"
+                    if isinstance(v, dict)
+                    else "bool"
+                    if isinstance(v, bool)
+                    else "number"
+                    if isinstance(v, (int, float))
+                    else "path"
+                    if str(k).strip().lower() in {"workdir", "logdir", "tmpdir", "datadir", "artifactsdir", "bindir"}
+                    else "string"
+                )
+                for k, v in (vars_section.items() if isinstance(vars_section, dict) else [])
+            }
+        ),
         "dirs": dirs_section if isinstance(dirs_section, dict) else {},
         "requires_pipelines": [str(x) for x in reqs if str(x).strip()] if isinstance(reqs, list) else [],
         "steps": model_steps,

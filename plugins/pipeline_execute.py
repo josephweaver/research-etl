@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from etl.subprocess_logging import run_logged_subprocess
+
 
 meta = {
     "name": "pipeline_execute",
@@ -169,7 +171,11 @@ def run(args, ctx):
     ctx.log(f"[pipeline_execute] cmd={cmd_text}")
 
     if mode == "synchronized":
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = run_logged_subprocess(cmd, action="plugin.pipeline_execute.sync", check=False)
+        if (proc.stdout or "").strip():
+            ctx.log(f"[pipeline_execute] child stdout: {(proc.stdout or '').strip()[:4000]}")
+        if (proc.stderr or "").strip():
+            ctx.log(f"[pipeline_execute] child stderr: {(proc.stderr or '').strip()[:4000]}")
         child_run_id = _extract_child_run_id((proc.stdout or "") + "\n" + (proc.stderr or ""))
         status = "succeeded" if int(proc.returncode) == 0 else "failed"
         if proc.returncode != 0:
@@ -189,6 +195,7 @@ def run(args, ctx):
 
     child_log = ctx.workdir / "child_pipeline_fire_and_forget.log"
     child_log.parent.mkdir(parents=True, exist_ok=True)
+    ctx.log(f"[pipeline_execute] fire_and_forget child log: {child_log.as_posix()}")
     log_f = child_log.open("a", encoding="utf-8")
     proc2 = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT, text=True)  # noqa: S603
     log_f.close()

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Set
 
 from etl import __version__
-from etl.app_logging import configure_app_logger
+from etl.app_logging import configure_app_logger, get_app_logger
 from etl.ai_research import AIResearchError, generate_dataset_research
 from etl.artifacts import (
     ArtifactPolicyError,
@@ -42,6 +42,7 @@ from etl.db_sync_queue import apply_tracking_queue
 from etl.dictionary_pr import DictionaryPRError, create_dictionary_pr
 from etl.datasets import DatasetServiceError, get_data, get_dataset, list_datasets, store_data
 from etl.diagnostics import write_error_report, find_latest_error_report
+from etl.entrypoint import guarded_entrypoint
 from etl.executors import HpccDirectExecutor, LocalExecutor, SlurmExecutor
 from etl.executors.slurm import SlurmSubmitError
 from etl.pipeline import PipelineError, parse_pipeline
@@ -66,6 +67,7 @@ from etl.execution_config import (
     validate_environment_executor,
     ExecutionConfigError,
 )
+from etl.subprocess_logging import run_logged_subprocess
 
 
 DEFAULT_PLUGIN_DIR = Path("plugins")
@@ -1131,6 +1133,7 @@ def cmd_ai_research(args: argparse.Namespace) -> int:
 
 
 def cmd_sync_db(args: argparse.Namespace) -> int:
+    logger = get_app_logger("cli.sync_db")
     local_queue = Path(args.local_queue_dir)
     processed_dir = Path(args.processed_dir)
     local_queue.mkdir(parents=True, exist_ok=True)
@@ -1185,14 +1188,14 @@ def cmd_sync_db(args: argparse.Namespace) -> int:
         remote_dir = f"{workdir}/db_sync_queue/pending" if workdir else "~/.etl/db_sync_queue/pending"
 
     ssh_cmd = ["ssh"] + (["-J", ssh_jump] if ssh_jump else []) + [target, f"mkdir -p {shlex.quote(remote_dir)}"]
-    proc = subprocess.run(ssh_cmd, capture_output=True, text=True)
+    proc = run_logged_subprocess(ssh_cmd, logger=logger, action="cli.sync_db.ssh", check=False)
     if proc.returncode != 0:
         print(f"Failed to ensure remote queue dir: {proc.stderr or proc.stdout}", file=sys.stderr)
         return 1
 
     if not args.apply_only:
         scp_cmd = ["scp"] + (["-J", ssh_jump] if ssh_jump else []) + ["-r", f"{target}:{remote_dir}/.", str(local_queue)]
-        proc_pull = subprocess.run(scp_cmd, capture_output=True, text=True)
+        proc_pull = run_logged_subprocess(scp_cmd, logger=logger, action="cli.sync_db.scp_pull", check=False)
         if proc_pull.returncode != 0:
             stderr_text = (proc_pull.stderr or "").strip()
             if "No such file or directory" not in stderr_text and "not a regular file" not in stderr_text:
@@ -1211,7 +1214,7 @@ def cmd_sync_db(args: argparse.Namespace) -> int:
     if new_processed and not args.keep_remote:
         quoted = " ".join(shlex.quote(str((Path(remote_dir) / name).as_posix())) for name in new_processed)
         rm_cmd = ["ssh"] + (["-J", ssh_jump] if ssh_jump else []) + [target, f"rm -f {quoted}"]
-        subprocess.run(rm_cmd, capture_output=True, text=True)
+        run_logged_subprocess(rm_cmd, logger=logger, action="cli.sync_db.remote_rm", check=False)
 
     print(
         f"DB queue sync complete: queued={summary.queued} applied={summary.applied} failed={summary.failed} local_queue={local_queue}"
@@ -1462,7 +1465,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main_impl(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args, unknown_args = parser.parse_known_args(argv)
     logger = configure_app_logger()
@@ -1490,6 +1493,14 @@ def main(argv: list[str] | None = None) -> int:
         logger.exception("Unhandled CLI error: %s", exc)
         _emit_error_with_report(f"Unhandled error: {exc}", exc, args)
         return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    return guarded_entrypoint(
+        lambda: _main_impl(argv),
+        logger_name="cli",
+        label="cli",
+    )
 
 
 if __name__ == "__main__":

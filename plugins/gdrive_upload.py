@@ -9,8 +9,9 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import subprocess
 from pathlib import Path
+
+from etl.subprocess_logging import run_logged_subprocess
 
 
 meta = {
@@ -120,14 +121,18 @@ def run(args, ctx):
         f"[gdrive_upload] start input={input_path.as_posix()} remote={remote_spec} dry_run={dry_run} no_clobber={no_clobber}"
     )
     ctx.log(f"[gdrive_upload] running: {shlex.join(cmd)}")
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = run_logged_subprocess(cmd, action="plugin.gdrive_upload", check=False)
+    if (proc.stdout or "").strip():
+        ctx.log(f"[gdrive_upload] rclone stdout: {(proc.stdout or '').strip()[:2000]}")
+    if (proc.stderr or "").strip():
+        ctx.log(f"[gdrive_upload] rclone stderr: {(proc.stderr or '').strip()[:2000]}")
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         stdout = (proc.stdout or "").strip()
         detail = stderr or stdout or "unknown error"
         raise RuntimeError(f"gdrive upload failed: {detail}")
     if verbose and (proc.stdout or "").strip():
-        ctx.log(f"[gdrive_upload] rclone stdout: {(proc.stdout or '').strip()[:2000]}")
+        ctx.log(f"[gdrive_upload] verbose stdout: {(proc.stdout or '').strip()[:2000]}")
 
     uploaded = [output_path]
     ctx.log(f"[gdrive_upload] done uploaded_count={len(uploaded)}")

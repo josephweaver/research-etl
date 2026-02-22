@@ -48,6 +48,7 @@ from etl.projects import (
 )
 from etl.runner import run_pipeline, RunResult
 from etl.tracking import upsert_run_status, upsert_step_attempt, load_run_step_states
+from etl.entrypoint import guarded_entrypoint
 
 DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
 
@@ -195,13 +196,12 @@ def _safe_tracking_write(action_name: str, fn, *, queue_dir: Path, **kwargs) -> 
 
 
 def main(argv: list[str] | None = None) -> int:
-    try:
-        return _main_impl(argv)
-    except Exception as exc:  # noqa: BLE001
-        logger = get_app_logger("run_batch")
-        logger.exception("Unhandled run_batch error: %s", exc)
-        print(f"[run_batch][ERROR] Unhandled error: {exc}")
-        return 1
+    return guarded_entrypoint(
+        lambda: _main_impl(argv),
+        logger_name="run_batch",
+        label="run_batch",
+        on_error=lambda exc: print(f"[run_batch][ERROR] Unhandled error: {exc}"),
+    )
 
 
 def _main_impl(argv: list[str] | None = None) -> int:

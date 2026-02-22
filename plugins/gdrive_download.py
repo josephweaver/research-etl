@@ -9,9 +9,10 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import subprocess
 from pathlib import Path
 from typing import Optional
+
+from etl.subprocess_logging import run_logged_subprocess
 
 
 meta = {
@@ -110,14 +111,18 @@ def run(args, ctx):
         f"recursive={bool(args.get('recursive', False))} dry_run={bool(args.get('dry_run', False))}"
     )
     ctx.log(f"[gdrive_download] running: {shlex.join(cmd)}")
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = run_logged_subprocess(cmd, action="plugin.gdrive_download", check=False)
+    if (proc.stdout or "").strip():
+        ctx.log(f"[gdrive_download] rclone stdout: {(proc.stdout or '').strip()[:2000]}")
+    if (proc.stderr or "").strip():
+        ctx.log(f"[gdrive_download] rclone stderr: {(proc.stderr or '').strip()[:2000]}")
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         stdout = (proc.stdout or "").strip()
         detail = stderr or stdout or "unknown error"
         raise RuntimeError(f"gdrive download failed: {detail}")
     if verbose and (proc.stdout or "").strip():
-        ctx.log(f"[gdrive_download] rclone stdout: {(proc.stdout or '').strip()[:2000]}")
+        ctx.log(f"[gdrive_download] verbose stdout: {(proc.stdout or '').strip()[:2000]}")
 
     files = sorted(str(p.as_posix()) for p in out.rglob("*") if p.is_file())
     ctx.log(f"[gdrive_download] done downloaded_count={len(files)}")
