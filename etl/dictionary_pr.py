@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,10 @@ from urllib import error, request
 import psycopg
 
 from .db import get_database_url
+from .subprocess_logging import run_logged_subprocess
+
+
+_LOG = logging.getLogger("etl.dictionary_pr")
 
 
 class DictionaryPRError(RuntimeError):
@@ -58,11 +63,11 @@ def _connect() -> psycopg.Connection:
 
 def _run_cmd(cmd: list[str], *, cwd: Optional[Path], trace: list[str], check: bool = True) -> subprocess.CompletedProcess:
     _log(trace, f"cmd: {' '.join(cmd)}")
-    proc = subprocess.run(
+    proc = run_logged_subprocess(
         cmd,
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
+        logger=_LOG,
+        action="dictionary_pr.cmd",
+        cwd=cwd,
         check=False,
     )
     out = (proc.stdout or "").strip()

@@ -12,6 +12,7 @@ import shutil
 import json
 import shlex
 import re
+import logging
 import subprocess
 import threading
 import multiprocessing as mp
@@ -82,9 +83,11 @@ from .web_queries import (
     fetch_run_header,
     fetch_runs,
 )
+from .subprocess_logging import run_logged_subprocess
 
 
 app = FastAPI(title="Research ETL UI", version="0.1.0")
+_LOG = logging.getLogger("etl.web_api")
 
 MAX_FILE_VIEW_BYTES = 256 * 1024
 _TPL_RE = re.compile(r"\{([^{}]+)\}")
@@ -4764,10 +4767,10 @@ def _parse_optional_float(value: Any, *, field_name: str) -> Optional[float]:
 
 
 def _git_out(repo_root: Path, *args: str) -> str:
-    proc = subprocess.run(
+    proc = run_logged_subprocess(
         ["git", "-C", str(repo_root), *args],
-        capture_output=True,
-        text=True,
+        logger=_LOG,
+        action="web_api.git",
         check=False,
     )
     if proc.returncode != 0:
@@ -4778,10 +4781,10 @@ def _git_out(repo_root: Path, *args: str) -> str:
 
 def _git_repo_status(repo_root: Optional[Path] = None) -> dict[str, Any]:
     root = (repo_root or Path(".")).resolve()
-    is_repo = subprocess.run(
+    is_repo = run_logged_subprocess(
         ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True,
-        text=True,
+        logger=_LOG,
+        action="web_api.git",
         check=False,
     )
     if is_repo.returncode != 0:
@@ -4789,10 +4792,10 @@ def _git_repo_status(repo_root: Optional[Path] = None) -> dict[str, Any]:
     origin = _git_out(root, "config", "--get", "remote.origin.url")
     branch = _git_out(root, "rev-parse", "--abbrev-ref", "HEAD")
     commit = _git_out(root, "rev-parse", "HEAD")
-    dirty_proc = subprocess.run(
+    dirty_proc = run_logged_subprocess(
         ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
-        capture_output=True,
-        text=True,
+        logger=_LOG,
+        action="web_api.git",
         check=False,
     )
     dirty = bool(str(dirty_proc.stdout or "").strip()) if dirty_proc.returncode == 0 else False
@@ -4822,10 +4825,10 @@ def _builder_git_sync_repo_root_from_env() -> Optional[Path]:
             status_code=400,
             detail=f"Configured ETL_BUILDER_GIT_SYNC_REPO does not exist: {root}",
         )
-    is_repo = subprocess.run(
+    is_repo = run_logged_subprocess(
         ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True,
-        text=True,
+        logger=_LOG,
+        action="web_api.git",
         check=False,
     )
     if is_repo.returncode != 0:
@@ -4908,10 +4911,10 @@ def _builder_git_sync(
     current_branch = str(status_before.get("branch") or "").strip()
 
     if target_branch and target_branch != current_branch:
-        exists = subprocess.run(
+        exists = run_logged_subprocess(
             ["git", "-C", str(repo_root), "show-ref", "--verify", "--quiet", f"refs/heads/{target_branch}"],
-            capture_output=True,
-            text=True,
+            logger=_LOG,
+            action="web_api.git",
             check=False,
         )
         if exists.returncode == 0:

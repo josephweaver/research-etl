@@ -36,15 +36,19 @@ def run_logged_subprocess(
     if cwd is not None:
         log.info("[%s] cwd=%s", action, str(cwd))
 
-    proc = subprocess.run(
-        cmd_list,
-        cwd=str(cwd) if cwd else None,
-        env=dict(env) if env is not None else None,
-        capture_output=True,
-        text=text,
-        timeout=timeout,
-        check=False,
-    )
+    run_kwargs = {
+        "capture_output": True,
+        "text": text,
+        "check": False,
+    }
+    if cwd is not None:
+        run_kwargs["cwd"] = str(cwd)
+    if env is not None:
+        run_kwargs["env"] = dict(env)
+    if timeout is not None:
+        run_kwargs["timeout"] = timeout
+
+    proc = subprocess.run(cmd_list, **run_kwargs)
 
     if text:
         stdout_text = str(proc.stdout or "").strip()

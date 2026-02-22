@@ -14,6 +14,7 @@ Intended for fast development iteration only.
 from __future__ import annotations
 
 from dataclasses import replace
+import logging
 import os
 import tarfile
 import tempfile
@@ -32,8 +33,10 @@ from ..git_checkout import (
 )
 from ..pipeline import parse_pipeline, PipelineError
 from ..source_control import SourceControlError, SourceExecutionSpec, make_git_source_provider
+from ..subprocess_logging import run_logged_subprocess
 
 _SOURCE_PROVIDER = make_git_source_provider()
+_LOG = logging.getLogger("etl.executors.hpcc_direct")
 
 
 def _to_source_spec(spec: SourceExecutionSpec | GitExecutionSpec) -> SourceExecutionSpec:
@@ -198,12 +201,10 @@ class HpccDirectExecutor(Executor):
             f"bash --login -lc {shlex.quote(script)}",
         ]
         if not stream_output:
-            return subprocess.run(
+            return run_logged_subprocess(
                 ssh_cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
+                logger=_LOG,
+                action="hpcc_direct.ssh",
                 timeout=self.ssh_timeout,
                 check=False,
             )
@@ -226,6 +227,7 @@ class HpccDirectExecutor(Executor):
                     buf.append(line)
                     text = line.rstrip("\r\n")
                     if text:
+                        _LOG.info("[hpcc_direct][%s] %s", stream_name, text)
                         print(f"[hpcc_direct][{stream_name}] {text}", flush=True)
             finally:
                 try:
@@ -288,10 +290,16 @@ class HpccDirectExecutor(Executor):
             str(local_path),
             f"{target}:{remote_path}",
         ]
-        return subprocess.run(scp_cmd, capture_output=True, text=True, timeout=self.ssh_timeout, check=False)
+        return run_logged_subprocess(
+            scp_cmd,
+            logger=_LOG,
+            action="hpcc_direct.scp",
+            timeout=self.ssh_timeout,
+            check=False,
+        )
 
     def _collect_dirty_overlay_paths(self) -> tuple[list[Path], list[str]]:
-        proc = subprocess.run(
+        proc = run_logged_subprocess(
             [
                 "git",
                 "-C",
@@ -301,8 +309,10 @@ class HpccDirectExecutor(Executor):
                 "-z",
                 "--untracked-files=all",
             ],
-            capture_output=True,
+            logger=_LOG,
+            action="hpcc_direct.git_status",
             text=False,
+            timeout=self.ssh_timeout,
             check=False,
         )
         if proc.returncode != 0:
@@ -436,6 +446,7 @@ class HpccDirectExecutor(Executor):
         context = context or {}
         target = self._ssh_target()
         run_id = str(context.get("run_id") or "").strip() or uuid.uuid4().hex
+        _LOG.info("hpcc_direct submit start run_id=%s pipeline=%s", run_id, pipeline_path)
         started_at = str(context.get("run_started_at") or "").strip() or (datetime.utcnow().isoformat() + "Z")
         cmdline_vars = dict(context.get("commandline_vars") or {})
         exec_env = dict(context.get("execution_env") or {})
@@ -455,6 +466,7 @@ class HpccDirectExecutor(Executor):
             raise RuntimeError(f"Pipeline parse failed: {exc}") from exc
         step_indices = ",".join(str(i) for i in range(len(pipeline.steps)))
         if not step_indices:
+            _LOG.info("hpcc_direct no steps to execute run_id=%s", run_id)
             self._statuses[run_id] = RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="No steps to run.")
             return SubmissionResult(run_id=run_id, message="No steps to run.")
 
@@ -665,6 +677,7 @@ class HpccDirectExecutor(Executor):
         run_lines.append(" ".join(batch_cmd))
 
         if self.dry_run:
+            _LOG.info("hpcc_direct dry-run run_id=%s", run_id)
             self._statuses[run_id] = RunStatus(run_id=run_id, state=RunState.QUEUED, message="dry-run")
             return SubmissionResult(run_id=run_id, message="dry-run")
 
@@ -703,6 +716,7 @@ class HpccDirectExecutor(Executor):
                 stream_output=(self.verbose or self.stream_run_batch_output),
             )
         except Exception as exc:  # noqa: BLE001
+            _LOG.exception("hpcc_direct submit failed run_id=%s: %s", run_id, exc)
             ended_dt = datetime.utcnow()
             status = RunStatus(
                 run_id=run_id,
@@ -734,6 +748,7 @@ class HpccDirectExecutor(Executor):
                 ended_at=ended_dt,
             )
         self._statuses[run_id] = status
+        _LOG.info("hpcc_direct submit complete run_id=%s state=%s", run_id, status.state.value)
         return SubmissionResult(run_id=run_id, message=status.message)
 
     def status(self, run_id: str) -> RunStatus:
