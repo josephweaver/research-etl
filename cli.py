@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Set
 
 from etl import __version__
+from etl.app_logging import configure_app_logger
 from etl.ai_research import AIResearchError, generate_dataset_research
 from etl.artifacts import (
     ArtifactPolicyError,
@@ -1464,22 +1465,29 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args, unknown_args = parser.parse_known_args(argv)
+    logger = configure_app_logger()
     if unknown_args:
         print(f"[etl][WARN] ignoring unknown arguments: {' '.join(str(x) for x in unknown_args)}")
+        logger.warning("Ignoring unknown CLI arguments: %s", " ".join(str(x) for x in unknown_args))
     args._raw_argv = argv if argv is not None else sys.argv[1:]
     try:
+        logger.info("Ensuring database schema from db/ddl")
         ensure_database_schema(Path("db/ddl"))
     except DatabaseError as exc:
+        logger.exception("Database initialization failed: %s", exc)
         _emit_error_with_report(_format_database_init_error(exc), exc, args)
         return 1
     try:
+        logger.info("Applying local DB sync queue if pending")
         _auto_apply_local_db_queue()
     except Exception:
         # Startup queue apply should not block CLI commands.
         pass
     try:
+        logger.info("Dispatching command: %s", str(getattr(args, "command", "") or ""))
         return args.func(args)
     except Exception as exc:  # noqa: BLE001
+        logger.exception("Unhandled CLI error: %s", exc)
         _emit_error_with_report(f"Unhandled error: {exc}", exc, args)
         return 1
 

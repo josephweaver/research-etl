@@ -216,8 +216,12 @@
   - when invoking child processes (`git`, `rclone`, etc.), capture and route both `stdout` and `stderr` into the ETL logger/step log.
 - Add generic entry-point exception traps:
   - every top-level entry point should catch unhandled exceptions, log the error and full traceback, then fail with consistent diagnostics.
+- Eliminate process-chain "dark corners":
+  - when process A starts process B (and nested children), child process logs must continue flowing through the same logging pipeline with no silent gaps.
 - Centralize logging configuration:
   - use a configurable logging engine/adapter that writes to both stdout and step/run log files by default.
+- Durable logs for UI:
+  - persist logs to durable storage/index so UI views can load historical logs and resume live tails across service/process restarts.
 
 ## Future Work
 

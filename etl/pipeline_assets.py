@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import subprocess
 from dataclasses import dataclass
@@ -14,6 +15,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .git_checkout import infer_repo_name
+from .subprocess_logging import run_logged_subprocess
+
+
+_LOG = logging.getLogger("etl.pipeline_assets")
 
 
 class PipelineAssetError(RuntimeError):
@@ -45,11 +50,11 @@ def _repo_cache_dir(cache_root: Path, repo_url: str) -> Path:
 
 
 def _run_git(args: List[str], *, cwd: Optional[Path] = None) -> str:
-    proc = subprocess.run(
+    proc = run_logged_subprocess(
         ["git", *args],
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
+        logger=_LOG,
+        action="git",
+        cwd=cwd,
         check=False,
     )
     if proc.returncode != 0:
@@ -125,10 +130,10 @@ def sync_pipeline_asset_source(source: PipelineAssetSource, *, cache_root: Path,
             local = (root / local).resolve()
         if not local.exists() or not local.is_dir():
             raise PipelineAssetError(f"local_repo_path not found: {local}")
-        is_repo = subprocess.run(
+        is_repo = run_logged_subprocess(
             ["git", "-C", str(local), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
+            logger=_LOG,
+            action="git",
             check=False,
         )
         if is_repo.returncode != 0:

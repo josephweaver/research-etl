@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 import time
 from typing import Callable, List, Optional
+
+from ...subprocess_logging import run_logged_subprocess
+
+_LOG = logging.getLogger("etl.executors.slurm.ssh")
 
 
 def build_ssh_common_args(
@@ -53,7 +58,13 @@ def run_cmd_with_retries(
     last_timeout: Optional[subprocess.TimeoutExpired] = None
     for attempt in range(1, attempts + 1):
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            proc = run_logged_subprocess(
+                cmd,
+                logger=_LOG,
+                action=op_name,
+                timeout=timeout,
+                check=False,
+            )
         except subprocess.TimeoutExpired as exc:
             last_timeout = exc
             if attempt < attempts:

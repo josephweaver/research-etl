@@ -6,10 +6,15 @@
 
 from __future__ import annotations
 
+import logging
 import shlex
-import subprocess
 from pathlib import Path
 from typing import Any, Dict
+
+from ...subprocess_logging import run_logged_subprocess
+
+
+_LOG = logging.getLogger("etl.datasets.rclone")
 
 
 def _to_rclone_target(target_uri: str) -> str:
@@ -49,7 +54,7 @@ def transfer_rclone(
     if team_drive_id:
         cmd.extend(["--drive-team-drive", team_drive_id])
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = run_logged_subprocess(cmd, logger=_LOG, action="rclone.transfer", check=False)
     if proc.returncode != 0:
         detail = (proc.stderr or "").strip() or (proc.stdout or "").strip() or "unknown rclone error"
         raise RuntimeError(f"rclone transfer failed: {detail}")
@@ -81,7 +86,7 @@ def fetch_rclone(
     if team_drive_id:
         cmd.extend(["--drive-team-drive", team_drive_id])
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = run_logged_subprocess(cmd, logger=_LOG, action="rclone.fetch", check=False)
     if proc.returncode != 0:
         detail = (proc.stderr or "").strip() or (proc.stdout or "").strip() or "unknown rclone error"
         raise RuntimeError(f"rclone fetch failed: {detail}")

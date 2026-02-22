@@ -23,6 +23,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from etl.app_logging import configure_app_logger, get_app_logger
 from etl.db_sync_queue import queue_tracking_update
 from etl.config import load_global_config, resolve_global_config_path, ConfigError
 from etl.execution_config import (
@@ -194,6 +195,16 @@ def _safe_tracking_write(action_name: str, fn, *, queue_dir: Path, **kwargs) -> 
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main_impl(argv)
+    except Exception as exc:  # noqa: BLE001
+        logger = get_app_logger("run_batch")
+        logger.exception("Unhandled run_batch error: %s", exc)
+        print(f"[run_batch][ERROR] Unhandled error: {exc}")
+        return 1
+
+
+def _main_impl(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a batch of pipeline steps")
     parser.add_argument("pipeline", help="Pipeline YAML path")
     parser.add_argument("--steps", required=True, help="Comma-separated step indices to run (0-based)")
@@ -248,6 +259,10 @@ def main(argv: list[str] | None = None) -> int:
     if not run_id:
         print("run_batch.py requires --run-id for remote tracking consistency")
         return 1
+    run_log_file = (Path(args.workdir) / "_live" / f"{run_id}.log").resolve()
+    os.environ["ETL_LOG_FILE"] = run_log_file.as_posix()
+    logger = configure_app_logger(log_file=run_log_file)
+    logger.info("run_batch start run_id=%s pipeline=%s steps=%s", run_id, args.pipeline, args.steps)
     _vprint(args.verbose, f"starting run_id={run_id} pipeline={args.pipeline} steps={args.steps}")
     run_started: datetime | None = None
     if args.run_started_at:
@@ -267,12 +282,14 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.global_config) if args.global_config else None
         )
     except ConfigError as exc:
+        logger.error("Global config resolution failed: %s", exc)
         print(f"Global config error: {exc}")
         return 1
     if resolved_global_cfg:
         try:
             global_vars = load_global_config(resolved_global_cfg)
         except ConfigError as exc:
+            logger.error("Global config load failed: %s", exc)
             print(f"Global config error: {exc}")
             return 1
         args.global_config = str(resolved_global_cfg)
@@ -282,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.projects_config) if args.projects_config else None
         )
     except ProjectConfigError as exc:
+        logger.error("Projects config resolution failed: %s", exc)
         print(f"Projects config error: {exc}")
         return 1
     try:
@@ -289,6 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.environments_config) if args.environments_config else None
         )
     except ExecutionConfigError as exc:
+        logger.error("Environments config resolution failed: %s", exc)
         print(f"Environments config error: {exc}")
         return 1
     selected_env_name = args.env
@@ -304,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
             exec_env = resolve_execution_env_templates(exec_env, global_vars=global_vars)
             _vprint(args.verbose, f"loaded execution env: {selected_env_name}")
         except ExecutionConfigError as exc:
+            logger.error("Execution env load failed: %s", exc)
             print(f"Environments config error: {exc}")
             return 1
     if args.env and not resolved_exec_cfg:
@@ -323,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         project_vars = load_project_vars(project_id=project_id, projects_config_path=resolved_projects_cfg)
     except ProjectConfigError as exc:
+        logger.error("Project vars load failed for project_id=%s: %s", project_id, exc)
         print(f"Projects config error: {exc}")
         return 1
     try:
@@ -332,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=Path(".").resolve(),
         )
     except PipelineAssetError as exc:
+        logger.error("Pipeline asset resolution failed: %s", exc)
         print(f"Pipeline asset resolution error: {exc}")
         return 1
     try:
@@ -342,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
             context_vars=parse_context_vars,
         )
     except PipelineError as exc:
+        logger.error("Pipeline pre-parse failed: %s", exc)
         print(f"Pipeline error: {exc}")
         return 1
     project_id = resolve_project_id(
@@ -352,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         project_vars = load_project_vars(project_id=project_id, projects_config_path=resolved_projects_cfg)
     except ProjectConfigError as exc:
+        logger.error("Project vars load failed for project_id=%s: %s", project_id, exc)
         print(f"Projects config error: {exc}")
         return 1
     try:
@@ -363,9 +387,11 @@ def main(argv: list[str] | None = None) -> int:
             context_vars=parse_context_vars,
         )
     except PipelineError as exc:
+        logger.error("Pipeline parse failed: %s", exc)
         print(f"Pipeline error: {exc}")
         return 1
     _vprint(args.verbose, f"parsed pipeline with {len(full_pipeline.steps)} step(s)")
+    logger.info("Parsed pipeline step_count=%s", len(full_pipeline.steps))
     provenance = collect_run_provenance(
         repo_root=Path(".").resolve(),
         pipeline_path=resolved_pipeline_path,
@@ -389,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     # slice pipeline steps
     indices = [int(x) for x in args.steps.split(",") if x.strip() != ""]
     if not indices:
+        logger.error("No step indices provided")
         print("No step indices provided")
         return 1
     _vprint(args.verbose, f"resolved step indices: {indices}")
@@ -440,6 +467,7 @@ def main(argv: list[str] | None = None) -> int:
         event_details={"step_indices": indices, "scheduler": scheduler_meta},
     )
     _vprint(args.verbose, "recorded batch_started tracking event")
+    logger.info("Recorded tracking event batch_started")
 
     _vprint(
         args.verbose,
@@ -468,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     _vprint(args.verbose, f"batch execution finished: success={result.success}")
+    logger.info("Batch execution finished success=%s", bool(result.success))
     batch_ended_at = datetime.utcnow().isoformat() + "Z"
     for step_res in result.steps:
         step_artifact_dir = str(Path(args.workdir) / step_res.step.name / str(step_res.step_id or ""))
@@ -540,6 +569,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"step={s.get('step_name')} attempts={s.get('attempts')} "
                     f"final_error={s.get('final_error')}"
                 )
+                logger.error(
+                    "Step failed step=%s attempts=%s final_error=%s",
+                    s.get("step_name"),
+                    s.get("attempts"),
+                    s.get("final_error"),
+                )
         _safe_tracking_write(
             "batch_failed",
             upsert_run_status,
@@ -559,6 +594,7 @@ def main(argv: list[str] | None = None) -> int:
             event_details={"step_indices": indices, "step_attempts": step_attempts, "scheduler": scheduler_meta},
         )
         _vprint(args.verbose, "recorded batch_failed tracking event")
+        logger.info("Recorded tracking event batch_failed")
         return 1
 
     # Batch succeeded event.
@@ -583,6 +619,7 @@ def main(argv: list[str] | None = None) -> int:
         event_details={"step_indices": indices, "step_attempts": step_attempts, "scheduler": scheduler_meta},
     )
     _vprint(args.verbose, "recorded batch_completed tracking event")
+    logger.info("Recorded tracking event batch_completed")
 
     # No polling: mark run complete when the last planned step index completes.
     if max(indices) == total_steps - 1:
@@ -605,8 +642,10 @@ def main(argv: list[str] | None = None) -> int:
             event_details={"step_indices": indices, "step_attempts": step_attempts, "scheduler": scheduler_meta},
         )
         _vprint(args.verbose, "recorded run_completed tracking event")
+        logger.info("Recorded tracking event run_completed")
 
     _vprint(args.verbose, "done")
+    logger.info("run_batch completed successfully")
     return 0
 
 
