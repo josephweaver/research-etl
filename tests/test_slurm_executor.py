@@ -159,6 +159,79 @@ def test_slurm_submit_places_setup_and_step_logs_under_run_workdir(monkeypatch, 
     )
 
 
+def test_slurm_submit_default_remote_workdir_is_run_scoped(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(
+        vars={"jobname": "sample"},
+        steps=[Step(name="s1", script="echo.py")],
+    )
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "remote_dest_dir": remote_dest_dir, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/work", "logdir": "/tmp/logs"},
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+    ex.submit("pipelines/sample.yml", {"run_id": "runabc1234"})
+
+    assert len(calls) >= 1
+    assert re.search(r"^/tmp/work/sample/\d{6}/\d{6}-runabc12$", str(calls[0]["remote_dest_dir"]))
+
+
+def test_slurm_submit_relative_pipeline_workdir_is_anchored_to_env_workdir(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(
+        vars={"jobname": "sample"},
+        dirs={"workdir": "data/{jobname}"},
+        steps=[Step(name="s1", script="echo.py")],
+    )
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "remote_dest_dir": remote_dest_dir, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/work", "logdir": "/tmp/logs"},
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+    ex.submit("pipelines/sample.yml", {"run_id": "runabc1234"})
+
+    assert len(calls) >= 1
+    assert str(calls[0]["remote_dest_dir"]).replace("\\", "/") == "/tmp/work/data/sample"
+
+
 def test_slurm_submit_applies_step_resource_hints_and_env_caps(monkeypatch, tmp_path: Path) -> None:
     plugins_dir = tmp_path / "plugins"
     plugins_dir.mkdir(parents=True, exist_ok=True)

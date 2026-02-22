@@ -115,6 +115,8 @@ def render_setup_script(
         chunk_runtime_flags.append("log_step 'setup bootstrap started'")
     if executor.verbose:
         chunk_dirs.append("log_step 'creating setup directories'")
+    chunk_dirs.append(f"echo \"[etl][setup][paths] workdir={workdir}\"")
+    chunk_dirs.append(f"echo \"[etl][setup][paths] setup_logdir={logdir}\"")
     chunk_dirs.append(f"mkdir -p {logdir}")
     chunk_dirs.append(f"mkdir -p {workdir}")
     for d in workdirs_to_create:

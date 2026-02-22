@@ -647,7 +647,6 @@ class SlurmExecutor(Executor):
         submission_records = []
         prev_jobid = None
         jobname = str(pipeline.vars.get("jobname") or pipeline.vars.get("name") or "run")
-        default_remote_workdir = (Path(self.env.workdir or self.workdir) / jobname / run_date / run_fs_id).as_posix()
         pipeline_workdir_template = str((getattr(pipeline, "dirs", {}) or {}).get("workdir") or "").strip()
         resolve_max_passes = max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20))
         path_style = str((context.get("execution_env") or {}).get("path_style") or "").strip()
@@ -677,10 +676,15 @@ class SlurmExecutor(Executor):
             }
         )
         solver.update({"run_id": run_id, "jobname": jobname})
-        existing_workdir = str(solver.get("workdir", "", resolve=False) or "").strip()
-        if not existing_workdir:
-            solver.update({"workdir": default_remote_workdir})
-        remote_workdir = solver.get_path("workdir", default_remote_workdir, path_style=style_norm)
+        env_workdir_default = solver.get_path(
+            "env.workdir",
+            str(self.env.workdir or self.workdir),
+            path_style=style_norm,
+        )
+        if "{" in env_workdir_default or "}" in env_workdir_default:
+            env_workdir_default = Path(self.env.workdir or self.workdir).as_posix()
+        default_remote_workdir = (Path(env_workdir_default) / jobname / run_date / run_fs_id).as_posix()
+        remote_workdir = default_remote_workdir
         if pipeline_workdir_template:
             solver.update({"_candidate_workdir": pipeline_workdir_template})
             candidate = str(solver.get("_candidate_workdir", "", resolve=True) or "").strip()
@@ -690,7 +694,17 @@ class SlurmExecutor(Executor):
                     f"{pipeline_workdir_template}"
                 )
             if candidate:
-                remote_workdir = solver.get_path("_candidate_workdir", candidate, resolve=True, path_style=style_norm)
+                resolved_candidate = solver.get_path(
+                    "_candidate_workdir",
+                    candidate,
+                    resolve=True,
+                    path_style=style_norm,
+                )
+                candidate_path = Path(resolved_candidate)
+                if candidate_path.is_absolute():
+                    remote_workdir = candidate_path.as_posix()
+                else:
+                    remote_workdir = (Path(env_workdir_default) / candidate_path).as_posix()
         solver.update({"workdir": remote_workdir})
         remote_workdir_root = Path(remote_workdir)
         child_jobs_file = f"{remote_workdir}/child_jobs.txt"
