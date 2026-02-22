@@ -784,6 +784,7 @@ INDEX_HTML = """<!doctype html>
     const USER_STORAGE_KEY = "etl_ui_user";
     const PROJECT_STORAGE_KEY = "etl_ui_project";
     const ENV_STORAGE_KEY = "etl_ui_env";
+    const BUILDER_LAST_PIPELINE_KEY = "etl_builder_last_pipeline";
     const VALID_UI_USERS = new Set(["admin", "land-core", "gee-lee"]);
     const _nativeFetch = window.fetch.bind(window);
     function currentAsUser(){
@@ -799,6 +800,31 @@ INDEX_HTML = """<!doctype html>
     function currentProjectId(){
       const el = document.getElementById("nav_project");
       return el ? String(el.value || "").trim() : "";
+    }
+    function loadBuilderLastPipeline(){
+      try {
+        const raw = String(localStorage.getItem(BUILDER_LAST_PIPELINE_KEY) || "").trim();
+        if(!raw) return null;
+        const parsed = JSON.parse(raw);
+        if(!parsed || typeof parsed !== "object") return null;
+        const pipeline = normalizeBuilderPipelineName(String(parsed.pipeline || ""));
+        if(!pipeline) return null;
+        const source = String(parsed.pipeline_source || "").trim();
+        return { pipeline, pipeline_source: source };
+      } catch {
+        return null;
+      }
+    }
+    function saveBuilderLastPipeline(pipeline, pipelineSource){
+      const normalized = normalizeBuilderPipelineName(String(pipeline || ""));
+      if(!normalized) return;
+      const payload = {
+        pipeline: normalized,
+        pipeline_source: String(pipelineSource || "").trim(),
+      };
+      try {
+        localStorage.setItem(BUILDER_LAST_PIPELINE_KEY, JSON.stringify(payload));
+      } catch {}
     }
     function withAsUserUrl(inputUrl){
       const txt = String(inputUrl || "");
@@ -1064,6 +1090,13 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("detail").style.display = "none";
         if (builderPipelineFromPath) {
           document.getElementById("b_pipeline_path").value = builderPipelineFromPath;
+        } else {
+          const restored = loadBuilderLastPipeline();
+          if(restored && restored.pipeline){
+            document.getElementById("b_pipeline_path").value = restored.pipeline;
+            builderSelectedPipelineSource = String(restored.pipeline_source || "").trim();
+            setBuilderPipelineSourceValue(builderSelectedPipelineSource);
+          }
         }
       }
       if(isLiveRunView){
@@ -3109,6 +3142,7 @@ INDEX_HTML = """<!doctype html>
           }
         }
         builderRunSeed = null;
+        saveBuilderLastPipeline(pipeline, builderSelectedPipelineSource);
       }
       await loadBuilderPlugins();
       renderBuilderModel();
@@ -4438,6 +4472,7 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("plugins_env").onchange = tick;
     document.getElementById("b_pipeline_source").onchange = () => {
       builderSelectedPipelineSource = String(document.getElementById("b_pipeline_source").value || "").trim();
+      saveBuilderLastPipeline(document.getElementById("b_pipeline_path").value, builderSelectedPipelineSource);
       updateBuilderPipelinePathSuggestions();
     };
     document.getElementById("b_pipeline_path").addEventListener("input", () => {
