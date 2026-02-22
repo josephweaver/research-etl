@@ -1,4 +1,4 @@
-# research-etl
+﻿# research-etl
 # Copyright (c) 2026 Joseph Weaver
 # This file is part of the research-etl project and is licensed under the MIT License.
 # You may not use this file except in compliance with the License.
@@ -32,6 +32,10 @@ from etl.execution_config import (
     resolve_execution_config_path,
     validate_environment_executor,
     ExecutionConfigError,
+)
+from etl.pipeline_assets import (
+    PipelineAssetError,
+    resolve_pipeline_path_from_project_sources,
 )
 from etl.pipeline import parse_pipeline, PipelineError
 from etl.provenance import collect_run_provenance
@@ -310,9 +314,29 @@ def main(argv: list[str] | None = None) -> int:
     _apply_db_mode_from_exec_env(exec_env)
     parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
 
+    pipeline_path_input = Path(args.pipeline).expanduser()
+    project_id = resolve_project_id(
+        explicit_project_id=args.project_id,
+        pipeline_project_id=None,
+        pipeline_path=args.pipeline,
+    )
+    try:
+        project_vars = load_project_vars(project_id=project_id, projects_config_path=resolved_projects_cfg)
+    except ProjectConfigError as exc:
+        print(f"Projects config error: {exc}")
+        return 1
+    try:
+        resolved_pipeline_path = resolve_pipeline_path_from_project_sources(
+            pipeline_path_input,
+            project_vars=project_vars,
+            repo_root=Path(".").resolve(),
+        )
+    except PipelineAssetError as exc:
+        print(f"Pipeline asset resolution error: {exc}")
+        return 1
     try:
         pre_pipeline = parse_pipeline(
-            Path(args.pipeline),
+            resolved_pipeline_path,
             global_vars=global_vars,
             env_vars=exec_env,
             context_vars=parse_context_vars,
@@ -323,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     project_id = resolve_project_id(
         explicit_project_id=args.project_id,
         pipeline_project_id=getattr(pre_pipeline, "project_id", None),
-        pipeline_path=args.pipeline,
+        pipeline_path=str(resolved_pipeline_path),
     )
     try:
         project_vars = load_project_vars(project_id=project_id, projects_config_path=resolved_projects_cfg)
@@ -332,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         full_pipeline = parse_pipeline(
-            Path(args.pipeline),
+            resolved_pipeline_path,
             global_vars=global_vars,
             env_vars=exec_env,
             project_vars=project_vars,
@@ -344,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
     _vprint(args.verbose, f"parsed pipeline with {len(full_pipeline.steps)} step(s)")
     provenance = collect_run_provenance(
         repo_root=Path(".").resolve(),
-        pipeline_path=Path(args.pipeline),
+        pipeline_path=resolved_pipeline_path,
         global_config_path=Path(args.global_config) if args.global_config else None,
         environments_config_path=Path(args.environments_config) if args.environments_config else None,
         plugin_dir=Path(args.plugins_dir),
@@ -402,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
         upsert_run_status,
         queue_dir=queue_dir,
         run_id=run_id,
-        pipeline=args.pipeline,
+        pipeline=str(resolved_pipeline_path),
         project_id=project_id,
         status="running",
         success=False,
@@ -470,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
                     cpu_cores=att.get("cpu_cores"),
                     started_at=att.get("started_at", batch_started_at),
                     ended_at=att.get("ended_at", batch_ended_at),
-                    pipeline=args.pipeline,
+                    pipeline=str(resolved_pipeline_path),
                     project_id=project_id,
                     artifact_dir=step_artifact_dir,
                     executor=tracking_executor,
@@ -490,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
                 outputs=step_res.outputs,
                 started_at=batch_started_at,
                 ended_at=batch_ended_at,
-                pipeline=args.pipeline,
+                pipeline=str(resolved_pipeline_path),
                 project_id=project_id,
                 artifact_dir=step_artifact_dir,
                 executor=tracking_executor,
@@ -521,7 +545,7 @@ def main(argv: list[str] | None = None) -> int:
             upsert_run_status,
             queue_dir=queue_dir,
             run_id=run_id,
-            pipeline=args.pipeline,
+            pipeline=str(resolved_pipeline_path),
             project_id=project_id,
             status="failed",
             success=False,
@@ -545,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
         upsert_run_status,
         queue_dir=queue_dir,
         run_id=run_id,
-        pipeline=args.pipeline,
+        pipeline=str(resolved_pipeline_path),
         project_id=project_id,
         status="running",
         success=False,
@@ -567,7 +591,7 @@ def main(argv: list[str] | None = None) -> int:
             upsert_run_status,
             queue_dir=queue_dir,
             run_id=run_id,
-            pipeline=args.pipeline,
+            pipeline=str(resolved_pipeline_path),
             project_id=project_id,
             status="succeeded",
             success=True,
@@ -588,3 +612,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
