@@ -324,6 +324,15 @@ INDEX_HTML = """<!doctype html>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jstree@3.3.16/dist/themes/default/style.min.css" />
   <style>
     :root { --bg:#f5f7fb; --panel:#ffffff; --ink:#13223a; --muted:#5f6e86; --ok:#0a8f57; --bad:#b42318; --line:#dbe2ef; }
+    @media (prefers-color-scheme: dark) {
+      html {
+        background: #0f1115;
+        filter: invert(1) hue-rotate(180deg);
+      }
+      img, video, canvas, svg, iframe {
+        filter: invert(1) hue-rotate(180deg);
+      }
+    }
     body { margin:0; font-family:"Segoe UI",Tahoma,sans-serif; color:var(--ink); background:linear-gradient(160deg,#eef3ff,#f9fbff); }
     .wrap { max-width:min(1840px, calc(100vw - 24px)); margin:16px auto; padding:0 10px; }
     .topnav { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; padding:6px 8px; background:#f7f9ff; border:1px solid var(--line); border-radius:8px; }
