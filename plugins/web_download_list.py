@@ -21,6 +21,7 @@ meta = {
     "inputs": [],
     "outputs": [
         "output_dir",
+        "output_file",
         "manifest_file",
         "downloaded_files",
         "downloaded_count",
@@ -32,6 +33,7 @@ meta = {
         "urls": {"type": "str", "default": ""},
         "urls_file": {"type": "str", "default": ""},
         "out": {"type": "str", "default": ".runs/cache/web_downloads"},
+        "out_file": {"type": "str", "default": ""},
         "overwrite": {"type": "bool", "default": False},
         "timeout_seconds": {"type": "int", "default": 120},
         "fail_on_error": {"type": "bool", "default": True},
@@ -118,8 +120,17 @@ def run(args, ctx):
     if not urls:
         raise ValueError("Provide at least one URL via urls or urls_file")
 
-    out_dir = _resolve_path(str(args.get("out") or ".runs/cache/web_downloads"), ctx)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file_text = str(args.get("out_file") or "").strip()
+    target_file = None
+    if out_file_text:
+        if len(urls) != 1:
+            raise ValueError("out_file is only supported when exactly one URL is provided")
+        target_file = _resolve_path(out_file_text, ctx)
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        out_dir = target_file.parent
+    else:
+        out_dir = _resolve_path(str(args.get("out") or ".runs/cache/web_downloads"), ctx)
+        out_dir.mkdir(parents=True, exist_ok=True)
     overwrite = bool(args.get("overwrite", False))
     timeout_seconds = max(1, int(args.get("timeout_seconds", 120)))
     fail_on_error = bool(args.get("fail_on_error", True))
@@ -141,8 +152,11 @@ def run(args, ctx):
         parsed = parse.urlparse(url)
         if parsed.scheme.lower() not in {"http", "https"}:
             raise ValueError(f"Only http/https URLs are supported: {url}")
-        filename = _filename_from_url(url, idx)
-        target = out_dir / filename
+        if target_file is not None:
+            target = target_file
+        else:
+            filename = _filename_from_url(url, idx)
+            target = out_dir / filename
         if target.exists() and not overwrite:
             skipped_count += 1
             ctx.log(f"[web_download_list] {idx}/{len(urls)} skipped existing: {target.name}")
@@ -173,6 +187,7 @@ def run(args, ctx):
         ctx.log(f"[web_download_list] manifest={manifest_file.resolve().as_posix()}")
     return {
         "output_dir": out_dir.resolve().as_posix(),
+        "output_file": target_file.resolve().as_posix() if target_file is not None else "",
         "manifest_file": manifest_file.resolve().as_posix(),
         "downloaded_files": downloaded_files,
         "downloaded_count": len(downloaded_files),
