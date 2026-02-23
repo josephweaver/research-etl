@@ -462,7 +462,6 @@ INDEX_HTML = """<!doctype html>
     .step-output.collapsed pre { display:none; }
     .builder-dag-controls { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
     .builder-dag-canvas { border:1px solid var(--line); border-radius:8px; background:#fff; padding:6px; overflow:auto; min-height:220px; }
-    #builder_project_dag_svg { width:100%; min-height:220px; display:block; }
     .dag-legend { margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; }
     @keyframes spin { to { transform:rotate(360deg); } }
     @media (max-width: 1280px) {
