@@ -791,6 +791,8 @@ INDEX_HTML = """<!doctype html>
       ? decodeURIComponent(window.location.pathname.slice("/datasets/".length))
       : null;
     let builderLoaded = false;
+    let builderProjectsReady = false;
+    let builderRestoredProjectId = "";
     let builderModel = { project_id: "", vars: {}, var_types: {}, dirs: {}, requires_pipelines: [], steps: [] };
     let builderPlugins = [];
     let builderPluginMeta = {};
@@ -863,17 +865,19 @@ INDEX_HTML = """<!doctype html>
         const pipeline = normalizeBuilderPipelineName(String(parsed.pipeline || ""));
         if(!pipeline) return null;
         const source = String(parsed.pipeline_source || "").trim();
-        return { pipeline, pipeline_source: source };
+        const projectId = String(parsed.project_id || "").trim();
+        return { pipeline, pipeline_source: source, project_id: projectId };
       } catch {
         return null;
       }
     }
-    function saveBuilderLastPipeline(pipeline, pipelineSource){
+    function saveBuilderLastPipeline(pipeline, pipelineSource, projectId){
       const normalized = normalizeBuilderPipelineName(String(pipeline || ""));
       if(!normalized) return;
       const payload = {
         pipeline: normalized,
         pipeline_source: String(pipelineSource || "").trim(),
+        project_id: String(projectId || "").trim(),
       };
       try {
         localStorage.setItem(BUILDER_LAST_PIPELINE_KEY, JSON.stringify(payload));
@@ -1156,6 +1160,7 @@ INDEX_HTML = """<!doctype html>
           if(restored && restored.pipeline){
             document.getElementById("b_pipeline_path").value = restored.pipeline;
             builderSelectedPipelineSource = String(restored.pipeline_source || "").trim();
+            builderRestoredProjectId = String(restored.project_id || "").trim();
             setBuilderPipelineSourceValue(builderSelectedPipelineSource);
           }
         }
@@ -1703,13 +1708,17 @@ INDEX_HTML = """<!doctype html>
       sel.innerHTML = `<option value="">project (optional)</option>` + projects.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
       const modelProject = String((builderModel && builderModel.project_id) || "").trim();
       const navProject = currentProjectId();
+      const restoredProject = String(builderRestoredProjectId || "").trim();
       if(current && projects.includes(current)){
         sel.value = current;
+      } else if(restoredProject && projects.includes(restoredProject)){
+        sel.value = restoredProject;
       } else if(navProject && projects.includes(navProject)){
         sel.value = navProject;
       } else if(modelProject && projects.includes(modelProject)){
         sel.value = modelProject;
       }
+      builderRestoredProjectId = "";
       builderModel.project_id = String(sel.value || "").trim();
     }
     function builderDagStatusClass(rawStatus){
@@ -3443,7 +3452,7 @@ INDEX_HTML = """<!doctype html>
       const sourceSel = document.getElementById("b_pipeline_source");
       const qp = new URLSearchParams();
       qp.set("pipeline", pipeline);
-      const pid = String(projectSel && projectSel.value ? projectSel.value : "").trim();
+      const pid = String(projectSel && projectSel.value ? projectSel.value : currentProjectId()).trim();
       if(pid) qp.set("project_id", pid);
       const source = String(sourceSel && sourceSel.value ? sourceSel.value : builderSelectedPipelineSource).trim();
       if(source) qp.set("pipeline_source", source);
@@ -3457,6 +3466,8 @@ INDEX_HTML = """<!doctype html>
           builderModel.project_id = String(projectSel.value || "").trim();
         }
         builderRunSeed = null;
+        builderLoaded = false;
+        return;
       } else {
         const payload = await res.json();
         builderSelectedPipelineSource = String(payload.pipeline_source || builderSelectedPipelineSource || "").trim();
@@ -3473,7 +3484,7 @@ INDEX_HTML = """<!doctype html>
           }
         }
         builderRunSeed = null;
-        saveBuilderLastPipeline(pipeline, builderSelectedPipelineSource);
+        saveBuilderLastPipeline(pipeline, builderSelectedPipelineSource, builderModel.project_id || (projectSel ? projectSel.value : ""));
       }
       await loadBuilderPlugins();
       renderBuilderModel();
@@ -4801,6 +4812,9 @@ INDEX_HTML = """<!doctype html>
     }
     async function tick(){
       if(isBuilderView){
+        if(!builderProjectsReady){
+          return;
+        }
         await loadBuilderSource();
         return;
       }
@@ -4884,7 +4898,11 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("plugins_env").onchange = tick;
     document.getElementById("b_pipeline_source").onchange = () => {
       builderSelectedPipelineSource = String(document.getElementById("b_pipeline_source").value || "").trim();
-      saveBuilderLastPipeline(document.getElementById("b_pipeline_path").value, builderSelectedPipelineSource);
+      saveBuilderLastPipeline(
+        document.getElementById("b_pipeline_path").value,
+        builderSelectedPipelineSource,
+        document.getElementById("b_project_id").value,
+      );
       updateBuilderPipelinePathSuggestions();
     };
     document.getElementById("b_pipeline_path").addEventListener("input", () => {
@@ -4900,6 +4918,11 @@ INDEX_HTML = """<!doctype html>
         localStorage.setItem(PROJECT_STORAGE_KEY, next);
         updateProjectDagNavHref();
       }
+      saveBuilderLastPipeline(
+        document.getElementById("b_pipeline_path").value,
+        builderSelectedPipelineSource,
+        next,
+      );
       syncYamlPreview();
       await refreshBuilderProjectVars(next);
       await refreshBuilderTreeFiles();
@@ -4928,6 +4951,7 @@ INDEX_HTML = """<!doctype html>
     loadPluginEnvOptions();
     loadNavProjects().then(async () => {
       await loadBuilderProjects();
+      builderProjectsReady = true;
       if(isBuilderView){
         await refreshBuilderProjectVars(builderModel.project_id || currentProjectId());
         await refreshBuilderTreeFiles();
@@ -4935,6 +4959,8 @@ INDEX_HTML = """<!doctype html>
       if(isProjectDagView){
         await loadProjectDagPage();
       }
+    }).catch(() => {
+      builderProjectsReady = true;
     });
     loadBuilderEnvironments().then(async () => {
       if(isBuilderView){
