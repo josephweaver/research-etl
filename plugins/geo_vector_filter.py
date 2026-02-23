@@ -41,6 +41,7 @@ meta = {
         "value": {"type": "str", "default": ""},
         "values": {"type": "str", "default": ""},
         "case_insensitive": {"type": "bool", "default": True},
+        "fail_on_empty": {"type": "bool", "default": False},
         "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
@@ -168,6 +169,7 @@ def run(args, ctx):
     value = str(args.get("value") or "").strip()
     values_arg = args.get("values")
     case_insensitive = bool(args.get("case_insensitive", True))
+    fail_on_empty = bool(args.get("fail_on_empty", False))
     verbose = bool(args.get("verbose", False))
 
     if where:
@@ -203,6 +205,11 @@ def run(args, ctx):
         mask = ~cmp_col.isin(cmp_values)
 
     out = gdf.loc[mask].copy()
+    if fail_on_empty and len(out) == 0:
+        raise ValueError(
+            f"geo_vector_filter matched 0 features for key={key} op={op} values={filter_values}. "
+            "Check project vars/key/value format."
+        )
     _remove_existing_output(output_path)
     out.to_file(output_path)
 
