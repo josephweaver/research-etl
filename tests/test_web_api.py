@@ -613,6 +613,54 @@ def test_web_api_builder_validate_resolves_project_vars_from_project_id() -> Non
     assert rr.json()["resolved"] == "land-core"
 
 
+def test_web_api_builder_validate_allows_project_list_tokens_when_project_var_exists(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    projects_cfg = cfg / "projects.yml"
+    projects_cfg.write_text(
+        "\n".join(
+            [
+                "projects:",
+                "  demo_project:",
+                "    vars:",
+                "      states_of_interest:",
+                "        - CO",
+                "        - KS",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "project_id: demo_project",
+            "dirs:",
+            "  workdir: .out/work",
+            "  logdir: .out/log",
+            "steps:",
+            "  - name: filter",
+            "    plugin: echo.py",
+            "    args:",
+            "      values: \"{project.states_of_interest}\"",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/validate",
+        json={
+            "yaml_text": yaml_text,
+            "project_id": "demo_project",
+            "projects_config": str(projects_cfg),
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["valid"] is True
+
+
 def test_web_api_builder_resolve_text_with_env_context(tmp_path: Path) -> None:
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

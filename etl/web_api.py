@@ -6526,7 +6526,11 @@ def _collect_unresolved_step_inputs(pipeline: Pipeline) -> list[dict[str, Any]]:
     return issues
 
 
-def _filter_builder_unresolved_issues(issues: list[dict[str, Any]], pipeline: Pipeline) -> list[dict[str, Any]]:
+def _filter_builder_unresolved_issues(
+    issues: list[dict[str, Any]],
+    pipeline: Pipeline,
+    namespace: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
     prior_output_vars_by_step: dict[int, set[str]] = {}
     seen: set[str] = set()
     for idx, step in enumerate(pipeline.steps or []):
@@ -6539,6 +6543,10 @@ def _filter_builder_unresolved_issues(issues: list[dict[str, Any]], pipeline: Pi
         text = str(tok or "").strip()
         if not text:
             return False
+        if namespace:
+            _found, ok = _lookup_ctx_path(namespace, text)
+            if ok:
+                return False
         # Runtime sys placeholders are valid in builder drafts; they are
         # populated during execution.
         root = text.split(".", 1)[0]
@@ -7705,9 +7713,11 @@ def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None))
     require_dir_contract = _parse_bool(payload.get("require_dir_contract"), default=True)
     require_resolved_inputs = _parse_bool(payload.get("require_resolved_inputs"), default=True)
     unresolved_inputs: list[dict[str, Any]] = []
+    namespace: dict[str, Any] = {}
     try:
+        yaml_text = str(payload.get("yaml_text") or "")
         pipeline = _parse_pipeline_from_yaml_text(
-            str(payload.get("yaml_text") or ""),
+            yaml_text,
             global_config_path=global_config_path,
             environments_config_path=environments_config_path,
             env_name=env_name,
@@ -7717,7 +7727,32 @@ def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None))
         )
         if require_dir_contract:
             _validate_pipeline_dir_contract(pipeline)
-        unresolved_inputs = _filter_builder_unresolved_issues(_collect_unresolved_step_inputs(pipeline), pipeline)
+        raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(yaml_text)
+        _, project_vars = _resolve_builder_project_vars(
+            yaml_text=yaml_text,
+            explicit_project_id=project_id,
+            projects_config_path=projects_config_path,
+            pipeline_hint=pipeline_hint,
+        )
+        global_vars = _resolve_global_vars(global_config_path)
+        env_vars = _resolve_builder_env_vars(
+            environments_config_path=environments_config_path,
+            env_name=env_name,
+            global_vars=global_vars,
+        )
+        namespace = _build_builder_namespace(
+            pipeline=pipeline,
+            global_vars=global_vars,
+            env_vars=env_vars,
+            project_vars=project_vars,
+            raw_vars=raw_vars,
+            raw_dirs=raw_dirs,
+        )
+        unresolved_inputs = _filter_builder_unresolved_issues(
+            _collect_unresolved_step_inputs(pipeline),
+            pipeline,
+            namespace,
+        )
         if require_resolved_inputs and unresolved_inputs:
             preview = []
             for issue in unresolved_inputs[:8]:
