@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import csv
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +35,10 @@ meta = {
     "outputs": [
         "input_raster_dir",
         "selector_path",
-        "output_dir",
+        "copy_output_dir",
         "selected_rasters_csv",
         "selected_footprints_path",
+        "copied_raster_count",
         "candidate_raster_count",
         "inspected_raster_count",
         "selected_raster_count",
@@ -47,7 +49,12 @@ meta = {
     "params": {
         "raster_dir": {"type": "str", "default": ""},
         "selector_path": {"type": "str", "default": ""},
-        "output_dir": {"type": "str", "default": ".runs/geo_filter_rasters_by_polygon"},
+        "copy_output_dir": {"type": "str", "default": ""},
+        # Deprecated alias retained for compatibility.
+        "output_dir": {"type": "str", "default": ""},
+        "copy_selected": {"type": "bool", "default": False},
+        "selected_rasters_csv": {"type": "str", "default": ""},
+        "selected_footprints_path": {"type": "str", "default": ""},
         "raster_extensions": {"type": "str", "default": ".tif,.tiff,.img,.vrt,.asc,.bil,.jp2"},
         "fail_on_missing_crs": {"type": "bool", "default": True},
         "verbose": {"type": "bool", "default": False},
@@ -92,6 +99,39 @@ def _crs_text(crs: Any) -> str:
     return str(crs or "")
 
 
+def _copy_with_sidecars(src: Path, dst: Path) -> int:
+    copied = 0
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.exists() and src.is_file():
+        shutil.copy2(src, dst)
+        copied += 1
+    # Copy common sidecars (ENVI/GDAL patterns) when present.
+    sidecars = [
+        src.with_suffix(".hdr"),
+        src.with_suffix(src.suffix + ".aux.xml") if src.suffix else src.with_name(src.name + ".aux.xml"),
+        src.with_suffix(".prj"),
+        src.with_suffix(".stx"),
+        src.with_suffix(".xml"),
+    ]
+    seen: set[str] = {src.resolve().as_posix().lower()} if src.exists() else set()
+    for side in sidecars:
+        try:
+            key = side.resolve().as_posix().lower()
+        except Exception:  # noqa: BLE001
+            key = side.as_posix().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if not side.exists() or not side.is_file():
+            continue
+        rel = side.name
+        # Keep sidecars colocated with copied raster.
+        side_dst = dst.with_name(rel)
+        shutil.copy2(side, side_dst)
+        copied += 1
+    return copied
+
+
 def run(args, ctx):
     if gpd is None or box is None:
         raise RuntimeError(
@@ -116,8 +156,23 @@ def run(args, ctx):
     if not selector_path.exists():
         raise FileNotFoundError(f"selector_path not found: {selector_path}")
 
-    output_dir = _resolve_path(str(args.get("output_dir") or ".runs/geo_filter_rasters_by_polygon"), ctx)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    copy_output_raw = str(args.get("copy_output_dir") or "").strip()
+    if not copy_output_raw:
+        copy_output_raw = str(args.get("output_dir") or "").strip()
+    copy_selected = bool(args.get("copy_selected", False))
+    selected_csv_raw = str(args.get("selected_rasters_csv") or "").strip()
+    selected_footprints_raw = str(args.get("selected_footprints_path") or "").strip()
+    copy_output_dir = _resolve_path(copy_output_raw, ctx) if copy_output_raw else None
+    selected_csv = _resolve_path(selected_csv_raw, ctx) if selected_csv_raw else None
+    selected_footprints_path = _resolve_path(selected_footprints_raw, ctx) if selected_footprints_raw else None
+    if copy_selected and copy_output_dir is None:
+        raise ValueError("copy_selected=true requires copy_output_dir (or output_dir) to be set")
+    if copy_output_dir is not None:
+        copy_output_dir.mkdir(parents=True, exist_ok=True)
+    if selected_csv is not None:
+        selected_csv.parent.mkdir(parents=True, exist_ok=True)
+    if selected_footprints_path is not None:
+        selected_footprints_path.parent.mkdir(parents=True, exist_ok=True)
 
     ext_set = _parse_extensions(str(args.get("raster_extensions") or ".tif,.tiff,.img,.vrt,.asc,.bil,.jp2"))
     fail_on_missing_crs = bool(args.get("fail_on_missing_crs", True))
@@ -194,31 +249,42 @@ def run(args, ctx):
             if verbose:
                 ctx.log(f"[geo_filter_rasters_by_polygon] skip {rel}: {exc}")
 
-    selected_csv = output_dir / "selected_rasters.csv"
-    with selected_csv.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["relative_path", "raster_path", "crs", "minx", "miny", "maxx", "maxy"],
-        )
-        writer.writeheader()
-        writer.writerows(selected_rows)
+    copied_raster_count = 0
+    if copy_selected and copy_output_dir is not None:
+        for row in selected_rows:
+            rel_path = str(row.get("relative_path") or "").strip()
+            if not rel_path:
+                continue
+            src = (raster_dir / rel_path).resolve()
+            dst = (copy_output_dir / rel_path).resolve()
+            copied_raster_count += _copy_with_sidecars(src, dst)
 
-    selected_footprints_path = output_dir / "selected_footprints.gpkg"
-    selected_gdf = gpd.GeoDataFrame(selected_rows, geometry=selected_geoms, crs=selector.crs)
-    if selected_rows:
-        selected_gdf.to_file(selected_footprints_path, driver="GPKG")
-    else:
-        # Keep output contract stable, even for empty selection.
-        empty = gpd.GeoDataFrame(
-            columns=["relative_path", "raster_path", "crs", "minx", "miny", "maxx", "maxy", "geometry"],
-            geometry="geometry",
-            crs=selector.crs,
-        )
-        empty.to_file(selected_footprints_path, driver="GPKG")
+    if selected_csv is not None:
+        with selected_csv.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["relative_path", "raster_path", "crs", "minx", "miny", "maxx", "maxy"],
+            )
+            writer.writeheader()
+            writer.writerows(selected_rows)
+
+    if selected_footprints_path is not None:
+        selected_gdf = gpd.GeoDataFrame(selected_rows, geometry=selected_geoms, crs=selector.crs)
+        if selected_rows:
+            selected_gdf.to_file(selected_footprints_path, driver="GPKG")
+        else:
+            # Keep output contract stable, even for empty selection.
+            empty = gpd.GeoDataFrame(
+                columns=["relative_path", "raster_path", "crs", "minx", "miny", "maxx", "maxy", "geometry"],
+                geometry="geometry",
+                crs=selector.crs,
+            )
+            empty.to_file(selected_footprints_path, driver="GPKG")
 
     ctx.log(
         f"[geo_filter_rasters_by_polygon] candidates={len(candidates)} inspected={inspected_raster_count} "
-        f"selected={len(selected_rows)} skipped_no_crs={skipped_no_crs_count} errors={error_raster_count}"
+        f"selected={len(selected_rows)} copied={copied_raster_count} "
+        f"skipped_no_crs={skipped_no_crs_count} errors={error_raster_count}"
     )
     if error_samples:
         ctx.log(f"[geo_filter_rasters_by_polygon] error_samples={error_samples}", "WARN")
@@ -226,9 +292,10 @@ def run(args, ctx):
     return {
         "input_raster_dir": raster_dir.resolve().as_posix(),
         "selector_path": selector_path.resolve().as_posix(),
-        "output_dir": output_dir.resolve().as_posix(),
-        "selected_rasters_csv": selected_csv.resolve().as_posix(),
-        "selected_footprints_path": selected_footprints_path.resolve().as_posix(),
+        "copy_output_dir": copy_output_dir.resolve().as_posix() if copy_output_dir else "",
+        "selected_rasters_csv": selected_csv.resolve().as_posix() if selected_csv else "",
+        "selected_footprints_path": selected_footprints_path.resolve().as_posix() if selected_footprints_path else "",
+        "copied_raster_count": int(copied_raster_count),
         "candidate_raster_count": int(len(candidates)),
         "inspected_raster_count": int(inspected_raster_count),
         "selected_raster_count": int(len(selected_rows)),

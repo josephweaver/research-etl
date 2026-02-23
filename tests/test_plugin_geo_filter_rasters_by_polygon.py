@@ -70,7 +70,7 @@ def _write_selector(path: Path) -> None:
 
 
 def test_geo_filter_rasters_by_polygon_smoke(tmp_path: Path, monkeypatch) -> None:
-    plugin = load_plugin(Path("plugins/geo_filter_rasters_by_polygon.py"))
+    plugin = load_plugin(Path("plugins/geo/geo_filter_rasters_by_polygon.py"))
     assert plugin.module is not None
     monkeypatch.setattr(plugin.module, "rasterio", _FakeRasterio())
 
@@ -82,12 +82,15 @@ def test_geo_filter_rasters_by_polygon_smoke(tmp_path: Path, monkeypatch) -> Non
     selector = tmp_path / "selector.gpkg"
     _write_selector(selector)
 
-    output_dir = tmp_path / "out"
+    output_dir = tmp_path / "filtered"
+    out_csv = tmp_path / "meta" / "filtered.csv"
     outputs = plugin.run(
         {
             "raster_dir": str(raster_dir),
             "selector_path": str(selector),
-            "output_dir": str(output_dir),
+            "copy_selected": True,
+            "copy_output_dir": str(output_dir),
+            "selected_rasters_csv": str(out_csv),
         },
         _ctx(tmp_path),
     )
@@ -95,21 +98,18 @@ def test_geo_filter_rasters_by_polygon_smoke(tmp_path: Path, monkeypatch) -> Non
     assert outputs["candidate_raster_count"] == 2
     assert outputs["inspected_raster_count"] == 2
     assert outputs["selected_raster_count"] == 1
+    assert outputs["copied_raster_count"] >= 1
     assert Path(outputs["selected_rasters_csv"]).exists()
-    assert Path(outputs["selected_footprints_path"]).exists()
+    assert outputs["selected_footprints_path"] == ""
+    assert (output_dir / "tile_in.tif").exists()
 
     with Path(outputs["selected_rasters_csv"]).open("r", encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
     assert len(rows) == 1
     assert rows[0]["relative_path"] == "tile_in.tif"
 
-    footprints = gpd.read_file(outputs["selected_footprints_path"])
-    assert len(footprints) == 1
-    assert footprints.iloc[0]["relative_path"] == "tile_in.tif"
-
-
 def test_geo_filter_rasters_by_polygon_hdr_uses_paired_data_file(tmp_path: Path, monkeypatch) -> None:
-    plugin = load_plugin(Path("plugins/geo_filter_rasters_by_polygon.py"))
+    plugin = load_plugin(Path("plugins/geo/geo_filter_rasters_by_polygon.py"))
     assert plugin.module is not None
     monkeypatch.setattr(plugin.module, "rasterio", _FakeRasterio())
 
@@ -122,11 +122,14 @@ def test_geo_filter_rasters_by_polygon_hdr_uses_paired_data_file(tmp_path: Path,
     _write_selector(selector)
 
     output_dir = tmp_path / "out_hdr"
+    out_csv = tmp_path / "meta" / "filtered_hdr.csv"
     outputs = plugin.run(
         {
             "raster_dir": str(raster_dir),
             "selector_path": str(selector),
-            "output_dir": str(output_dir),
+            "copy_selected": True,
+            "copy_output_dir": str(output_dir),
+            "selected_rasters_csv": str(out_csv),
             "raster_extensions": ".hdr",
         },
         _ctx(tmp_path),
@@ -139,3 +142,31 @@ def test_geo_filter_rasters_by_polygon_hdr_uses_paired_data_file(tmp_path: Path,
         rows = list(csv.DictReader(f))
     assert len(rows) == 1
     assert rows[0]["relative_path"] == "tile_pair"
+    assert (output_dir / "tile_pair").exists()
+    assert (output_dir / "tile_pair.hdr").exists()
+
+
+def test_geo_filter_rasters_by_polygon_skips_writes_when_not_configured(tmp_path: Path, monkeypatch) -> None:
+    plugin = load_plugin(Path("plugins/geo/geo_filter_rasters_by_polygon.py"))
+    assert plugin.module is not None
+    monkeypatch.setattr(plugin.module, "rasterio", _FakeRasterio())
+
+    raster_dir = tmp_path / "rasters"
+    raster_dir.mkdir(parents=True, exist_ok=True)
+    (raster_dir / "tile_in.tif").write_bytes(b"fake")
+
+    selector = tmp_path / "selector.gpkg"
+    _write_selector(selector)
+
+    outputs = plugin.run(
+        {
+            "raster_dir": str(raster_dir),
+            "selector_path": str(selector),
+        },
+        _ctx(tmp_path),
+    )
+
+    assert outputs["selected_raster_count"] == 1
+    assert outputs["copied_raster_count"] == 0
+    assert outputs["selected_rasters_csv"] == ""
+    assert outputs["selected_footprints_path"] == ""
