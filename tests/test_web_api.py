@@ -89,6 +89,12 @@ def test_web_api_endpoints(monkeypatch):
     r4c = client.get("/plugins")
     assert r4c.status_code == 200
 
+    r4e = client.get("/project-dag")
+    assert r4e.status_code == 200
+
+    r4f = client.get("/projects/land_core/dag")
+    assert r4f.status_code == 200
+
     r4d = client.get("/datasets")
     assert r4d.status_code == 200
 

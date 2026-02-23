@@ -344,6 +344,9 @@ INDEX_HTML = """<!doctype html>
     body.builder-mode .grid { grid-template-columns: 1fr; }
     body.builder-mode .grid > section:first-child { display:none; }
     body.builder-mode .grid > section:last-child { max-width:none; width:100%; margin:0; }
+    body.project-dag-mode .grid { grid-template-columns: 1fr; }
+    body.project-dag-mode .grid > section:first-child { display:none; }
+    body.project-dag-mode .grid > section:last-child { max-width:none; width:100%; margin:0; }
     body.plugins-mode .grid { grid-template-columns: 1fr; }
     body.plugins-mode .grid > section:first-child { display:none; }
     body.plugins-mode .grid > section:last-child { max-width:none; width:100%; margin:0; }
@@ -460,7 +463,7 @@ INDEX_HTML = """<!doctype html>
     .builder-dag-controls { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
     .builder-dag-canvas { border:1px solid var(--line); border-radius:8px; background:#fff; padding:6px; overflow:auto; min-height:220px; }
     #builder_project_dag_svg { width:100%; min-height:220px; display:block; }
-    #builder_dag_legend { margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; }
+    .dag-legend { margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; }
     @keyframes spin { to { transform:rotate(360deg); } }
     @media (max-width: 1280px) {
       .builder-surface { grid-template-columns: 1fr; }
@@ -484,6 +487,7 @@ INDEX_HTML = """<!doctype html>
         <a id="nav_pipelines" href="/pipelines">Pipelines</a>
         <a id="nav_datasets" href="/datasets">Datasets</a>
         <a id="nav_plugins" href="/plugins">Plugins</a>
+        <a id="nav_project_dag" href="/project-dag">Project DAG</a>
         <a id="nav_new_pipeline" href="/pipelines/new">New Pipeline</a>
         <a id="nav_context_back" class="context" href="#" style="display:none;">Back</a>
       </div>
@@ -692,7 +696,7 @@ INDEX_HTML = """<!doctype html>
                     <div class="builder-dag-canvas">
                       <svg id="builder_project_dag_svg" viewBox="0 0 960 320" preserveAspectRatio="xMinYMin meet"></svg>
                     </div>
-                    <div id="builder_dag_legend">
+                    <div class="dag-legend">
                       <span class="status-pill successful">succeeded</span>
                       <span class="status-pill running">running</span>
                       <span class="status-pill queued">queued</span>
@@ -707,6 +711,32 @@ INDEX_HTML = """<!doctype html>
             </div>
           </div>
         </div>
+        <div id="project_dag_page_panel" style="display:none;">
+          <div class="builder-subsection">
+            <div class="builder-subsection-head">
+              <h4>Project DAG</h4>
+              <button id="btn_project_dag_refresh" type="button">Refresh DAG</button>
+            </div>
+            <div class="builder-subsection-body">
+              <div class="builder-dag-controls">
+                <span id="project_dag_msg" class="muted">Select a project to view dependency DAG.</span>
+              </div>
+              <div class="builder-dag-canvas">
+                <svg id="project_dag_svg" viewBox="0 0 960 320" preserveAspectRatio="xMinYMin meet"></svg>
+              </div>
+              <div class="dag-legend">
+                <span class="status-pill successful">succeeded</span>
+                <span class="status-pill running">running</span>
+                <span class="status-pill queued">queued</span>
+                <span class="status-pill failed">failed</span>
+                <span class="status-pill not-run">not-run</span>
+                <span class="status-pill stale">stale</span>
+                <span class="status-pill missing">missing</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="run_actions_panel">
         <div class="controls">
           <input id="a_pipeline" placeholder="pipeline path (e.g. pipelines/sample.yml)" />
           <select id="a_executor">
@@ -751,6 +781,7 @@ INDEX_HTML = """<!doctype html>
           </select>
         </div>
         <div id="detail" class="muted">Select a run to view details.</div>
+        </div>
       </section>
     </div>
   </div>
@@ -763,6 +794,10 @@ INDEX_HTML = """<!doctype html>
     const isPipelinesView = window.location.pathname.startsWith("/pipelines");
     const isDatasetsView = window.location.pathname.startsWith("/datasets");
     const isPluginsView = window.location.pathname === "/plugins";
+    const isProjectDagBaseView = window.location.pathname === "/project-dag";
+    const projectDagMatch = window.location.pathname.match(/^\/projects\/(.+)\/dag$/);
+    const isProjectDagView = isProjectDagBaseView || !!projectDagMatch;
+    const projectDagFromPath = projectDagMatch ? decodeURIComponent(projectDagMatch[1]) : "";
     const isOperationsView = window.location.pathname === "/";
     const liveMatch = window.location.pathname.match(/^\/runs\/(.+)\/live$/);
     const isLiveRunView = !!liveMatch;
@@ -798,6 +833,7 @@ INDEX_HTML = """<!doctype html>
     let builderPreviewCollapsed = false;
     let builderPreviewSectionCollapsed = { yaml: true, output: true, vars: true, dag: false };
     let builderProjectDag = { nodes: [], edges: [], warnings: [] };
+    let projectDagPageData = { nodes: [], edges: [], warnings: [] };
     let builderTreeFiles = [];
     let builderTreeDirs = [];
     let builderTreeFileSelection = "";
@@ -834,6 +870,15 @@ INDEX_HTML = """<!doctype html>
     function currentProjectId(){
       const el = document.getElementById("nav_project");
       return el ? String(el.value || "").trim() : "";
+    }
+    function projectDagHrefForProject(projectId){
+      const pid = String(projectId || "").trim();
+      return pid ? `/projects/${encodeURIComponent(pid)}/dag` : "/project-dag";
+    }
+    function updateProjectDagNavHref(){
+      const el = document.getElementById("nav_project_dag");
+      if(!el) return;
+      el.href = projectDagHrefForProject(currentProjectId());
     }
     function loadBuilderLastPipeline(){
       try {
@@ -928,7 +973,7 @@ INDEX_HTML = """<!doctype html>
         fromQuery = String(qp.get("project_id") || "").trim();
       } catch {}
       const stored = String(localStorage.getItem(PROJECT_STORAGE_KEY) || "").trim();
-      const preferred = fromQuery || stored;
+      const preferred = projectDagFromPath || fromQuery || stored;
       const res = await fetch(`/api/builder/projects`);
       if(!res.ok){
         sel.innerHTML = `<option value="">project (all)</option>`;
@@ -943,9 +988,11 @@ INDEX_HTML = """<!doctype html>
         sel.value = "";
       }
       localStorage.setItem(PROJECT_STORAGE_KEY, String(sel.value || "").trim());
+      updateProjectDagNavHref();
       sel.onchange = async () => {
         const next = String(sel.value || "").trim();
         localStorage.setItem(PROJECT_STORAGE_KEY, next);
+        updateProjectDagNavHref();
         if(isBuilderView){
           const bSel = document.getElementById("b_project_id");
           if(bSel){
@@ -955,6 +1002,9 @@ INDEX_HTML = """<!doctype html>
           syncYamlPreview();
           await refreshBuilderProjectVars(next);
           await refreshBuilderTreeFiles();
+        }
+        if(isProjectDagView){
+          await loadProjectDagPage();
         }
         await tick();
       };
@@ -1049,14 +1099,17 @@ INDEX_HTML = """<!doctype html>
       const pipes = document.getElementById("nav_pipelines");
       const datasets = document.getElementById("nav_datasets");
       const plugins = document.getElementById("nav_plugins");
+      const dag = document.getElementById("nav_project_dag");
       const newp = document.getElementById("nav_new_pipeline");
       const back = document.getElementById("nav_context_back");
-      [ops, pipes, datasets, plugins, newp].forEach(el => el.classList.remove("active"));
+      [ops, pipes, datasets, plugins, dag, newp].forEach(el => el.classList.remove("active"));
       back.style.display = "none";
       if (path === "/") {
         ops.classList.add("active");
       } else if (path === "/plugins") {
         plugins.classList.add("active");
+      } else if (path === "/project-dag" || path.startsWith("/projects/")) {
+        dag.classList.add("active");
       } else if (path.startsWith("/datasets")) {
         datasets.classList.add("active");
       } else if (path === "/pipelines/new") {
@@ -1132,6 +1185,20 @@ INDEX_HTML = """<!doctype html>
             setBuilderPipelineSourceValue(builderSelectedPipelineSource);
           }
         }
+      }
+      if(isProjectDagView){
+        document.body.classList.add("project-dag-mode");
+        document.getElementById("page_title").textContent = "Research ETL Project DAG";
+        document.getElementById("left_title").textContent = "Project DAG";
+        document.getElementById("right_title").textContent = "Dependency Graph";
+        document.getElementById("ops_panel").style.display = "none";
+        document.getElementById("pipelines_panel").style.display = "none";
+        document.getElementById("pipeline_summary").style.display = "none";
+        document.getElementById("pipeline_validations").style.display = "none";
+        document.getElementById("plugins_controls").style.display = "none";
+        document.getElementById("builder_panel").style.display = "none";
+        document.getElementById("run_actions_panel").style.display = "none";
+        document.getElementById("project_dag_page_panel").style.display = "block";
       }
       if(isLiveRunView){
         selected = liveRunIdFromPath;
@@ -1681,11 +1748,11 @@ INDEX_HTML = """<!doctype html>
       if(s === "missing") return "missing";
       return "not-run";
     }
-    function renderBuilderProjectDag(){
-      const svg = document.getElementById("builder_project_dag_svg");
+    function renderDagSvg(svgId, dagData, onNodeClick){
+      const svg = document.getElementById(svgId);
       if(!svg) return;
-      const nodes = Array.isArray((builderProjectDag || {}).nodes) ? builderProjectDag.nodes : [];
-      const edges = Array.isArray((builderProjectDag || {}).edges) ? builderProjectDag.edges : [];
+      const nodes = Array.isArray((dagData || {}).nodes) ? dagData.nodes : [];
+      const edges = Array.isArray((dagData || {}).edges) ? dagData.edges : [];
       while(svg.firstChild){ svg.removeChild(svg.firstChild); }
       if(!nodes.length){
         svg.setAttribute("viewBox", "0 0 960 220");
@@ -1762,7 +1829,8 @@ INDEX_HTML = """<!doctype html>
 
       const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
       const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
-      marker.setAttribute("id", "dag-arrow");
+      const markerId = `${String(svgId || "dag")}-arrow`;
+      marker.setAttribute("id", markerId);
       marker.setAttribute("viewBox", "0 0 10 10");
       marker.setAttribute("refX", "8");
       marker.setAttribute("refY", "5");
@@ -1804,7 +1872,7 @@ INDEX_HTML = """<!doctype html>
         path.setAttribute("fill", "none");
         path.setAttribute("stroke", e.missing ? "#d78a8a" : "#9ab0cf");
         path.setAttribute("stroke-width", "1.6");
-        path.setAttribute("marker-end", "url(#dag-arrow)");
+        path.setAttribute("marker-end", `url(#${markerId})`);
         const edgeTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
         edgeTitle.textContent = `requires=${String(e.ref || "")} | from=${String(fromNode.pipeline || from)} (${String(fromNode.status || "unknown")}${fromNode.run_id ? `, run=${fromNode.run_id}` : ""}) -> to=${String(toNode.pipeline || to)} (${String(toNode.status || "unknown")}${toNode.run_id ? `, run=${toNode.run_id}` : ""})`;
         path.appendChild(edgeTitle);
@@ -1878,26 +1946,42 @@ INDEX_HTML = """<!doctype html>
           link.textContent = `${labelText} (${String(n.status || "not-run")}${stale ? ", stale" : ""}${runId ? `, run=${runId}` : ""})${staleDeps}`;
           rect.appendChild(link);
           rect.style.cursor = "pointer";
-          rect.addEventListener("click", () => {
-            const source = String(n.source || "").trim();
-            const pipeline = String(n.pipeline || "").trim();
-            if(source && source !== "local"){
-              const srcEl = document.getElementById("b_pipeline_source");
-              if(srcEl){
-                srcEl.value = source;
-                builderSelectedPipelineSource = source;
-              }
-            }
-            const pathEl = document.getElementById("b_pipeline_path");
-            if(pathEl && pipeline){
-              pathEl.value = pipeline;
-              saveBuilderLastPipeline(pipeline, builderSelectedPipelineSource);
-            }
-            loadBuilderSource();
-          });
+          if(typeof onNodeClick === "function"){
+            rect.addEventListener("click", () => onNodeClick(n));
+          }
         }
       }
       svg.appendChild(nodeLayer);
+    }
+    function renderBuilderProjectDag(){
+      renderDagSvg("builder_project_dag_svg", builderProjectDag, (n) => {
+        const source = String((n || {}).source || "").trim();
+        const pipeline = String((n || {}).pipeline || "").trim();
+        if(source && source !== "local"){
+          const srcEl = document.getElementById("b_pipeline_source");
+          if(srcEl){
+            srcEl.value = source;
+            builderSelectedPipelineSource = source;
+          }
+        }
+        const pathEl = document.getElementById("b_pipeline_path");
+        if(pathEl && pipeline){
+          pathEl.value = pipeline;
+          saveBuilderLastPipeline(pipeline, builderSelectedPipelineSource);
+        }
+        loadBuilderSource();
+      });
+    }
+    function renderProjectDagPage(){
+      renderDagSvg("project_dag_svg", projectDagPageData, (n) => {
+        const pipeline = String((n || {}).pipeline || "").trim();
+        if(!pipeline) return;
+        const pid = currentProjectId();
+        const qp = new URLSearchParams();
+        if(pid) qp.set("project_id", pid);
+        const qtxt = qp.toString();
+        window.location.href = `/pipelines/${encodeURIComponent(pipeline)}/edit${qtxt ? `?${qtxt}` : ""}`;
+      });
     }
     async function loadBuilderProjectDag(){
       if(!isBuilderView) return;
@@ -1929,6 +2013,37 @@ INDEX_HTML = """<!doctype html>
         msgEl.textContent = `nodes=${builderProjectDag.nodes.length}, edges=${builderProjectDag.edges.length}, stale=${staleCount}${warnings ? `, warnings=${warnings}` : ""}`;
       }
       renderBuilderProjectDag();
+    }
+    async function loadProjectDagPage(){
+      if(!isProjectDagView) return;
+      const msgEl = document.getElementById("project_dag_msg");
+      const pid = String(currentProjectId() || "").trim();
+      if(!pid){
+        projectDagPageData = { nodes: [], edges: [], warnings: [] };
+        if(msgEl) msgEl.textContent = "Select a project from the nav bar to view its DAG.";
+        renderProjectDagPage();
+        return;
+      }
+      if(msgEl) msgEl.textContent = `Loading DAG for ${pid}...`;
+      const res = await fetch(`/api/projects/${encodeURIComponent(pid)}/dag`);
+      if(!res.ok){
+        projectDagPageData = { nodes: [], edges: [], warnings: [] };
+        if(msgEl) msgEl.textContent = await readMessage(res);
+        renderProjectDagPage();
+        return;
+      }
+      const payload = await res.json();
+      projectDagPageData = {
+        nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
+        edges: Array.isArray(payload.edges) ? payload.edges : [],
+        warnings: Array.isArray(payload.warnings) ? payload.warnings : [],
+      };
+      if(msgEl){
+        const warnings = projectDagPageData.warnings.length;
+        const staleCount = projectDagPageData.nodes.filter(n => !!n.stale).length;
+        msgEl.textContent = `project=${pid}, nodes=${projectDagPageData.nodes.length}, edges=${projectDagPageData.edges.length}, stale=${staleCount}${warnings ? `, warnings=${warnings}` : ""}`;
+      }
+      renderProjectDagPage();
     }
     function flattenBuilderProjectVars(value, prefix = ""){
       const out = {};
@@ -4775,6 +4890,10 @@ INDEX_HTML = """<!doctype html>
         await loadDatasetDetail();
         return;
       }
+      if(isProjectDagView){
+        await loadProjectDagPage();
+        return;
+      }
       await loadOps();
       await loadPipelines();
       await loadPipelineSummary();
@@ -4798,6 +4917,7 @@ INDEX_HTML = """<!doctype html>
     document.getElementById("btn_run").onclick = runAction;
     document.getElementById("btn_resume").onclick = resumeSelected;
     document.getElementById("btn_stop").onclick = stopSelected;
+    document.getElementById("btn_project_dag_refresh").onclick = () => { loadProjectDagPage(); };
     document.getElementById("btn_nav_live").onclick = () => {
       const runId = document.getElementById("nav_live_id").value.trim();
       if (!runId) return;
@@ -4859,6 +4979,7 @@ INDEX_HTML = """<!doctype html>
       if(navSel && String(navSel.value || "").trim() !== next){
         navSel.value = next;
         localStorage.setItem(PROJECT_STORAGE_KEY, next);
+        updateProjectDagNavHref();
       }
       syncYamlPreview();
       await refreshBuilderProjectVars(next);
@@ -4893,6 +5014,9 @@ INDEX_HTML = """<!doctype html>
         await refreshBuilderProjectVars(builderModel.project_id || currentProjectId());
         await refreshBuilderTreeFiles();
         await loadBuilderProjectDag();
+      }
+      if(isProjectDagView){
+        await loadProjectDagPage();
       }
     });
     loadBuilderEnvironments().then(async () => {
@@ -4934,6 +5058,17 @@ def pipelines_index() -> str:
 
 @app.get("/plugins", response_class=HTMLResponse)
 def plugins_index() -> str:
+    return INDEX_HTML
+
+
+@app.get("/project-dag", response_class=HTMLResponse)
+def project_dag_index() -> str:
+    return INDEX_HTML
+
+
+@app.get("/projects/{project_id}/dag", response_class=HTMLResponse)
+def project_dag_project_index(project_id: str) -> str:
+    _ = project_id
     return INDEX_HTML
 
 
