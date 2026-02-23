@@ -1164,14 +1164,6 @@ INDEX_HTML = """<!doctype html>
         document.getElementById("detail").style.display = "none";
         if (builderPipelineFromPath) {
           document.getElementById("b_pipeline_path").value = builderPipelineFromPath;
-        } else {
-          const restored = loadBuilderLastPipeline();
-          if(restored && restored.pipeline){
-            document.getElementById("b_pipeline_path").value = restored.pipeline;
-            builderSelectedPipelineSource = String(restored.pipeline_source || "").trim();
-            builderRestoredProjectId = String(restored.project_id || "").trim();
-            setBuilderPipelineSourceValue(builderSelectedPipelineSource);
-          }
         }
       }
       if(isProjectDagView){
@@ -3323,28 +3315,6 @@ INDEX_HTML = """<!doctype html>
       updateBuilderPipelinePathSuggestions();
       applyBuilderTreeSelectionFromPipeline(document.getElementById("b_pipeline_path").value.trim());
       renderBuilderJsTree(files, dirs);
-      const currentPipeline = normalizeBuilderPipelineName(document.getElementById("b_pipeline_path").value.trim());
-      if(!currentPipeline && Array.isArray(files) && files.length){
-        const first = files[0];
-        let rel = "";
-        if(typeof first === "string"){
-          rel = normalizeBuilderPipelineName(first);
-        } else if(first && typeof first === "object"){
-          rel = normalizeBuilderPipelineName(String(first.pipeline || first.relpath || first.path || ""));
-          const src = String(first.source || "").trim();
-          if(src){
-            builderSelectedPipelineSource = src;
-            setBuilderPipelineSourceValue(src);
-          }
-        }
-        if(rel){
-          document.getElementById("b_pipeline_path").value = rel;
-          applyBuilderTreeSelectionFromPipeline(rel);
-          renderBuilderJsTree(files, dirs);
-          builderLoaded = false;
-          await loadBuilderSource();
-        }
-      }
     }
     function showBuilderTreeDropdown(){
       const combo = document.getElementById("b_pipeline_combo");
