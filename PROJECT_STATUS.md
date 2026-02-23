@@ -1,4 +1,23 @@
-# Project Status (2026-02-19)
+# Project Status (2026-02-23)
+
+## Update (2026-02-23)
+- SSURGO + YanRoy integration advanced in `landcore-etl-pipelines`:
+  - `scripts/ssurgo/build_field_mukey_map.py` now supports:
+    - fallback from missing `--fields-path` to `--fields-glob`,
+    - `tile_field_id` derivation from `tile_id+field_id` or `source_name+field_id`,
+    - many-to-many field<->mukey outputs with overlap metrics (`overlap_area`, `field_area`, `pct_field_overlap`),
+    - fallback from missing `--ssurgo-path` to `--ssurgo-glob`,
+    - multi-pattern globs (comma/semicolon),
+    - SSURGO layer probing and case-insensitive `mukey` column handling (`MUKEY`/`mukey`).
+  - `pipelines/ssurgo/yanroy_nccpi_sda.yml` updated to pass field/ssurgo glob fallbacks and broader SSURGO extract patterns.
+- SSURGO download pipelines reintroduced:
+  - `pipelines/ssurgo/state_download.yml` (URL-list driven state archive download + extract).
+  - `pipelines/ssurgo/conus_download.yml` (single HTTP CONUS archive download + extract).
+  - `scripts/ssurgo/download_urls.py` added for deterministic URL-file downloads.
+- HTTP download plugin enhancement:
+  - `plugins/web_download_list.py` now supports `out_file` for explicit single-file naming (used for Box download URLs where path-derived names are unstable).
+
+## Current state
 
 ## Current state
 - CLI/package baseline is in place (`pyproject.toml`, `etl` entrypoint, editable install flow, GitHub Actions tests).
