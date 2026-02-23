@@ -682,30 +682,6 @@ INDEX_HTML = """<!doctype html>
                     <pre id="builder_namespace">Loading...</pre>
                   </div>
                 </section>
-                <section class="builder-subsection" id="builder_section_dag">
-                  <div class="builder-subsection-head">
-                    <h4>Project DAG</h4>
-                    <button id="btn_builder_toggle_dag" type="button">Collapse</button>
-                  </div>
-                  <div class="builder-subsection-body">
-                    <div class="builder-dag-controls">
-                      <button id="btn_builder_refresh_dag" type="button">Refresh DAG</button>
-                      <span id="builder_dag_msg" class="muted">Select a project to view dependency DAG.</span>
-                    </div>
-                    <div class="builder-dag-canvas">
-                      <svg id="builder_project_dag_svg" viewBox="0 0 960 320" preserveAspectRatio="xMinYMin meet"></svg>
-                    </div>
-                    <div class="dag-legend">
-                      <span class="status-pill successful">succeeded</span>
-                      <span class="status-pill running">running</span>
-                      <span class="status-pill queued">queued</span>
-                      <span class="status-pill failed">failed</span>
-                      <span class="status-pill not-run">not-run</span>
-                      <span class="status-pill stale">stale</span>
-                      <span class="status-pill missing">missing</span>
-                    </div>
-                  </div>
-                </section>
               </div>
             </div>
           </div>
@@ -830,8 +806,7 @@ INDEX_HTML = """<!doctype html>
     let builderPipelineRunState = "not-run";
     let builderPipelineRunning = false;
     let builderPreviewCollapsed = false;
-    let builderPreviewSectionCollapsed = { yaml: true, output: true, vars: true, dag: false };
-    let builderProjectDag = { nodes: [], edges: [], warnings: [] };
+    let builderPreviewSectionCollapsed = { yaml: true, output: true, vars: true };
     let projectDagPageData = { nodes: [], edges: [], warnings: [] };
     let builderTreeFiles = [];
     let builderTreeDirs = [];
@@ -1674,7 +1649,6 @@ INDEX_HTML = """<!doctype html>
         { key: "yaml", sectionId: "builder_section_yaml", btnId: "btn_builder_toggle_yaml", title: "YAML" },
         { key: "output", sectionId: "builder_section_output", btnId: "btn_builder_toggle_output", title: "Output" },
         { key: "vars", sectionId: "builder_section_vars", btnId: "btn_builder_toggle_vars", title: "Variables" },
-        { key: "dag", sectionId: "builder_section_dag", btnId: "btn_builder_toggle_dag", title: "DAG" },
       ];
       for(const d of defs){
         const section = document.getElementById(d.sectionId);
@@ -1952,25 +1926,6 @@ INDEX_HTML = """<!doctype html>
       }
       svg.appendChild(nodeLayer);
     }
-    function renderBuilderProjectDag(){
-      renderDagSvg("builder_project_dag_svg", builderProjectDag, (n) => {
-        const source = String((n || {}).source || "").trim();
-        const pipeline = String((n || {}).pipeline || "").trim();
-        if(source && source !== "local"){
-          const srcEl = document.getElementById("b_pipeline_source");
-          if(srcEl){
-            srcEl.value = source;
-            builderSelectedPipelineSource = source;
-          }
-        }
-        const pathEl = document.getElementById("b_pipeline_path");
-        if(pathEl && pipeline){
-          pathEl.value = pipeline;
-          saveBuilderLastPipeline(pipeline, builderSelectedPipelineSource);
-        }
-        loadBuilderSource();
-      });
-    }
     function renderProjectDagPage(){
       renderDagSvg("project_dag_svg", projectDagPageData, (n) => {
         const pipeline = String((n || {}).pipeline || "").trim();
@@ -1981,37 +1936,6 @@ INDEX_HTML = """<!doctype html>
         const qtxt = qp.toString();
         window.location.href = `/pipelines/${encodeURIComponent(pipeline)}/edit${qtxt ? `?${qtxt}` : ""}`;
       });
-    }
-    async function loadBuilderProjectDag(){
-      if(!isBuilderView) return;
-      const msgEl = document.getElementById("builder_dag_msg");
-      const pid = String((document.getElementById("b_project_id") || {}).value || builderModel.project_id || "").trim();
-      if(!pid){
-        builderProjectDag = { nodes: [], edges: [], warnings: [] };
-        if(msgEl) msgEl.textContent = "Select a project to view dependency DAG.";
-        renderBuilderProjectDag();
-        return;
-      }
-      if(msgEl) msgEl.textContent = "Loading DAG...";
-      const res = await fetch(`/api/projects/${encodeURIComponent(pid)}/dag`);
-      if(!res.ok){
-        builderProjectDag = { nodes: [], edges: [], warnings: [] };
-        if(msgEl) msgEl.textContent = await readMessage(res);
-        renderBuilderProjectDag();
-        return;
-      }
-      const payload = await res.json();
-      builderProjectDag = {
-        nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
-        edges: Array.isArray(payload.edges) ? payload.edges : [],
-        warnings: Array.isArray(payload.warnings) ? payload.warnings : [],
-      };
-      if(msgEl){
-        const warnings = builderProjectDag.warnings.length;
-        const staleCount = builderProjectDag.nodes.filter(n => !!n.stale).length;
-        msgEl.textContent = `nodes=${builderProjectDag.nodes.length}, edges=${builderProjectDag.edges.length}, stale=${staleCount}${warnings ? `, warnings=${warnings}` : ""}`;
-      }
-      renderBuilderProjectDag();
     }
     async function loadProjectDagPage(){
       if(!isProjectDagView) return;
@@ -4940,14 +4864,6 @@ INDEX_HTML = """<!doctype html>
         refreshBuilderNamespace();
       }
     };
-    document.getElementById("btn_builder_toggle_dag").onclick = () => {
-      builderPreviewSectionCollapsed.dag = !builderPreviewSectionCollapsed.dag;
-      renderBuilderPreviewSections();
-      if(!builderPreviewSectionCollapsed.dag){
-        loadBuilderProjectDag();
-      }
-    };
-    document.getElementById("btn_builder_refresh_dag").onclick = () => { loadBuilderProjectDag(); };
     document.getElementById("btn_builder_add_req").onclick = addBuilderRequire;
     document.getElementById("btn_builder_add_var").onclick = addBuilderVar;
     const addDirBtn = document.getElementById("btn_builder_add_dir");
@@ -4983,7 +4899,6 @@ INDEX_HTML = """<!doctype html>
       syncYamlPreview();
       await refreshBuilderProjectVars(next);
       await refreshBuilderTreeFiles();
-      await loadBuilderProjectDag();
     };
     document.getElementById("b_requires").addEventListener("input", handleBuilderInput);
     document.getElementById("b_vars").addEventListener("input", handleBuilderInput);
@@ -5012,7 +4927,6 @@ INDEX_HTML = """<!doctype html>
       if(isBuilderView){
         await refreshBuilderProjectVars(builderModel.project_id || currentProjectId());
         await refreshBuilderTreeFiles();
-        await loadBuilderProjectDag();
       }
       if(isProjectDagView){
         await loadProjectDagPage();
@@ -5032,9 +4946,6 @@ INDEX_HTML = """<!doctype html>
       setTimeout(() => {
         if(!builderPreviewSectionCollapsed.vars){
           refreshBuilderNamespace();
-        }
-        if(!builderPreviewSectionCollapsed.dag){
-          loadBuilderProjectDag();
         }
       }, 0);
     }
