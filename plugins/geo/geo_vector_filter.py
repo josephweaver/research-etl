@@ -42,6 +42,7 @@ meta = {
         "values": {"type": "str", "default": ""},
         "case_insensitive": {"type": "bool", "default": True},
         "fail_on_empty": {"type": "bool", "default": False},
+        "fail_on_unresolved_tokens": {"type": "bool", "default": True},
         "verbose": {"type": "bool", "default": False},
     },
     "idempotent": True,
@@ -170,6 +171,7 @@ def run(args, ctx):
     values_arg = args.get("values")
     case_insensitive = bool(args.get("case_insensitive", True))
     fail_on_empty = bool(args.get("fail_on_empty", False))
+    fail_on_unresolved_tokens = bool(args.get("fail_on_unresolved_tokens", True))
     verbose = bool(args.get("verbose", False))
 
     if where:
@@ -186,6 +188,13 @@ def run(args, ctx):
             raise ValueError("eq/ne require exactly one value")
         if op in {"in", "not_in"} and not filter_values:
             raise ValueError("in/not_in require one or more values (use values=...)")
+    if fail_on_unresolved_tokens:
+        unresolved = [v for v in filter_values if "{" in str(v) and "}" in str(v)]
+        if unresolved:
+            raise ValueError(
+                f"geo_vector_filter received unresolved template token(s) in values: {unresolved}. "
+                "Check project_id/projects_config and variable names."
+            )
 
     gdf = gpd.read_file(input_path)
     if key not in gdf.columns:

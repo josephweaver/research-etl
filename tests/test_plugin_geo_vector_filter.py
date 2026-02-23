@@ -166,3 +166,22 @@ def test_geo_vector_filter_fail_on_empty(tmp_path: Path) -> None:
             },
             _ctx(tmp_path),
         )
+
+
+def test_geo_vector_filter_fails_on_unresolved_template_values(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo_vector_filter.py"))
+    src = tmp_path / "state.gpkg"
+    _write_states(src)
+    out = tmp_path / "filtered_unresolved_fail.gpkg"
+
+    with pytest.raises(ValueError, match="unresolved template token"):
+        plugin.run(
+            {
+                "input_path": str(src),
+                "output_path": str(out),
+                "key": "STUSPS",
+                "op": "in",
+                "values": "{project.states_of_interest}",
+            },
+            _ctx(tmp_path),
+        )
