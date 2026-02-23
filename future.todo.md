@@ -95,6 +95,11 @@ Acceptance criteria:
 - [ ] Improve AI generation with constrained output schema and optional additional repair retries.
 - [ ] Add remote dirty-overlay support for `--allow-dirty-git`.
 - [ ] Wire `geo_vector_filter.py` into `pipelines/yanroy/tiles_of_interest.yml` before tile intersection logic.
+- [ ] Add dataset-level ops metrics (finite dataset scope) and expose in SQL view/materialized view:
+  - turnaround time = `etl_runs.ended_at - etl_runs.started_at` for runs linked to dataset versions (`etl_dataset_versions.created_by_run_id`).
+  - failed-run recovery time = first failure -> next success for same dataset/pipeline lineage.
+  - reproducibility rate = reruns with same provenance (`git_commit_sha` + checksums) and matching output validation/checksum outcomes.
+- [ ] Add dashboard/API endpoint for dataset-level p50/p90 turnaround, recovery time, and reproducibility trend.
 
 ### Possible future features
 - [ ] Dynamic chained fan-out from prior fan-out outputs with deterministic persisted expansion manifests.
@@ -117,3 +122,25 @@ Acceptance criteria:
 - [ ] Add optional step-scoped dependency environments (`env_mode: shared|per_step`) with cache-by-dependency-hash.
 - [ ] Investigate first-class masked variable objects for secrets.
 - [ ] Add structured progress reporting/progress bars for long-running steps in CLI + web.
+
+## KPI Framework (effectiveness evidence)
+- [ ] Add Change Failure Rate KPI:
+  - % of pipeline/config changes that lead to failed runs or regressions.
+- [ ] Add MTTD KPI:
+  - time from failure event to detection/alert acknowledgment.
+- [ ] Add MTTR KPI:
+  - time from failure event to first restored successful run.
+- [ ] Add Automation Rate KPI:
+  - % of successful runs completed without manual intervention.
+- [ ] Add Data Freshness Lag KPI:
+  - source data availability time -> published dataset version time.
+- [ ] Add Cost per Successful Build KPI:
+  - normalized compute/storage/transfer cost per successful dataset version.
+- [ ] Add Throughput KPI:
+  - successful dataset versions published per week/month.
+- [ ] Add Reuse Yield KPI:
+  - % runs that reused cached/prerequisite outputs vs full recompute.
+- [ ] Add Validation Defect Escape Rate KPI:
+  - % published datasets later marked with validation defects.
+- [ ] Add Downstream Value Proxy KPI:
+  - count of downstream analyses/models/publications consuming generated datasets.
