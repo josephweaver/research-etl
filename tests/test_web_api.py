@@ -1195,6 +1195,31 @@ def test_web_api_builder_git_status_endpoint(monkeypatch) -> None:
     assert payload["branch"] == "builder/prism-test"
 
 
+def test_web_api_builder_git_main_check_endpoint(monkeypatch) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(web_api, "_builder_git_target_repo_root", lambda **_k: (Path("C:/repo"), True))
+    monkeypatch.setattr(
+        web_api,
+        "_git_main_health",
+        lambda _root: {
+            "ok": False,
+            "detail": "Current branch is 'feature/x', expected 'main'.",
+            "status": {"branch": "feature/x", "dirty": False},
+        },
+    )
+
+    client = TestClient(web_api.app)
+    r = client.get("/api/builder/git-main-check", params={"project_id": "land_core", "pipeline_source": "land-core"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["ok"] is False
+    assert "expected 'main'" in payload["detail"]
+    assert payload["repo_from_project_source"] is True
+
+
 def test_web_api_builder_git_sync_endpoint(monkeypatch) -> None:
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

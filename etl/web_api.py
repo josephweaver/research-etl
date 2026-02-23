@@ -3659,42 +3659,30 @@ INDEX_HTML = """<!doctype html>
         : "";
       const effectiveExecutor = hintedExecutor || envExecutor || "local";
       const remoteExecutor = effectiveExecutor === "slurm" || effectiveExecutor === "hpcc_direct";
-      const shouldGitSync = !!payload.git_sync || remoteExecutor;
-
-      if(shouldGitSync){
-        if(!payload.pipeline){
+      const requiresMainCheck = remoteExecutor || runMode === "repro";
+      if(requiresMainCheck){
+        msg.textContent = "Checking git repo is clean on main...";
+        const qp = new URLSearchParams();
+        if(payload.project_id) qp.set("project_id", payload.project_id);
+        if(payload.projects_config) qp.set("projects_config", payload.projects_config);
+        if(payload.pipeline_source) qp.set("pipeline_source", payload.pipeline_source);
+        const checkRes = await fetch(`/api/builder/git-main-check?${qp.toString()}`);
+        if(!checkRes.ok){
           builderPipelineRunState = "failed";
           builderPipelineRunning = false;
           renderBuilderPipelineStatus();
-          msg.textContent = "git_sync requires a pipeline path.";
+          msg.textContent = await readMessage(checkRes);
           return;
         }
-        msg.textContent = payload.git_sync
-          ? "Syncing git branch (commit/push)..."
-          : "Remote run selected; syncing git branch (commit/push)...";
-        const syncRes = await fetch(`/api/builder/git-sync`, {
-          method:"POST",
-          headers: {"Content-Type":"application/json"},
-          body: JSON.stringify({
-            pipeline: payload.pipeline,
-            branch: payload.git_branch,
-            push: true,
-            create_branch: true,
-            project_id: payload.project_id || "",
-            projects_config: payload.projects_config || "",
-            pipeline_source: payload.pipeline_source || "",
-          }),
-        });
-        if(!syncRes.ok){
+        const check = await checkRes.json();
+        if(!check.ok){
           builderPipelineRunState = "failed";
           builderPipelineRunning = false;
           renderBuilderPipelineStatus();
-          msg.textContent = await readMessage(syncRes);
+          msg.textContent = check.detail || "Repo must be clean on main before run.";
+          out.textContent = JSON.stringify(check, null, 2);
           return;
         }
-        const syncData = await syncRes.json();
-        await refreshBuilderGitStatus();
-        out.textContent = JSON.stringify({ sync: syncData }, null, 2);
       }
 
       msg.textContent = "Submitting run...";
@@ -3713,7 +3701,7 @@ INDEX_HTML = """<!doctype html>
       if(payload.retry_delay_seconds !== undefined) runBody.retry_delay_seconds = payload.retry_delay_seconds;
       runBody.dry_run = !!payload.dry_run;
       runBody.verbose = !!payload.verbose;
-      if(shouldGitSync){
+      if(remoteExecutor){
         runBody.execution_source = "git_remote";
         runBody.allow_workspace_source = false;
       } else if(runMode === "repro"){
@@ -5652,6 +5640,71 @@ def _builder_git_sync(
     }
 
 
+def _builder_git_target_repo_root(
+    *,
+    project_id: Optional[str],
+    projects_config: Optional[str],
+    pipeline_source: Optional[str],
+) -> tuple[Path, bool]:
+    repo_root = _builder_git_sync_repo_root_from_project_source(
+        project_id=project_id,
+        projects_config=projects_config,
+        pipeline_source=pipeline_source,
+    )
+    from_project_source = repo_root is not None
+    if repo_root is None:
+        repo_root = _builder_git_sync_repo_root_from_env()
+    if repo_root is None:
+        repo_root = Path(".").resolve()
+    return repo_root, from_project_source
+
+
+def _git_main_health(root: Path) -> dict[str, Any]:
+    status = _git_repo_status(root)
+    branch = str(status.get("branch") or "").strip()
+    dirty = bool(status.get("dirty"))
+    is_main_branch = branch == "main"
+
+    fetch_proc = run_logged_subprocess(
+        ["git", "-C", str(root), "fetch", "--quiet", "origin", "main"],
+        logger=_LOG,
+        action="web_api.git",
+        check=False,
+    )
+    remote_ref_ok = fetch_proc.returncode == 0
+    ahead = None
+    behind = None
+    in_sync_with_origin_main = None
+    if remote_ref_ok:
+        counts = _git_out(root, "rev-list", "--left-right", "--count", "origin/main...HEAD")
+        parts = [x for x in str(counts or "").strip().split() if x.strip()]
+        if len(parts) >= 2:
+            behind = int(parts[0])
+            ahead = int(parts[1])
+            in_sync_with_origin_main = behind == 0 and ahead == 0
+
+    ok = bool(is_main_branch and (not dirty) and (in_sync_with_origin_main is True))
+    detail = []
+    if not is_main_branch:
+        detail.append(f"Current branch is '{branch or '<unknown>'}', expected 'main'.")
+    if dirty:
+        detail.append("Working tree has uncommitted tracked changes.")
+    if in_sync_with_origin_main is False:
+        detail.append(f"Local main differs from origin/main (ahead={ahead}, behind={behind}).")
+    if in_sync_with_origin_main is None:
+        detail.append("Could not verify origin/main sync (git fetch origin main failed).")
+
+    status["is_main_branch"] = is_main_branch
+    status["ahead_of_origin_main"] = ahead
+    status["behind_origin_main"] = behind
+    status["in_sync_with_origin_main"] = in_sync_with_origin_main
+    return {
+        "ok": ok,
+        "detail": " ".join(detail).strip(),
+        "status": status,
+    }
+
+
 def _parse_action_payload(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
     payload = payload or {}
     pipeline_raw = str(payload.get("pipeline") or "").strip()
@@ -7562,16 +7615,43 @@ def api_builder_project_vars(
 
 
 @app.get("/api/builder/git-status")
-def api_builder_git_status() -> dict:
-    target = _builder_git_sync_repo_root_from_env()
-    if target is None:
-        payload = _git_repo_status()
-        payload["sync_repo_configured"] = False
-        payload["sync_repo_hint"] = "Set ETL_BUILDER_GIT_SYNC_REPO to enable builder git_sync."
-        return payload
+def api_builder_git_status(
+    project_id: Optional[str] = Query(default=None),
+    projects_config: Optional[str] = Query(default=None),
+    pipeline_source: Optional[str] = Query(default=None),
+) -> dict:
+    pid = normalize_project_id(project_id)
+    psource = str(pipeline_source or "").strip() or None
+    target, from_project_source = _builder_git_target_repo_root(
+        project_id=pid,
+        projects_config=str(projects_config or "").strip() or None,
+        pipeline_source=psource,
+    )
     payload = _git_repo_status(target)
-    payload["sync_repo_configured"] = True
+    payload["sync_repo_configured"] = bool(from_project_source or _builder_git_sync_repo_root_from_env() is not None)
+    payload["repo_from_project_source"] = bool(from_project_source)
+    if not payload["sync_repo_configured"]:
+        payload["sync_repo_hint"] = "Set ETL_BUILDER_GIT_SYNC_REPO to enable builder git_sync."
     return payload
+
+
+@app.get("/api/builder/git-main-check")
+def api_builder_git_main_check(
+    project_id: Optional[str] = Query(default=None),
+    projects_config: Optional[str] = Query(default=None),
+    pipeline_source: Optional[str] = Query(default=None),
+) -> dict:
+    pid = normalize_project_id(project_id)
+    psource = str(pipeline_source or "").strip() or None
+    target, from_project_source = _builder_git_target_repo_root(
+        project_id=pid,
+        projects_config=str(projects_config or "").strip() or None,
+        pipeline_source=psource,
+    )
+    health = _git_main_health(target)
+    health["repo_root"] = str(target)
+    health["repo_from_project_source"] = bool(from_project_source)
+    return health
 
 
 @app.post("/api/builder/git-sync")
