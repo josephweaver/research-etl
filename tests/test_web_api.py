@@ -147,6 +147,86 @@ def test_web_api_project_filters(monkeypatch):
     assert called["project_id"] == "land_core"
 
 
+def test_web_api_project_dag_endpoint(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    p_a = tmp_path / "a.yml"
+    p_b = tmp_path / "b.yml"
+    p_a.write_text("requires_pipelines:\n  - b.yml\n  - missing_dep\nsteps:\n  - script: echo.py\n", encoding="utf-8")
+    p_b.write_text("steps:\n  - script: echo.py\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_api, "_resolve_user_scope", lambda _req: web_api.UserScope(user_id="admin", allowed_projects={"demo"}))
+    monkeypatch.setattr(web_api, "_builder_project_context", lambda **_kw: ("demo", {}, None))
+    monkeypatch.setattr(
+        web_api,
+        "_builder_pipeline_source_views",
+        lambda **_kw: ([{"label": "local", "pipelines_root": tmp_path, "repo_root": tmp_path}], []),
+    )
+
+    def _fetch_pipeline_runs(pipeline, limit=50, status=None, executor=None, project_id=None):
+        if pipeline == "a.yml":
+            return [{"run_id": "ra", "status": "failed", "started_at": "2026-02-22T00:00:00Z"}]
+        if pipeline == "b.yml":
+            return [{"run_id": "rb", "status": "succeeded", "started_at": "2026-02-22T01:00:00Z"}]
+        return []
+
+    monkeypatch.setattr(web_api, "fetch_pipeline_runs", _fetch_pipeline_runs)
+
+    client = TestClient(web_api.app)
+    r = client.get("/api/projects/demo/dag")
+    assert r.status_code == 200
+    payload = r.json()
+    nodes = {n["id"]: n for n in payload["nodes"]}
+    assert "a.yml" in nodes
+    assert "b.yml" in nodes
+    assert "missing:missing_dep.yml" in nodes
+    assert nodes["a.yml"]["status"] == "failed"
+    assert nodes["b.yml"]["status"] == "succeeded"
+    assert nodes["missing:missing_dep.yml"]["status"] == "missing"
+    edges = payload["edges"]
+    assert any(e["from"] == "b.yml" and e["to"] == "a.yml" and not e["missing"] for e in edges)
+    assert any(e["from"] == "missing:missing_dep.yml" and e["to"] == "a.yml" and e["missing"] for e in edges)
+
+
+def test_web_api_project_dag_marks_stale_nodes(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    p_a = tmp_path / "a.yml"
+    p_b = tmp_path / "b.yml"
+    p_a.write_text("requires_pipelines:\n  - b.yml\nsteps:\n  - script: echo.py\n", encoding="utf-8")
+    p_b.write_text("steps:\n  - script: echo.py\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_api, "_resolve_user_scope", lambda _req: web_api.UserScope(user_id="admin", allowed_projects={"demo"}))
+    monkeypatch.setattr(web_api, "_builder_project_context", lambda **_kw: ("demo", {}, None))
+    monkeypatch.setattr(
+        web_api,
+        "_builder_pipeline_source_views",
+        lambda **_kw: ([{"label": "local", "pipelines_root": tmp_path, "repo_root": tmp_path}], []),
+    )
+
+    def _fetch_pipeline_runs(pipeline, limit=50, status=None, executor=None, project_id=None):
+        if pipeline == "a.yml":
+            return [{"run_id": "ra", "status": "succeeded", "started_at": "2026-02-22T00:00:00Z"}]
+        if pipeline == "b.yml":
+            return [{"run_id": "rb", "status": "succeeded", "started_at": "2026-02-22T01:00:00Z"}]
+        return []
+
+    monkeypatch.setattr(web_api, "fetch_pipeline_runs", _fetch_pipeline_runs)
+
+    client = TestClient(web_api.app)
+    r = client.get("/api/projects/demo/dag")
+    assert r.status_code == 200
+    payload = r.json()
+    nodes = {n["id"]: n for n in payload["nodes"]}
+    assert nodes["a.yml"]["stale"] is True
+    assert "b.yml" in (nodes["a.yml"].get("stale_dependencies") or [])
+    assert nodes["b.yml"]["stale"] is False
+
+
 def test_web_api_create_dataset_requires_dataset_id():
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

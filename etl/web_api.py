@@ -387,6 +387,10 @@ INDEX_HTML = """<!doctype html>
     .status-pill.valid { background:#ecfdf3; color:#0a8f57; border-color:#b7ebcf; }
     .status-pill.failed { background:#fff1f1; color:#b42318; border-color:#f3c6c6; }
     .status-pill.successful { background:#e7f6ff; color:#0b6fb3; border-color:#bfe3fa; }
+    .status-pill.running { background:#fff8e8; color:#9a6700; border-color:#f2d392; }
+    .status-pill.queued { background:#fff8e8; color:#9a6700; border-color:#f2d392; }
+    .status-pill.missing { background:#fff1f1; color:#b42318; border-color:#f3c6c6; }
+    .status-pill.stale { background:#fff4e6; color:#9a4a00; border-color:#efcc9d; }
     .param-panel { border:1px solid var(--line); border-radius:8px; padding:8px; background:#f7faff; margin-top:6px; }
     .param-panel-title { font-size:12px; color:#4a648a; font-weight:600; margin-bottom:6px; text-transform:uppercase; letter-spacing:.03em; }
     .param-grid { display:grid; grid-template-columns:1fr; gap:6px; }
@@ -453,6 +457,10 @@ INDEX_HTML = """<!doctype html>
     .step-output-head button { background:#eef3ff; color:#274066; border-color:#b9c8e6; font-size:11px; padding:2px 8px; }
     .step-output pre { margin:0; border:0; border-radius:0; background:#fff; padding:8px; max-height:220px; overflow:auto; }
     .step-output.collapsed pre { display:none; }
+    .builder-dag-controls { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+    .builder-dag-canvas { border:1px solid var(--line); border-radius:8px; background:#fff; padding:6px; overflow:auto; min-height:220px; }
+    #builder_project_dag_svg { width:100%; min-height:220px; display:block; }
+    #builder_dag_legend { margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; }
     @keyframes spin { to { transform:rotate(360deg); } }
     @media (max-width: 1280px) {
       .builder-surface { grid-template-columns: 1fr; }
@@ -671,6 +679,30 @@ INDEX_HTML = """<!doctype html>
                     <pre id="builder_namespace">Loading...</pre>
                   </div>
                 </section>
+                <section class="builder-subsection" id="builder_section_dag">
+                  <div class="builder-subsection-head">
+                    <h4>Project DAG</h4>
+                    <button id="btn_builder_toggle_dag" type="button">Collapse</button>
+                  </div>
+                  <div class="builder-subsection-body">
+                    <div class="builder-dag-controls">
+                      <button id="btn_builder_refresh_dag" type="button">Refresh DAG</button>
+                      <span id="builder_dag_msg" class="muted">Select a project to view dependency DAG.</span>
+                    </div>
+                    <div class="builder-dag-canvas">
+                      <svg id="builder_project_dag_svg" viewBox="0 0 960 320" preserveAspectRatio="xMinYMin meet"></svg>
+                    </div>
+                    <div id="builder_dag_legend">
+                      <span class="status-pill successful">succeeded</span>
+                      <span class="status-pill running">running</span>
+                      <span class="status-pill queued">queued</span>
+                      <span class="status-pill failed">failed</span>
+                      <span class="status-pill not-run">not-run</span>
+                      <span class="status-pill stale">stale</span>
+                      <span class="status-pill missing">missing</span>
+                    </div>
+                  </div>
+                </section>
               </div>
             </div>
           </div>
@@ -764,7 +796,8 @@ INDEX_HTML = """<!doctype html>
     let builderPipelineRunState = "not-run";
     let builderPipelineRunning = false;
     let builderPreviewCollapsed = false;
-    let builderPreviewSectionCollapsed = { yaml: true, output: true, vars: true };
+    let builderPreviewSectionCollapsed = { yaml: true, output: true, vars: true, dag: false };
+    let builderProjectDag = { nodes: [], edges: [], warnings: [] };
     let builderTreeFiles = [];
     let builderTreeDirs = [];
     let builderTreeFileSelection = "";
@@ -1575,6 +1608,7 @@ INDEX_HTML = """<!doctype html>
         { key: "yaml", sectionId: "builder_section_yaml", btnId: "btn_builder_toggle_yaml", title: "YAML" },
         { key: "output", sectionId: "builder_section_output", btnId: "btn_builder_toggle_output", title: "Output" },
         { key: "vars", sectionId: "builder_section_vars", btnId: "btn_builder_toggle_vars", title: "Variables" },
+        { key: "dag", sectionId: "builder_section_dag", btnId: "btn_builder_toggle_dag", title: "DAG" },
       ];
       for(const d of defs){
         const section = document.getElementById(d.sectionId);
@@ -1637,6 +1671,264 @@ INDEX_HTML = """<!doctype html>
         sel.value = modelProject;
       }
       builderModel.project_id = String(sel.value || "").trim();
+    }
+    function builderDagStatusClass(rawStatus){
+      const s = String(rawStatus || "").trim().toLowerCase();
+      if(s === "succeeded" || s === "successful" || s === "completed") return "successful";
+      if(s === "running") return "running";
+      if(s === "queued") return "queued";
+      if(s === "failed" || s === "error") return "failed";
+      if(s === "missing") return "missing";
+      return "not-run";
+    }
+    function renderBuilderProjectDag(){
+      const svg = document.getElementById("builder_project_dag_svg");
+      if(!svg) return;
+      const nodes = Array.isArray((builderProjectDag || {}).nodes) ? builderProjectDag.nodes : [];
+      const edges = Array.isArray((builderProjectDag || {}).edges) ? builderProjectDag.edges : [];
+      while(svg.firstChild){ svg.removeChild(svg.firstChild); }
+      if(!nodes.length){
+        svg.setAttribute("viewBox", "0 0 960 220");
+        const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        t.setAttribute("x", "24");
+        t.setAttribute("y", "36");
+        t.setAttribute("font-size", "13");
+        t.setAttribute("fill", "#4b5f80");
+        t.textContent = "No project pipelines found.";
+        svg.appendChild(t);
+        return;
+      }
+      const byId = {};
+      const indegree = {};
+      const out = {};
+      for(const n of nodes){
+        const id = String(n.id || "");
+        byId[id] = n;
+        indegree[id] = 0;
+        out[id] = [];
+      }
+      for(const e of edges){
+        const from = String(e.from || "");
+        const to = String(e.to || "");
+        if(!from || !to || !byId[from] || !byId[to]) continue;
+        out[from].push(to);
+        indegree[to] = (indegree[to] || 0) + 1;
+      }
+      const queue = [];
+      for(const n of nodes){
+        const id = String(n.id || "");
+        if((indegree[id] || 0) === 0) queue.push(id);
+      }
+      const level = {};
+      for(const id of queue){ level[id] = 0; }
+      while(queue.length){
+        const cur = queue.shift();
+        const base = Number(level[cur] || 0);
+        for(const nxt of (out[cur] || [])){
+          level[nxt] = Math.max(Number(level[nxt] || 0), base + 1);
+          indegree[nxt] = Number(indegree[nxt] || 0) - 1;
+          if(indegree[nxt] === 0){
+            queue.push(nxt);
+          }
+        }
+      }
+      for(const n of nodes){
+        const id = String(n.id || "");
+        if(level[id] === undefined) level[id] = 0;
+      }
+      const columns = {};
+      let maxLevel = 0;
+      for(const n of nodes){
+        const id = String(n.id || "");
+        const lv = Number(level[id] || 0);
+        if(!columns[lv]) columns[lv] = [];
+        columns[lv].push(n);
+        maxLevel = Math.max(maxLevel, lv);
+      }
+      for(const arr of Object.values(columns)){
+        arr.sort((a, b) => String(a.label || a.pipeline || a.id || "").localeCompare(String(b.label || b.pipeline || b.id || "")));
+      }
+      const layout = {};
+      const laneCounts = Object.values(columns).map((arr) => arr.length);
+      const maxRows = laneCounts.length ? Math.max(...laneCounts) : 1;
+      const nodeW = 220;
+      const nodeH = 64;
+      const gapX = 44;
+      const gapY = 28;
+      const pad = 16;
+      const width = Math.max(960, pad * 2 + (maxLevel + 1) * nodeW + maxLevel * gapX);
+      const height = Math.max(220, pad * 2 + maxRows * nodeH + Math.max(0, maxRows - 1) * gapY);
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+      const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+      const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+      marker.setAttribute("id", "dag-arrow");
+      marker.setAttribute("viewBox", "0 0 10 10");
+      marker.setAttribute("refX", "8");
+      marker.setAttribute("refY", "5");
+      marker.setAttribute("markerWidth", "7");
+      marker.setAttribute("markerHeight", "7");
+      marker.setAttribute("orient", "auto-start-reverse");
+      const arrowPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      arrowPath.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+      arrowPath.setAttribute("fill", "#9ab0cf");
+      marker.appendChild(arrowPath);
+      defs.appendChild(marker);
+      svg.appendChild(defs);
+
+      for(let lv = 0; lv <= maxLevel; lv++){
+        const col = columns[lv] || [];
+        col.forEach((n, idx) => {
+          const id = String(n.id || "");
+          const x = pad + lv * (nodeW + gapX);
+          const y = pad + idx * (nodeH + gapY);
+          layout[id] = { x, y, nodeW, nodeH };
+        });
+      }
+      const edgeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      for(const e of edges){
+        const from = String(e.from || "");
+        const to = String(e.to || "");
+        if(!layout[from] || !layout[to]) continue;
+        const fromNode = byId[from] || {};
+        const toNode = byId[to] || {};
+        const a = layout[from];
+        const b = layout[to];
+        const x1 = a.x + a.nodeW;
+        const y1 = a.y + (a.nodeH / 2);
+        const x2 = b.x;
+        const y2 = b.y + (b.nodeH / 2);
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        const midX = x1 + Math.max(18, (x2 - x1) * 0.45);
+        path.setAttribute("d", `M ${x1} ${y1} C ${midX} ${y1}, ${Math.max(x1 + 16, x2 - 18)} ${y2}, ${x2} ${y2}`);
+        path.setAttribute("fill", "none");
+        path.setAttribute("stroke", e.missing ? "#d78a8a" : "#9ab0cf");
+        path.setAttribute("stroke-width", "1.6");
+        path.setAttribute("marker-end", "url(#dag-arrow)");
+        const edgeTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
+        edgeTitle.textContent = `requires=${String(e.ref || "")} | from=${String(fromNode.pipeline || from)} (${String(fromNode.status || "unknown")}${fromNode.run_id ? `, run=${fromNode.run_id}` : ""}) -> to=${String(toNode.pipeline || to)} (${String(toNode.status || "unknown")}${toNode.run_id ? `, run=${toNode.run_id}` : ""})`;
+        path.appendChild(edgeTitle);
+        edgeLayer.appendChild(path);
+        if(e.ref){
+          const lbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          lbl.setAttribute("x", String((x1 + x2) / 2));
+          lbl.setAttribute("y", String((y1 + y2) / 2 - 5));
+          lbl.setAttribute("font-size", "10");
+          lbl.setAttribute("fill", e.missing ? "#b05d5d" : "#6683ab");
+          lbl.setAttribute("text-anchor", "middle");
+          lbl.textContent = String(e.ref).length > 24 ? `${String(e.ref).slice(0, 21)}...` : String(e.ref);
+          edgeLayer.appendChild(lbl);
+        }
+      }
+      svg.appendChild(edgeLayer);
+
+      const nodeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      for(const n of nodes){
+        const id = String(n.id || "");
+        const box = layout[id];
+        if(!box) continue;
+        const statusClass = builderDagStatusClass(n.status);
+        const stale = !!n.stale;
+        const statusColor = statusClass === "successful" ? "#0b6fb3"
+          : statusClass === "running" || statusClass === "queued" ? "#9a6700"
+          : statusClass === "failed" || statusClass === "missing" ? "#b42318"
+          : "#4b5563";
+        const exists = !!n.exists;
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", String(box.x));
+        rect.setAttribute("y", String(box.y));
+        rect.setAttribute("width", String(box.nodeW));
+        rect.setAttribute("height", String(box.nodeH));
+        rect.setAttribute("rx", "8");
+        rect.setAttribute("fill", exists ? (stale ? "#fffaf0" : "#f8fbff") : "#fff5f5");
+        rect.setAttribute("stroke", stale ? "#9a4a00" : statusColor);
+        rect.setAttribute("stroke-width", "1.2");
+        nodeLayer.appendChild(rect);
+
+        const labelText = String(n.pipeline || n.label || id || "");
+        const txt = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        txt.setAttribute("x", String(box.x + 8));
+        txt.setAttribute("y", String(box.y + 18));
+        txt.setAttribute("font-size", "12");
+        txt.setAttribute("fill", "#23395b");
+        txt.textContent = labelText.length > 34 ? `${labelText.slice(0, 31)}...` : labelText;
+        nodeLayer.appendChild(txt);
+
+        const st = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        st.setAttribute("x", String(box.x + 8));
+        st.setAttribute("y", String(box.y + 35));
+        st.setAttribute("font-size", "11");
+        st.setAttribute("fill", statusColor);
+        st.textContent = stale ? `${String(n.status || "not-run")} (stale)` : String(n.status || "not-run");
+        nodeLayer.appendChild(st);
+        const runText = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        runText.setAttribute("x", String(box.x + 8));
+        runText.setAttribute("y", String(box.y + 50));
+        runText.setAttribute("font-size", "10");
+        runText.setAttribute("fill", "#5f7396");
+        const runId = String(n.run_id || "").trim();
+        runText.textContent = runId ? `run: ${runId}` : (exists ? "run: none" : "missing pipeline");
+        nodeLayer.appendChild(runText);
+
+        if(exists){
+          const link = document.createElementNS("http://www.w3.org/2000/svg", "title");
+          const staleDeps = Array.isArray(n.stale_dependencies) && n.stale_dependencies.length
+            ? ` stale_from=${n.stale_dependencies.join(",")}`
+            : "";
+          link.textContent = `${labelText} (${String(n.status || "not-run")}${stale ? ", stale" : ""}${runId ? `, run=${runId}` : ""})${staleDeps}`;
+          rect.appendChild(link);
+          rect.style.cursor = "pointer";
+          rect.addEventListener("click", () => {
+            const source = String(n.source || "").trim();
+            const pipeline = String(n.pipeline || "").trim();
+            if(source && source !== "local"){
+              const srcEl = document.getElementById("b_pipeline_source");
+              if(srcEl){
+                srcEl.value = source;
+                builderSelectedPipelineSource = source;
+              }
+            }
+            const pathEl = document.getElementById("b_pipeline_path");
+            if(pathEl && pipeline){
+              pathEl.value = pipeline;
+              saveBuilderLastPipeline(pipeline, builderSelectedPipelineSource);
+            }
+            loadBuilderSource();
+          });
+        }
+      }
+      svg.appendChild(nodeLayer);
+    }
+    async function loadBuilderProjectDag(){
+      if(!isBuilderView) return;
+      const msgEl = document.getElementById("builder_dag_msg");
+      const pid = String((document.getElementById("b_project_id") || {}).value || builderModel.project_id || "").trim();
+      if(!pid){
+        builderProjectDag = { nodes: [], edges: [], warnings: [] };
+        if(msgEl) msgEl.textContent = "Select a project to view dependency DAG.";
+        renderBuilderProjectDag();
+        return;
+      }
+      if(msgEl) msgEl.textContent = "Loading DAG...";
+      const res = await fetch(`/api/projects/${encodeURIComponent(pid)}/dag`);
+      if(!res.ok){
+        builderProjectDag = { nodes: [], edges: [], warnings: [] };
+        if(msgEl) msgEl.textContent = await readMessage(res);
+        renderBuilderProjectDag();
+        return;
+      }
+      const payload = await res.json();
+      builderProjectDag = {
+        nodes: Array.isArray(payload.nodes) ? payload.nodes : [],
+        edges: Array.isArray(payload.edges) ? payload.edges : [],
+        warnings: Array.isArray(payload.warnings) ? payload.warnings : [],
+      };
+      if(msgEl){
+        const warnings = builderProjectDag.warnings.length;
+        const staleCount = builderProjectDag.nodes.filter(n => !!n.stale).length;
+        msgEl.textContent = `nodes=${builderProjectDag.nodes.length}, edges=${builderProjectDag.edges.length}, stale=${staleCount}${warnings ? `, warnings=${warnings}` : ""}`;
+      }
+      renderBuilderProjectDag();
     }
     function flattenBuilderProjectVars(value, prefix = ""){
       const out = {};
@@ -4529,6 +4821,14 @@ INDEX_HTML = """<!doctype html>
         refreshBuilderNamespace();
       }
     };
+    document.getElementById("btn_builder_toggle_dag").onclick = () => {
+      builderPreviewSectionCollapsed.dag = !builderPreviewSectionCollapsed.dag;
+      renderBuilderPreviewSections();
+      if(!builderPreviewSectionCollapsed.dag){
+        loadBuilderProjectDag();
+      }
+    };
+    document.getElementById("btn_builder_refresh_dag").onclick = () => { loadBuilderProjectDag(); };
     document.getElementById("btn_builder_add_req").onclick = addBuilderRequire;
     document.getElementById("btn_builder_add_var").onclick = addBuilderVar;
     const addDirBtn = document.getElementById("btn_builder_add_dir");
@@ -4563,6 +4863,7 @@ INDEX_HTML = """<!doctype html>
       syncYamlPreview();
       await refreshBuilderProjectVars(next);
       await refreshBuilderTreeFiles();
+      await loadBuilderProjectDag();
     };
     document.getElementById("b_requires").addEventListener("input", handleBuilderInput);
     document.getElementById("b_vars").addEventListener("input", handleBuilderInput);
@@ -4591,6 +4892,7 @@ INDEX_HTML = """<!doctype html>
       if(isBuilderView){
         await refreshBuilderProjectVars(builderModel.project_id || currentProjectId());
         await refreshBuilderTreeFiles();
+        await loadBuilderProjectDag();
       }
     });
     loadBuilderEnvironments().then(async () => {
@@ -4607,6 +4909,9 @@ INDEX_HTML = """<!doctype html>
       setTimeout(() => {
         if(!builderPreviewSectionCollapsed.vars){
           refreshBuilderNamespace();
+        }
+        if(!builderPreviewSectionCollapsed.dag){
+          loadBuilderProjectDag();
         }
       }, 0);
     }
@@ -6306,6 +6611,187 @@ def _builder_pipeline_source_views(
     return views, warnings
 
 
+def _normalize_dag_pipeline_ref(value: str) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    if not raw:
+        return ""
+    while raw.startswith("./"):
+        raw = raw[2:]
+    if raw.lower().startswith("pipelines/"):
+        raw = raw[len("pipelines/") :]
+    path = Path(raw)
+    if path.suffix.lower() not in {".yml", ".yaml"}:
+        path = path.with_suffix(".yml")
+    return path.as_posix()
+
+
+def _collect_project_pipeline_graph(
+    *,
+    project_id: str,
+    project_vars: dict[str, Any],
+    repo_root: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    views, warnings = _builder_pipeline_source_views(project_vars=project_vars, repo_root=repo_root)
+    source_count = len(views)
+    docs: list[dict[str, Any]] = []
+    if views:
+        for view in views:
+            label = str(view["label"])
+            root = Path(view["pipelines_root"]).resolve()
+            for pat in ("*.yml", "*.yaml"):
+                for p in root.rglob(pat):
+                    if not p.is_file():
+                        continue
+                    rel = p.relative_to(root).as_posix()
+                    node_id = f"{label}/{rel}" if source_count > 1 else rel
+                    docs.append({"id": node_id, "pipeline": rel, "source": label, "path": p})
+    else:
+        local_root = (repo_root / "pipelines").resolve()
+        for pat in ("*.yml", "*.yaml"):
+            for p in local_root.rglob(pat):
+                if not p.is_file():
+                    continue
+                rel = p.relative_to(local_root).as_posix()
+                docs.append({"id": rel, "pipeline": rel, "source": "local", "path": p})
+    docs.sort(key=lambda x: str(x.get("id") or "").lower())
+
+    by_id: dict[str, dict[str, Any]] = {str(d["id"]): d for d in docs}
+    by_rel_unique: dict[str, Optional[str]] = {}
+    for d in docs:
+        rel = str(d["pipeline"])
+        if rel in by_rel_unique:
+            by_rel_unique[rel] = None
+        else:
+            by_rel_unique[rel] = str(d["id"])
+
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    latest_run_cache: dict[str, Optional[dict[str, Any]]] = {}
+
+    def _latest_run_for_pipeline(rel: str) -> Optional[dict[str, Any]]:
+        if rel in latest_run_cache:
+            return latest_run_cache[rel]
+        try:
+            rows = fetch_pipeline_runs(rel, limit=1, project_id=project_id)
+        except WebQueryError as exc:
+            warnings.append(str(exc))
+            latest_run_cache[rel] = None
+            return None
+        latest_run_cache[rel] = rows[0] if rows else None
+        return latest_run_cache[rel]
+
+    import yaml
+
+    def _parse_dt(value: Any) -> Optional[datetime]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    for d in docs:
+        node_id = str(d["id"])
+        rel = str(d["pipeline"])
+        source = str(d["source"])
+        run = _latest_run_for_pipeline(rel)
+        status = str((run or {}).get("status") or "not-run").strip().lower() or "not-run"
+        node = {
+            "id": node_id,
+            "pipeline": rel,
+            "source": source,
+            "label": node_id,
+            "exists": True,
+            "status": status,
+            "run_id": (run or {}).get("run_id"),
+            "started_at": (run or {}).get("started_at"),
+            "path": str(d["path"]),
+            "parse_error": None,
+            "stale": False,
+            "stale_dependencies": [],
+        }
+        nodes[node_id] = node
+        requires: list[str] = []
+        try:
+            raw = yaml.safe_load(Path(d["path"]).read_text(encoding="utf-8")) or {}
+            reqs = raw.get("requires_pipelines", []) or []
+            if isinstance(reqs, list):
+                requires = [str(x or "").strip() for x in reqs if str(x or "").strip()]
+            else:
+                node["parse_error"] = "`requires_pipelines` must be a list"
+                warnings.append(f"{node_id}: invalid requires_pipelines type")
+        except Exception as exc:  # noqa: BLE001
+            node["parse_error"] = str(exc)
+            warnings.append(f"{node_id}: parse failed: {exc}")
+
+        for req_raw in requires:
+            req_rel = _normalize_dag_pipeline_ref(req_raw)
+            if not req_rel:
+                continue
+            target_id = ""
+            if source_count > 1:
+                same_source_id = f"{source}/{req_rel}"
+                if same_source_id in by_id:
+                    target_id = same_source_id
+            if not target_id:
+                candidate = by_rel_unique.get(req_rel)
+                if candidate:
+                    target_id = candidate
+            if not target_id and req_rel in by_id:
+                target_id = req_rel
+            if not target_id:
+                target_id = f"missing:{req_rel}"
+                if target_id not in nodes:
+                    run2 = _latest_run_for_pipeline(req_rel)
+                    status2 = str((run2 or {}).get("status") or "missing").strip().lower() or "missing"
+                    nodes[target_id] = {
+                        "id": target_id,
+                        "pipeline": req_rel,
+                        "source": None,
+                        "label": req_rel,
+                        "exists": False,
+                        "status": status2 if run2 else "missing",
+                        "run_id": (run2 or {}).get("run_id"),
+                        "started_at": (run2 or {}).get("started_at"),
+                        "path": None,
+                        "parse_error": "dependency not found in project pipeline sources",
+                    }
+            edges.append({"from": target_id, "to": node_id, "missing": target_id.startswith("missing:"), "ref": req_rel})
+
+    # Mark downstream nodes stale when a dependency has a newer run timestamp.
+    incoming: dict[str, list[str]] = {}
+    for e in edges:
+        to_id = str(e.get("to") or "")
+        from_id = str(e.get("from") or "")
+        if not to_id or not from_id:
+            continue
+        incoming.setdefault(to_id, []).append(from_id)
+    for node_id, node in nodes.items():
+        node_run_at = _parse_dt(node.get("started_at"))
+        if node_run_at is None:
+            continue
+        stale_from: list[str] = []
+        for dep_id in incoming.get(node_id, []):
+            dep = nodes.get(dep_id) or {}
+            dep_run_at = _parse_dt(dep.get("started_at"))
+            if dep_run_at is None:
+                continue
+            if dep_run_at > node_run_at:
+                stale_from.append(dep_id)
+        if stale_from:
+            node["stale"] = True
+            node["stale_dependencies"] = stale_from
+
+    order = ["running", "queued", "failed", "cancel_requested", "cancelled", "succeeded", "not-run", "missing"]
+    rank = {k: i for i, k in enumerate(order)}
+    nodes_list = sorted(
+        nodes.values(),
+        key=lambda n: (rank.get(str(n.get("status") or "").lower(), 999), str(n.get("label") or "").lower()),
+    )
+    return nodes_list, edges, warnings
+
+
 def _infer_external_pipeline_remote_hint(
     *,
     pipeline_path: Path,
@@ -6662,6 +7148,36 @@ def api_builder_files(
         "dirs": sorted(dirs_set),
         "sources": ["local"],
         "warnings": [],
+    }
+
+
+@app.get("/api/projects/{project_id}/dag")
+def api_project_dag(
+    request: Request,
+    project_id: str,
+    projects_config: Optional[str] = Query(default=None),
+) -> dict:
+    scope = _resolve_user_scope(request)
+    repo_root = Path(".").resolve()
+    pid, project_vars, resolved_projects_cfg = _builder_project_context(
+        project_id=project_id,
+        projects_config=projects_config,
+    )
+    if not pid:
+        raise HTTPException(status_code=400, detail="`project_id` is required.")
+    _require_project_access(scope, pid)
+    nodes, edges, warnings = _collect_project_pipeline_graph(
+        project_id=pid,
+        project_vars=project_vars,
+        repo_root=repo_root,
+    )
+    return {
+        "project_id": pid,
+        "projects_config": str(resolved_projects_cfg) if resolved_projects_cfg else None,
+        "nodes": nodes,
+        "edges": edges,
+        "warnings": warnings,
+        "generated_at": datetime.utcnow().isoformat() + "Z",
     }
 
 
