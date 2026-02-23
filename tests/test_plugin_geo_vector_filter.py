@@ -107,6 +107,28 @@ def test_geo_vector_filter_in_list_arg_list_value(tmp_path: Path) -> None:
     assert sorted(filtered["STUSPS"].tolist()) == ["MI", "WI"]
 
 
+def test_geo_vector_filter_in_list_stringified_list_value(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo_vector_filter.py"))
+    src = tmp_path / "state.gpkg"
+    _write_states(src)
+    out = tmp_path / "filtered_stringified_list_values.gpkg"
+
+    outputs = plugin.run(
+        {
+            "input_path": str(src),
+            "output_path": str(out),
+            "key": "STUSPS",
+            "op": "in",
+            "values": "['MI', 'WI']",
+        },
+        _ctx(tmp_path),
+    )
+
+    assert outputs["output_feature_count"] == 2
+    filtered = gpd.read_file(out)
+    assert sorted(filtered["STUSPS"].tolist()) == ["MI", "WI"]
+
+
 def test_geo_vector_filter_fails_on_missing_key(tmp_path: Path) -> None:
     plugin = load_plugin(Path("plugins/geo_vector_filter.py"))
     src = tmp_path / "state.gpkg"

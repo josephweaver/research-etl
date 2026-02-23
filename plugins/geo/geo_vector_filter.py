@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import ast
 import csv
 import re
 from pathlib import Path
@@ -76,7 +77,15 @@ def _coerce_values(values_arg: Any) -> list[str]:
     if values_arg is None:
         return []
     if isinstance(values_arg, str):
-        return _parse_csv_values(values_arg)
+        raw = values_arg.strip()
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                parsed = ast.literal_eval(raw)
+            except Exception:  # noqa: BLE001
+                parsed = None
+            if isinstance(parsed, (list, tuple, set)):
+                return _coerce_values(parsed)
+        return _parse_csv_values(raw)
     if isinstance(values_arg, (list, tuple, set)):
         out: list[str] = []
         for raw in values_arg:
