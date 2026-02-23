@@ -15,6 +15,25 @@ projects:
       owner: "land-core"
       data_dictionary_repo_url: "https://github.com/land-core/landcore-data-catalog.git"
       states_of_interest: [ 'IL', 'MN', 'WI', 'OH', 'SD', 'IA', 'IN', 'MI', 'MO' ]
+      tiles_of_interest: [
+        'h12v04','h12v05','h12v06','h12v07','h13v04',
+        'h13v05','h13v06','h13v07','h14v04','h14v05',
+        'h14v06','h14v07','h15v05','h15v06','h15v07',
+        'h16v02','h16v03','h16v04','h16v05','h16v06',
+        'h16v07','h16v08','h17v02','h17v03','h17v04',
+        'h17v05','h17v06','h17v07','h17v08','h17v09',
+        'h17v10','h17v11','h17v12','h18v04','h18v05',
+        'h18v06','h18v07','h18v08','h18v09','h18v10',
+        'h18v11','h18v12','h19v04','h19v05','h19v06',
+        'h19v07','h19v08','h19v09','h19v10','h19v12',
+        'h20v05','h20v06','h20v07','h20v08','h20v09',
+        'h20v10','h20v11','h20v12','h21v04','h21v05',
+        'h21v06','h21v07','h21v08','h21v09','h21v10',
+        'h21v11','h22v04','h22v05','h22v06','h22v07',
+        'h22v08','h22v09','h22v10','h23v04','h23v05',
+        'h23v06','h23v07','h23v08','h23v09','h23v10',
+        'h24v06','h24v07','h24v08','h24v09','h24v10',
+        'h25v07','h25v08','h25v09']
       pipeline_asset_sources:
         - project_key: "land_core"
           repo_url: "https://github.com/josephweaver/landcore-etl-pipelines.git"
