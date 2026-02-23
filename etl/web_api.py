@@ -4833,50 +4833,54 @@ INDEX_HTML = """<!doctype html>
     setActiveNav();
     initUserScope();
     initEnvScope();
-    document.getElementById("btn_apply").onclick = tick;
-    document.getElementById("btn_ops_refresh").onclick = tick;
-    document.getElementById("btn_pipelines").onclick = tick;
-    document.getElementById("btn_validate").onclick = validateAction;
-    document.getElementById("btn_run").onclick = runAction;
-    document.getElementById("btn_resume").onclick = resumeSelected;
-    document.getElementById("btn_stop").onclick = stopSelected;
-    document.getElementById("btn_project_dag_refresh").onclick = () => { loadProjectDagPage(); };
-    document.getElementById("btn_nav_live").onclick = () => {
+    function bindClick(id, handler){
+      const el = document.getElementById(id);
+      if(el){ el.onclick = handler; }
+    }
+    bindClick("btn_apply", tick);
+    bindClick("btn_ops_refresh", tick);
+    bindClick("btn_pipelines", tick);
+    bindClick("btn_validate", validateAction);
+    bindClick("btn_run", runAction);
+    bindClick("btn_resume", resumeSelected);
+    bindClick("btn_stop", stopSelected);
+    bindClick("btn_project_dag_refresh", () => { loadProjectDagPage(); });
+    bindClick("btn_nav_live", () => {
       const runId = document.getElementById("nav_live_id").value.trim();
       if (!runId) return;
       const asUser = encodeURIComponent(currentAsUser());
       window.location.href = `/runs/${encodeURIComponent(runId)}/live?as_user=${asUser}`;
-    };
-    document.getElementById("btn_builder_import_local").onclick = () => { openBuilderFilePicker(); };
-    document.getElementById("btn_builder_toggle_preview").onclick = () => { builderPreviewCollapsed = !builderPreviewCollapsed; renderBuilderPreviewPanel(); };
-    document.getElementById("btn_builder_toggle_yaml").onclick = () => {
+    });
+    bindClick("btn_builder_import_local", () => { openBuilderFilePicker(); });
+    bindClick("btn_builder_toggle_preview", () => { builderPreviewCollapsed = !builderPreviewCollapsed; renderBuilderPreviewPanel(); });
+    bindClick("btn_builder_toggle_yaml", () => {
       builderPreviewSectionCollapsed.yaml = !builderPreviewSectionCollapsed.yaml;
       renderBuilderPreviewSections();
-    };
-    document.getElementById("btn_builder_toggle_output").onclick = () => {
+    });
+    bindClick("btn_builder_toggle_output", () => {
       builderPreviewSectionCollapsed.output = !builderPreviewSectionCollapsed.output;
       renderBuilderPreviewSections();
-    };
-    document.getElementById("btn_builder_toggle_vars").onclick = () => {
+    });
+    bindClick("btn_builder_toggle_vars", () => {
       builderPreviewSectionCollapsed.vars = !builderPreviewSectionCollapsed.vars;
       renderBuilderPreviewSections();
       if(!builderPreviewSectionCollapsed.vars){
         refreshBuilderNamespace();
       }
-    };
-    document.getElementById("btn_builder_add_req").onclick = addBuilderRequire;
-    document.getElementById("btn_builder_add_var").onclick = addBuilderVar;
+    });
+    bindClick("btn_builder_add_req", addBuilderRequire);
+    bindClick("btn_builder_add_var", addBuilderVar);
     const addDirBtn = document.getElementById("btn_builder_add_dir");
     if(addDirBtn){ addDirBtn.onclick = addBuilderDir; }
-    document.getElementById("btn_builder_add_step").onclick = addBuilderStep;
-    document.getElementById("btn_builder_create").onclick = createBuilderPipeline;
-    document.getElementById("btn_builder_save").onclick = saveBuilderDraft;
-    document.getElementById("btn_builder_generate").onclick = generateBuilderDraft;
-    document.getElementById("btn_builder_validate").onclick = validateBuilderDraft;
-    document.getElementById("btn_builder_run").onclick = runBuilderPipeline;
-    document.getElementById("btn_builder_publish").onclick = publishBuilderPipeline;
-    document.getElementById("btn_builder_terminate").onclick = terminateBuilderPipeline;
-    document.getElementById("btn_plugins_refresh").onclick = tick;
+    bindClick("btn_builder_add_step", addBuilderStep);
+    bindClick("btn_builder_create", createBuilderPipeline);
+    bindClick("btn_builder_save", saveBuilderDraft);
+    bindClick("btn_builder_generate", generateBuilderDraft);
+    bindClick("btn_builder_validate", validateBuilderDraft);
+    bindClick("btn_builder_run", runBuilderPipeline);
+    bindClick("btn_builder_publish", publishBuilderPipeline);
+    bindClick("btn_builder_terminate", terminateBuilderPipeline);
+    bindClick("btn_plugins_refresh", tick);
     document.getElementById("plugins_env").onchange = tick;
     document.getElementById("b_pipeline_source").onchange = () => {
       builderSelectedPipelineSource = String(document.getElementById("b_pipeline_source").value || "").trim();
