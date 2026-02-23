@@ -813,6 +813,53 @@ def test_web_api_builder_namespace_endpoint(tmp_path: Path) -> None:
     assert payload["counts"]["sys"] >= 1
 
 
+def test_web_api_builder_namespace_includes_project_vars_from_payload_project_id(tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    cfg = tmp_path / "config"
+    cfg.mkdir(parents=True, exist_ok=True)
+    projects_cfg = cfg / "projects.yml"
+    projects_cfg.write_text(
+        "\n".join(
+            [
+                "projects:",
+                "  default:",
+                "    vars:",
+                "      base: /data/base",
+                "  demo_project:",
+                "    vars:",
+                "      owner: demo-owner",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    client = TestClient(web_api.app)
+    yaml_text = "\n".join(
+        [
+            "vars:",
+            "  dataset_dir: \"{project.base}/{project.owner}\"",
+            "steps:",
+            "  - plugin: echo.py",
+        ]
+    ) + "\n"
+    r = client.post(
+        "/api/builder/namespace",
+        json={
+            "yaml_text": yaml_text,
+            "project_id": "demo_project",
+            "projects_config": str(projects_cfg),
+        },
+    )
+    assert r.status_code == 200
+    ns = r.json()["namespace"]
+    assert ns["project"]["owner"] == "demo-owner"
+    assert ns["project"]["base"] == "/data/base"
+    assert ns["vars"]["dataset_dir"] == "/data/base/demo-owner"
+
+
 def test_web_api_builder_namespace_precedence_global_env_vars(tmp_path: Path) -> None:
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

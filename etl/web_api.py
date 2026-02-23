@@ -4280,7 +4280,7 @@ INDEX_HTML = """<!doctype html>
           }
         }
       }
-      const rootGroups = ["sys", "global", "env", "vars", "dirs"];
+      const rootGroups = ["sys", "global", "env", "project", "vars", "dirs"];
       const ignore = new Set(rootGroups);
       const flatEntries = Object.entries(namespace || {})
         .filter(([k]) => !ignore.has(String(k)))
@@ -5883,7 +5883,13 @@ def _resolve_builder_env_vars(
     return resolve_execution_env_templates(resolved_env, global_vars=global_vars or {})
 
 
-def _resolve_builder_project_vars(yaml_text: str) -> tuple[Optional[str], dict[str, Any]]:
+def _resolve_builder_project_vars(
+    yaml_text: str,
+    *,
+    explicit_project_id: Optional[str] = None,
+    projects_config_path: Optional[Path] = None,
+    pipeline_hint: Optional[str] = None,
+) -> tuple[Optional[str], dict[str, Any]]:
     try:
         import yaml
 
@@ -5892,14 +5898,26 @@ def _resolve_builder_project_vars(yaml_text: str) -> tuple[Optional[str], dict[s
         raw = {}
     if not isinstance(raw, dict):
         raw = {}
-    project_id = normalize_project_id(str(raw.get("project_id") or "").strip() or None)
-    if not project_id:
+    yaml_project_id = normalize_project_id(str(raw.get("project_id") or "").strip() or None)
+    if not yaml_project_id:
         meta = raw.get("metadata")
         if isinstance(meta, dict):
-            project_id = normalize_project_id(str(meta.get("project_id") or "").strip() or None)
+            yaml_project_id = normalize_project_id(str(meta.get("project_id") or "").strip() or None)
+    inferred_path: Optional[Path] = None
+    hint = str(pipeline_hint or "").strip()
+    if hint:
+        try:
+            inferred_path = _resolve_repo_relative_pipeline_path(hint)
+        except Exception:
+            inferred_path = None
+    project_id = resolve_project_id(
+        explicit_project_id=normalize_project_id(str(explicit_project_id or "").strip() or None),
+        pipeline_project_id=yaml_project_id,
+        pipeline_path=inferred_path,
+    )
     try:
-        projects_config_path = resolve_projects_config_path(None)
-        project_vars = load_project_vars(project_id=project_id, projects_config_path=projects_config_path)
+        resolved_projects_config = resolve_projects_config_path(projects_config_path)
+        project_vars = load_project_vars(project_id=project_id, projects_config_path=resolved_projects_config)
     except ProjectConfigError as exc:
         raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
     return project_id, project_vars
@@ -5911,10 +5929,18 @@ def _parse_pipeline_from_yaml_text(
     global_config_path: Optional[Path],
     environments_config_path: Optional[Path] = None,
     env_name: Optional[str] = None,
+    project_id: Optional[str] = None,
+    projects_config_path: Optional[Path] = None,
+    pipeline_hint: Optional[str] = None,
 ) -> Pipeline:
     if not (yaml_text or "").strip():
         raise HTTPException(status_code=400, detail="`yaml_text` is required.")
-    _, project_vars = _resolve_builder_project_vars(yaml_text)
+    _, project_vars = _resolve_builder_project_vars(
+        yaml_text,
+        explicit_project_id=project_id,
+        projects_config_path=projects_config_path,
+        pipeline_hint=pipeline_hint,
+    )
     global_vars = _resolve_global_vars(global_config_path)
     env_vars = _resolve_builder_env_vars(
         environments_config_path=environments_config_path,
@@ -6151,9 +6177,21 @@ def _pipeline_to_builder_model_from_yaml(yaml_text: str) -> dict[str, Any]:
     }
 
 
-def _validate_draft_yaml(yaml_text: str) -> tuple[Optional[Pipeline], Optional[str]]:
+def _validate_draft_yaml(
+    yaml_text: str,
+    *,
+    project_id: Optional[str] = None,
+    projects_config_path: Optional[Path] = None,
+    pipeline_hint: Optional[str] = None,
+) -> tuple[Optional[Pipeline], Optional[str]]:
     try:
-        pipeline = _parse_pipeline_from_yaml_text(yaml_text, global_config_path=None)
+        pipeline = _parse_pipeline_from_yaml_text(
+            yaml_text,
+            global_config_path=None,
+            project_id=project_id,
+            projects_config_path=projects_config_path,
+            pipeline_hint=pipeline_hint,
+        )
         return pipeline, None
     except HTTPException as exc:
         return None, str(exc.detail)
@@ -6975,7 +7013,15 @@ def api_pipelines_create(request: Request, payload: Optional[dict[str, Any]] = B
         )
     _require_project_access(scope, req_project_id or path_project_id)
     yaml_text = str(payload.get("yaml_text") or "")
-    _ = _parse_pipeline_from_yaml_text(yaml_text, global_config_path=None)
+    _ = _parse_pipeline_from_yaml_text(
+        yaml_text,
+        global_config_path=None,
+        project_id=req_project_id or path_project_id,
+        projects_config_path=Path(str(payload.get("projects_config") or "").strip()).expanduser()
+        if str(payload.get("projects_config") or "").strip()
+        else None,
+        pipeline_hint=str(pipeline_path),
+    )
     overwrite = _parse_bool(payload.get("overwrite"), default=False)
     if pipeline_path.exists() and not overwrite:
         raise HTTPException(status_code=409, detail=f"Pipeline already exists: {pipeline_path}")
@@ -7008,7 +7054,15 @@ def api_pipelines_update(request: Request, pipeline_id: str, payload: Optional[d
     if not pipeline_path.exists():
         raise HTTPException(status_code=404, detail=f"Pipeline file not found: {pipeline_path}")
     yaml_text = str(payload.get("yaml_text") or "")
-    _ = _parse_pipeline_from_yaml_text(yaml_text, global_config_path=None)
+    _ = _parse_pipeline_from_yaml_text(
+        yaml_text,
+        global_config_path=None,
+        project_id=req_project_id or path_project_id,
+        projects_config_path=Path(str(payload.get("projects_config") or "").strip()).expanduser()
+        if str(payload.get("projects_config") or "").strip()
+        else None,
+        pipeline_hint=str(pipeline_path),
+    )
     pipeline_path.parent.mkdir(parents=True, exist_ok=True)
     pipeline_path.write_text(yaml_text.strip() + "\n", encoding="utf-8")
     return {"pipeline": str(pipeline_path), "saved": True, "updated": True}
@@ -7544,13 +7598,25 @@ def api_builder_resolve_text(payload: Optional[dict[str, Any]] = Body(default=No
         env_name=env_name,
         global_vars=global_vars,
     )
-    _, project_vars = _resolve_builder_project_vars(yaml_text)
+    project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
+    projects_config_raw = str(payload.get("projects_config") or "").strip()
+    projects_config_path = Path(projects_config_raw).expanduser() if projects_config_raw else None
+    pipeline_hint = str(payload.get("pipeline") or "").strip() or None
+    _, project_vars = _resolve_builder_project_vars(
+        yaml_text,
+        explicit_project_id=project_id,
+        projects_config_path=projects_config_path,
+        pipeline_hint=pipeline_hint,
+    )
     raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(yaml_text)
     pipeline = _parse_pipeline_from_yaml_text(
         yaml_text,
         global_config_path=global_config_path,
         environments_config_path=environments_config_path,
         env_name=env_name,
+        project_id=project_id,
+        projects_config_path=projects_config_path,
+        pipeline_hint=pipeline_hint,
     )
     ctx = _build_builder_namespace(
         pipeline=pipeline,
@@ -7581,13 +7647,25 @@ def api_builder_namespace(payload: Optional[dict[str, Any]] = Body(default=None)
         env_name=env_name,
         global_vars=global_vars,
     )
-    _, project_vars = _resolve_builder_project_vars(yaml_text)
+    project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
+    projects_config_raw = str(payload.get("projects_config") or "").strip()
+    projects_config_path = Path(projects_config_raw).expanduser() if projects_config_raw else None
+    pipeline_hint = str(payload.get("pipeline") or "").strip() or None
+    _, project_vars = _resolve_builder_project_vars(
+        yaml_text,
+        explicit_project_id=project_id,
+        projects_config_path=projects_config_path,
+        pipeline_hint=pipeline_hint,
+    )
     raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(yaml_text)
     pipeline = _parse_pipeline_from_yaml_text(
         yaml_text,
         global_config_path=global_config_path,
         environments_config_path=environments_config_path,
         env_name=env_name,
+        project_id=project_id,
+        projects_config_path=projects_config_path,
+        pipeline_hint=pipeline_hint,
     )
     namespace = _build_builder_namespace(
         pipeline=pipeline,
@@ -7619,6 +7697,10 @@ def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None))
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
     environments_config_raw = str(payload.get("environments_config") or "").strip()
     environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
+    projects_config_raw = str(payload.get("projects_config") or "").strip()
+    projects_config_path = Path(projects_config_raw).expanduser() if projects_config_raw else None
+    project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
+    pipeline_hint = str(payload.get("pipeline") or "").strip() or None
     env_name = str(payload.get("env") or "").strip() or None
     require_dir_contract = _parse_bool(payload.get("require_dir_contract"), default=True)
     require_resolved_inputs = _parse_bool(payload.get("require_resolved_inputs"), default=True)
@@ -7629,6 +7711,9 @@ def api_builder_validate(payload: Optional[dict[str, Any]] = Body(default=None))
             global_config_path=global_config_path,
             environments_config_path=environments_config_path,
             env_name=env_name,
+            project_id=project_id,
+            projects_config_path=projects_config_path,
+            pipeline_hint=pipeline_hint,
         )
         if require_dir_contract:
             _validate_pipeline_dir_contract(pipeline)
@@ -7685,6 +7770,10 @@ def api_builder_generate(payload: Optional[dict[str, Any]] = Body(default=None))
     constraints = str(payload.get("constraints") or "").strip() or None
     existing_yaml = str(payload.get("yaml_text") or "").strip() or None
     model = str(payload.get("model") or "").strip() or None
+    project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
+    projects_config_raw = str(payload.get("projects_config") or "").strip()
+    projects_config_path = Path(projects_config_raw).expanduser() if projects_config_raw else None
+    pipeline_hint = str(payload.get("pipeline") or "").strip() or None
     auto_repair = _parse_bool(payload.get("auto_repair"), default=True)
     if not intent:
         raise HTTPException(status_code=400, detail="`intent` is required.")
@@ -7701,7 +7790,12 @@ def api_builder_generate(payload: Optional[dict[str, Any]] = Body(default=None))
     attempts = 1
     repaired = False
     repair_error = None
-    pipeline, validation_error = _validate_draft_yaml(yaml_text)
+    pipeline, validation_error = _validate_draft_yaml(
+        yaml_text,
+        project_id=project_id,
+        projects_config_path=projects_config_path,
+        pipeline_hint=pipeline_hint,
+    )
     if validation_error and auto_repair:
         repaired = True
         attempts = 2
@@ -7715,7 +7809,12 @@ def api_builder_generate(payload: Optional[dict[str, Any]] = Body(default=None))
                 existing_yaml=yaml_text,
                 model=model,
             )
-            pipeline, validation_error = _validate_draft_yaml(yaml_text)
+            pipeline, validation_error = _validate_draft_yaml(
+                yaml_text,
+                project_id=project_id,
+                projects_config_path=projects_config_path,
+                pipeline_hint=pipeline_hint,
+            )
         except AIPipelineError as exc:
             repair_error = str(exc)
 
@@ -7758,10 +7857,19 @@ def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
     global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
     environments_config_raw = str(payload.get("environments_config") or "").strip()
     environments_config_path = Path(environments_config_raw).expanduser() if environments_config_raw else None
+    projects_config_raw = str(payload.get("projects_config") or "").strip()
+    projects_config_path = Path(projects_config_raw).expanduser() if projects_config_raw else None
     env_name_raw = str(payload.get("env") or "").strip()
     env_name = env_name_raw or "local"
     yaml_text = str(payload.get("yaml_text") or "")
-    _, project_vars = _resolve_builder_project_vars(yaml_text)
+    project_id = normalize_project_id(str(payload.get("project_id") or "").strip() or None)
+    pipeline_hint = str(payload.get("pipeline") or "").strip() or None
+    _, project_vars = _resolve_builder_project_vars(
+        yaml_text,
+        explicit_project_id=project_id,
+        projects_config_path=projects_config_path,
+        pipeline_hint=pipeline_hint,
+    )
     global_vars = _resolve_global_vars(global_config_path)
     env_vars = _resolve_builder_env_vars(
         environments_config_path=environments_config_path,
@@ -7773,6 +7881,9 @@ def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
         global_config_path=global_config_path,
         environments_config_path=environments_config_path,
         env_name=env_name,
+        project_id=project_id,
+        projects_config_path=projects_config_path,
+        pipeline_hint=pipeline_hint,
     )
     raw_vars, raw_dirs = _raw_vars_dirs_from_yaml_text(yaml_text)
     namespace = _build_builder_namespace(
