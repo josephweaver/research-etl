@@ -72,6 +72,22 @@ def _parse_csv_values(text: str) -> list[str]:
     return [str(v).strip().strip("\"'") for v in row if str(v).strip()]
 
 
+def _coerce_values(values_arg: Any) -> list[str]:
+    if values_arg is None:
+        return []
+    if isinstance(values_arg, str):
+        return _parse_csv_values(values_arg)
+    if isinstance(values_arg, (list, tuple, set)):
+        out: list[str] = []
+        for raw in values_arg:
+            text = str(raw or "").strip().strip("\"'")
+            if text:
+                out.append(text)
+        return out
+    text = str(values_arg).strip().strip("\"'")
+    return [text] if text else []
+
+
 def _parse_where(where: str) -> tuple[str, str, list[str]]:
     expr = str(where or "").strip()
     if not expr:
@@ -141,7 +157,7 @@ def run(args, ctx):
     key = str(args.get("key") or "").strip()
     op = str(args.get("op") or "eq").strip()
     value = str(args.get("value") or "").strip()
-    values = str(args.get("values") or "").strip()
+    values_arg = args.get("values")
     case_insensitive = bool(args.get("case_insensitive", True))
     verbose = bool(args.get("verbose", False))
 
@@ -152,7 +168,9 @@ def run(args, ctx):
         if not key:
             raise ValueError("Provide either where or key")
         op = _normalize_op(op)
-        filter_values = _parse_csv_values(values) if values else ([value] if value else [])
+        filter_values = _coerce_values(values_arg)
+        if not filter_values and value:
+            filter_values = [value]
         if op in {"eq", "ne"} and len(filter_values) != 1:
             raise ValueError("eq/ne require exactly one value")
         if op in {"in", "not_in"} and not filter_values:
