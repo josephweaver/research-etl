@@ -1492,6 +1492,42 @@ def test_web_api_builder_source_prefers_selected_project_source_over_local(monke
     assert payload["pipeline_source"] == "land-core"
 
 
+def test_web_api_builder_source_prefers_project_source_over_local_when_unique(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    local_pipeline = tmp_path / "pipelines" / "sample.yml"
+    local_pipeline.parent.mkdir(parents=True, exist_ok=True)
+    local_pipeline.write_text("steps:\n  - name: local\n    script: echo.py\n", encoding="utf-8")
+
+    remote_root = tmp_path / "remote_a" / "pipelines"
+    remote_root.mkdir(parents=True, exist_ok=True)
+    remote_pipeline = remote_root / "sample.yml"
+    remote_pipeline.write_text("steps:\n  - name: remote\n    script: echo.py\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_api, "_builder_project_context", lambda **_k: ("land_core", {}, None))
+    monkeypatch.setattr(
+        web_api,
+        "_builder_pipeline_source_views",
+        lambda **_k: (
+            [{"label": "land-core", "pipelines_root": remote_root.resolve()}],
+            [],
+        ),
+    )
+
+    client = TestClient(web_api.app)
+    s = client.get(
+        "/api/builder/source",
+        params={"project_id": "land_core", "pipeline": "sample.yml"},
+    )
+    assert s.status_code == 200
+    payload = s.json()
+    assert Path(payload["pipeline"]).resolve() == remote_pipeline.resolve()
+    assert payload["pipeline_source"] == "land-core"
+
+
 def test_web_api_builder_generate(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

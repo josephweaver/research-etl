@@ -7055,9 +7055,9 @@ def api_builder_source(
             source_label = source_parts[0]
             source_rel = "/".join(source_parts[1:])
 
-        # Explicit source selection should take precedence over local-repo path
-        # matches when loading builder content.
-        should_resolve_from_source = bool(source_label) or (not path.exists() or not path.is_file())
+        # Prefer project source views when available so builder reloads are stable
+        # even when the local repo has a same-named pipeline path.
+        should_resolve_from_source = bool(source_views) or bool(source_label) or (not path.exists() or not path.is_file())
         if not should_resolve_from_source:
             source_label = ""
 
