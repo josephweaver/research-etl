@@ -12,6 +12,7 @@ projects:
   land_core:
     vars:
       basedir: "/data/land_core"
+      duckdb_path: "{basedir}/data/relations/land_core.duckdb"
       owner: "land-core"
       data_dictionary_repo_url: "https://github.com/land-core/landcore-data-catalog.git"
       states_of_interest: [ 'IL', 'MN', 'WI', 'OH', 'SD', 'IA', 'IN', 'MI', 'MO' ]
