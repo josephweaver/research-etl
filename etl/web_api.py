@@ -1012,6 +1012,38 @@ INDEX_HTML = """<!doctype html>
         logdir: "{workdir}/logs",
       };
     }
+    function _builderNameFromPipelinePath(raw){
+      const normalized = normalizeBuilderPipelineName(String(raw || "").trim());
+      if(!normalized) return "new_pipeline";
+      let stem = normalized.split("/").pop() || "new_pipeline";
+      stem = stem.replace(/\.ya?ml$/i, "");
+      stem = stem.replace(/[^A-Za-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+      return stem || "new_pipeline";
+    }
+    function defaultBuilderVars(nameHint){
+      const nm = _builderNameFromPipelinePath(nameHint);
+      return {
+        name: nm,
+        workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}",
+        logdir: "{workdir}/logs",
+      };
+    }
+    function ensureBuilderCreateDefaults(model, pipelineHint){
+      const out = model || {};
+      out.vars = (out.vars && typeof out.vars === "object") ? out.vars : {};
+      out.var_types = (out.var_types && typeof out.var_types === "object") ? out.var_types : {};
+      const defs = defaultBuilderVars(pipelineHint);
+      for(const [k, v] of Object.entries(defs)){
+        const cur = String(out.vars[k] ?? "").trim();
+        if(!cur){
+          out.vars[k] = v;
+        }
+      }
+      out.var_types.name = _builderCanonicalType(out.var_types.name || "string");
+      out.var_types.workdir = _builderCanonicalType(out.var_types.workdir || "path");
+      out.var_types.logdir = _builderCanonicalType(out.var_types.logdir || "path");
+      return out;
+    }
     function ensureBuilderDefaultDirs(model){
       const out = model || {};
       out.vars = (out.vars && typeof out.vars === "object") ? out.vars : {};
@@ -3180,6 +3212,26 @@ INDEX_HTML = """<!doctype html>
     }
     function enterBuilderCreateMode(){
       builderCreateMode = true;
+      const projectSel = document.getElementById("b_project_id");
+      const pathInput = document.getElementById("b_pipeline_path");
+      const selectedProjectId = String(projectSel && projectSel.value ? projectSel.value : "").trim();
+      const pathHint = String(pathInput && pathInput.value ? pathInput.value : "").trim();
+      builderModel = normalizeBuilderModelPlugins(
+        ensureBuilderCreateDefaults(
+          {
+            project_id: selectedProjectId,
+            vars: {},
+            var_types: {},
+            dirs: {},
+            requires_pipelines: [],
+            steps: [],
+          },
+          pathHint,
+        )
+      );
+      builderRunSeed = null;
+      renderBuilderModel();
+      syncYamlPreview();
       renderBuilderCreateMode();
       const input = document.getElementById("b_pipeline_path");
       if(input){
@@ -3544,6 +3596,8 @@ INDEX_HTML = """<!doctype html>
         return;
       }
       msg.textContent = "Creating pipeline...";
+      builderModel = normalizeBuilderModelPlugins(ensureBuilderCreateDefaults(builderModel, pipeline));
+      syncYamlPreview();
       const payload = builderPayload();
       const sourceSel = document.getElementById("b_pipeline_source");
       const pipelineSource = String(sourceSel && sourceSel.value ? sourceSel.value : builderSelectedPipelineSource).trim();
