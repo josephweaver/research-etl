@@ -3581,31 +3581,6 @@ INDEX_HTML = """<!doctype html>
 
       builderPipelineRunning = true;
       renderBuilderPipelineStatus();
-      msg.textContent = "Saving draft before run...";
-      const encoded = encodeURIComponent(payload.pipeline);
-      const update = await fetch(`/api/pipelines/${encoded}`, {
-        method:"PUT",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({
-          yaml_text: payload.yaml_text,
-          project_id: payload.project_id || "",
-          pipeline_source: payload.pipeline_source || "",
-        }),
-      });
-      if(update.status === 404){
-        builderPipelineRunState = "failed";
-        builderPipelineRunning = false;
-        renderBuilderPipelineStatus();
-        msg.textContent = "Pipeline does not exist yet. Click Create first.";
-        return;
-      } else if(!update.ok){
-        builderPipelineRunState = "failed";
-        builderPipelineRunning = false;
-        renderBuilderPipelineStatus();
-        msg.textContent = await readMessage(update);
-        return;
-      }
-
       msg.textContent = "Validating draft...";
       const validateRes = await fetch(`/api/builder/validate`, {
         method:"POST",
