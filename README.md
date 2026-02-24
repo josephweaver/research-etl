@@ -122,7 +122,7 @@ A lightweight ETL tool to construct new pipelines from modular Python "plugin" s
   - better archive path/glob handling,
   - optional selective extraction via `include_glob`.
 - Added transformation plugins:
-  - `file_move_regex.py` (move regex-matched files while preserving relative subdirectories),
+  - `file_copy_regex.py` (copy regex-matched files while preserving relative subdirectories; optional source delete on success),
   - `file_delete_regex.py` (delete regex-matched files with optional empty-directory cleanup).
 
 ### Runtime note (Windows)
@@ -377,15 +377,15 @@ steps:
 - unzip.py
 - project_raster.py - projects a file to a given EPSG
 - slice_raster.py - cuts the raster image into polygons
-- file_move_regex.py - move files by regex from a source tree to a destination while preserving relative subdirectories
+- file_copy_regex.py - copy files by regex from a source tree to a destination while preserving relative subdirectories (optional delete source on success)
 - file_delete_regex.py - delete files by regex under a source tree (optionally prune empty directories)
 
 Example:
 
 ```yaml
 steps:
-  - name: move_tifs
-    plugin: file_move_regex.py
+  - name: copy_tifs
+    plugin: file_copy_regex.py
     args:
       src: ".out/data/yanroy/unzip"
       dst: ".out/data/yanroy/unverified"
@@ -393,6 +393,7 @@ steps:
       match_on: "relative_path"   # relative_path | filename | absolute_path
       flags: "i"                  # regex flags: i, m, s
       overwrite: false
+      delete_source_on_success: false
 ```
 
 Delete example:

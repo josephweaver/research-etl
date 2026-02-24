@@ -13,19 +13,21 @@ from typing import List
 
 
 meta = {
-    "name": "file_move_regex",
-    "version": "0.1.0",
-    "description": "Move files under a source tree when relative paths match a regex; preserve subdirectories.",
+    "name": "file_copy_regex",
+    "version": "0.2.0",
+    "description": "Copy files under a source tree when relative paths match a regex; preserve subdirectories.",
     "inputs": [],
     "outputs": [
         "source_dir",
         "dest_dir",
         "pattern",
         "matched_count",
-        "moved_count",
+        "copied_count",
+        "deleted_source_count",
         "skipped_existing_count",
         "matched_files",
-        "moved_files",
+        "copied_files",
+        "deleted_source_files",
         "skipped_existing",
     ],
     "params": {
@@ -35,6 +37,7 @@ meta = {
         "flags": {"type": "str", "default": "i"},
         "match_on": {"type": "str", "default": "relative_path"},
         "overwrite": {"type": "bool", "default": False},
+        "delete_source_on_success": {"type": "bool", "default": False},
         "dry_run": {"type": "bool", "default": False},
         "verbose": {"type": "bool", "default": False},
     },
@@ -117,16 +120,19 @@ def run(args, ctx):
     flags = _regex_flags(str(args.get("flags") or "i"))
     regex = re.compile(pattern, flags=flags)
     overwrite = bool(args.get("overwrite", False))
+    delete_source_on_success = bool(args.get("delete_source_on_success", False))
     dry_run = bool(args.get("dry_run", False))
     verbose = bool(args.get("verbose", False))
     match_on = str(args.get("match_on") or "relative_path")
     ctx.log(
-        f"[file_move_regex] start src={src_root.resolve().as_posix()} dst={dst_root.resolve().as_posix()} "
-        f"pattern={pattern!r} dry_run={dry_run} overwrite={overwrite}"
+        f"[file_copy_regex] start src={src_root.resolve().as_posix()} dst={dst_root.resolve().as_posix()} "
+        f"pattern={pattern!r} dry_run={dry_run} overwrite={overwrite} "
+        f"delete_source_on_success={delete_source_on_success}"
     )
 
     matched_files: List[str] = []
-    moved_files: List[str] = []
+    copied_files: List[str] = []
+    deleted_source_files: List[str] = []
     skipped_existing: List[str] = []
 
     files = sorted(p for p in src_root.rglob("*") if p.is_file())
@@ -144,24 +150,30 @@ def run(args, ctx):
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists() and overwrite:
                 target.unlink()
-            shutil.move(str(src_file), str(target))
-            _remove_empty_parents(src_file.parent, src_root)
-        moved_files.append(rel.as_posix())
+            shutil.copy2(str(src_file), str(target))
+            if delete_source_on_success:
+                src_file.unlink()
+                _remove_empty_parents(src_file.parent, src_root)
+                deleted_source_files.append(rel.as_posix())
+        copied_files.append(rel.as_posix())
 
     ctx.log(
-        f"[file_move_regex] matched={len(matched_files)} moved={len(moved_files)} "
+        f"[file_copy_regex] matched={len(matched_files)} copied={len(copied_files)} "
+        f"deleted_source={len(deleted_source_files)} "
         f"skipped_existing={len(skipped_existing)} pattern={pattern!r}"
     )
-    if verbose and moved_files:
-        ctx.log(f"[file_move_regex] moved_preview={moved_files[:10]}")
+    if verbose and copied_files:
+        ctx.log(f"[file_copy_regex] copied_preview={copied_files[:10]}")
     return {
         "source_dir": src_root.resolve().as_posix(),
         "dest_dir": dst_root.resolve().as_posix(),
         "pattern": pattern,
         "matched_count": len(matched_files),
-        "moved_count": len(moved_files),
+        "copied_count": len(copied_files),
+        "deleted_source_count": len(deleted_source_files),
         "skipped_existing_count": len(skipped_existing),
         "matched_files": matched_files,
-        "moved_files": moved_files,
+        "copied_files": copied_files,
+        "deleted_source_files": deleted_source_files,
         "skipped_existing": skipped_existing,
     }

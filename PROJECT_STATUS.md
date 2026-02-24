@@ -52,7 +52,7 @@
   - improved archive discovery for exact-path and glob inputs
   - improved failure diagnostics in step logs (missing `7z`, command stderr/stdout)
 - New filesystem transform plugins:
-  - `plugins/file_move_regex.py`
+  - `plugins/file_copy_regex.py`
   - `plugins/file_delete_regex.py`
 - New orchestration/util plugins:
   - `plugins/combine_files.py` (csv/json/yaml/xml/text merge)
@@ -193,7 +193,7 @@
   - `tests/test_web_api.py -k "builder_namespace or builder_test_step"` -> `10 passed`
   - `tests/test_pipeline_resolution.py tests/test_runner_sys_vars.py` -> `18 passed`
   - `tests/test_plugin_archive_extract.py` -> passed
-  - `tests/test_plugin_file_move_regex.py` -> passed
+  - `tests/test_plugin_file_copy_regex.py` -> passed
   - `tests/test_plugin_file_delete_regex.py` -> passed
   - additional targeted resolver/workdir/logging suites passed during this update cycle.
   - New plugin tests added: `tests/test_plugin_geo_vector_filter.py` (attribute filter behavior and validation).
