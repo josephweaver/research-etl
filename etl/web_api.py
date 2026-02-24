@@ -419,6 +419,16 @@ INDEX_HTML = """<!doctype html>
     .combo-picker.open .combo-dropdown { display:block; }
     .step-plugin-picker { flex:1 1 460px; min-width:280px; max-width:700px; }
     .step-plugin-picker .combo-dropdown { max-height:260px; overflow:auto; }
+    #builder_panel .controls > input:not([type]),
+    #builder_panel .controls > input[type="text"],
+    #builder_panel .controls > input[type="number"] {
+      flex: 1 1 260px;
+      min-width: 220px;
+    }
+    #builder_panel .controls > .combo-picker {
+      flex: 1 1 520px;
+      max-width: none;
+    }
     .builder-step-plugin-tree { max-height:232px; overflow:auto; }
     #b_pipeline_tree { max-height:260px; overflow:auto; }
     #b_pipeline_tree .jstree-themeicon.new-pipeline-icon {
