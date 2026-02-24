@@ -112,6 +112,34 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     return bool(default)
 
 
+def _parse_step_indices(value: Any, step_count: int) -> list[int]:
+    if value is None or value == "":
+        return []
+    raw_items: list[Any]
+    if isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = [x.strip() for x in str(value).replace(";", ",").split(",")]
+    out: list[int] = []
+    seen: set[int] = set()
+    for raw in raw_items:
+        text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            idx = int(text)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid step index in context.step_indices: {text}") from exc
+        if idx < 0 or idx >= int(step_count):
+            raise RuntimeError(f"Step index out of range in context.step_indices: {idx} (step_count={step_count})")
+        if idx in seen:
+            continue
+        seen.add(idx)
+        out.append(idx)
+    out.sort()
+    return out
+
+
 class HpccDirectExecutor(Executor):
     name = "hpcc_direct"
 
@@ -464,7 +492,8 @@ class HpccDirectExecutor(Executor):
             )
         except PipelineError as exc:
             raise RuntimeError(f"Pipeline parse failed: {exc}") from exc
-        step_indices = ",".join(str(i) for i in range(len(pipeline.steps)))
+        requested_indices = _parse_step_indices(context.get("step_indices"), len(pipeline.steps))
+        step_indices = ",".join(str(i) for i in (requested_indices or list(range(len(pipeline.steps)))))
         if not step_indices:
             _LOG.info("hpcc_direct no steps to execute run_id=%s", run_id)
             self._statuses[run_id] = RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="No steps to run.")

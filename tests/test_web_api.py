@@ -1797,7 +1797,7 @@ def test_web_api_builder_test_step(monkeypatch):
     monkeypatch.setattr(
         web_api,
         "_parse_pipeline_from_yaml_text",
-        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None, **_k: Pipeline(
             dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
             steps=[Step(name="s1", script="echo.py")],
         ),
@@ -1868,7 +1868,7 @@ def test_web_api_builder_test_step_returns_last_log_line(monkeypatch, tmp_path: 
     monkeypatch.setattr(
         web_api,
         "_parse_pipeline_from_yaml_text",
-        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None, **_k: Pipeline(
             dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
             steps=[Step(name="s1", script="echo.py")],
         ),
@@ -2019,7 +2019,7 @@ def test_web_api_builder_test_step_uses_hpcc_direct_executor_when_env_requests_i
     monkeypatch.setattr(
         web_api,
         "_parse_pipeline_from_yaml_text",
-        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None, **_k: Pipeline(
             dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
             steps=[Step(name="s1", script="echo.py")],
         ),
@@ -2062,7 +2062,7 @@ def test_web_api_builder_test_step_remote_preserves_foreach_fields(monkeypatch):
     monkeypatch.setattr(
         web_api,
         "_parse_pipeline_from_yaml_text",
-        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None: Pipeline(
+        lambda yaml_text, global_config_path=None, environments_config_path=None, env_name=None, **_k: Pipeline(
             dirs={"workdir": ".runs/work", "logdir": ".runs/log"},
             vars={"years": [2018, 2019]},
             steps=[

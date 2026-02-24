@@ -186,6 +186,34 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     return bool(default)
 
 
+def _parse_step_indices(value: Any, step_count: int) -> list[int]:
+    if value is None or value == "":
+        return []
+    raw_items: list[Any]
+    if isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = [x.strip() for x in str(value).replace(";", ",").split(",")]
+    out: list[int] = []
+    seen: set[int] = set()
+    for raw in raw_items:
+        text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            idx = int(text)
+        except (TypeError, ValueError) as exc:
+            raise SlurmSubmitError(f"Invalid step index in context.step_indices: {text}") from exc
+        if idx < 0 or idx >= int(step_count):
+            raise SlurmSubmitError(f"Step index out of range in context.step_indices: {idx} (step_count={step_count})")
+        if idx in seen:
+            continue
+        seen.add(idx)
+        out.append(idx)
+    out.sort()
+    return out
+
+
 def _git_current_branch(repo_path: Path) -> Optional[str]:
     try:
         proc = subprocess.run(
@@ -644,6 +672,18 @@ class SlurmExecutor(Executor):
             context_vars=context.get("commandline_vars") or {},
         )
         batches = self._group_steps_with_indices(pipeline.steps)
+        requested_step_indices = _parse_step_indices(context.get("step_indices"), len(pipeline.steps))
+        if requested_step_indices:
+            wanted = set(requested_step_indices)
+            filtered_batches = []
+            for batch in batches:
+                kept = [pair for pair in batch if int(pair[0]) in wanted]
+                if kept:
+                    filtered_batches.append(kept)
+            batches = filtered_batches
+        if not batches:
+            self._statuses[run_id] = RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="No selected steps to run.")
+            return SubmissionResult(run_id=run_id, message="No selected steps to run.")
         submission_records = []
         submitted_step_jobs = 0
         prev_jobid = None

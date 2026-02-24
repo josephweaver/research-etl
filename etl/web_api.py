@@ -8180,12 +8180,105 @@ def _execute_builder_step_test(payload: dict[str, Any]) -> dict[str, Any]:
 
     try:
         repo_root = Path(".").resolve()
+        run_id = run_id_seed or uuid.uuid4().hex
+        run_started_at = run_started_seed or (datetime.utcnow().isoformat() + "Z")
+        pipeline_ref = str(payload.get("pipeline") or pipeline_hint or "").strip()
+        resolved_pipeline_path: Optional[Path] = None
+        pipeline_remote_hint = ""
+        if pipeline_ref:
+            resolved_pipeline_path = _resolve_project_writable_pipeline_path(
+                pipeline=pipeline_ref,
+                project_id=normalize_project_id(
+                    str(payload.get("project_id") or getattr(pipeline, "project_id", "") or "").strip() or None
+                ),
+                projects_config=str(payload.get("projects_config") or "").strip() or None,
+                pipeline_source=str(payload.get("pipeline_source") or "").strip() or None,
+            )
+            if not resolved_pipeline_path.exists():
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Pipeline file not found for remote step test: {resolved_pipeline_path}",
+                )
+            pipeline_remote_hint = (
+                _infer_external_pipeline_remote_hint(
+                    pipeline_path=resolved_pipeline_path,
+                    project_vars=project_vars,
+                    repo_root=repo_root,
+                )
+                or ""
+            )
+
+        # Preferred remote path: submit the real persisted pipeline with a selected step index.
+        # This avoids temp local files that are not present in remote git checkouts.
+        if resolved_pipeline_path is not None:
+            if executor_name == "hpcc_direct":
+                ex = HpccDirectExecutor(
+                    env_config=env_vars,
+                    repo_root=repo_root,
+                    plugins_dir=plugins_dir,
+                    workdir=workdir,
+                    global_config=global_config_path,
+                    projects_config=projects_config_path,
+                    environments_config=environments_config_path,
+                    env_name=env_name,
+                    dry_run=dry_run,
+                    verbose=_parse_bool(payload.get("verbose"), default=False),
+                )
+            elif executor_name == "slurm":
+                ex = SlurmExecutor(
+                    env_config=env_vars,
+                    repo_root=repo_root,
+                    plugins_dir=plugins_dir,
+                    workdir=workdir,
+                    global_config=global_config_path,
+                    projects_config=projects_config_path,
+                    environments_config=environments_config_path,
+                    env_name=env_name,
+                    dry_run=dry_run,
+                    verbose=_parse_bool(payload.get("verbose"), default=False),
+                    require_clean_git=not allow_dirty_git,
+                )
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported executor for step test: {executor_name}")
+
+            submit = ex.submit(
+                str(resolved_pipeline_path),
+                context={
+                    "run_id": run_id,
+                    "run_started_at": run_started_at,
+                    "execution_env": env_vars,
+                    "global_vars": global_vars,
+                    "project_vars": project_vars,
+                    "allow_dirty_git": allow_dirty_git,
+                    "project_id": normalize_project_id(
+                        str(payload.get("project_id") or getattr(pipeline, "project_id", "") or "").strip() or None
+                    ),
+                    "pipeline_remote_hint": pipeline_remote_hint,
+                    "step_indices": [int(target_step_index if target_step_index is not None else 0)],
+                },
+            )
+            st = ex.status(submit.run_id)
+            state = st.state.value if hasattr(st.state, "value") else str(st.state)
+            success = str(state).lower() in {"succeeded", "success"}
+            return {
+                "run_id": submit.run_id,
+                "artifact_dir": None,
+                "step_name": target_step.name,
+                "step_index": target_step_index,
+                "executor": executor_name,
+                "state": state,
+                "success": success,
+                "skipped": False,
+                "error": None if success else (st.message or submit.message or f"executor state={state}"),
+                "outputs": {},
+                "attempts": [],
+                "last_log_line": st.message or submit.message or "",
+            }
+
         temp_pipeline_dir = (repo_root / "pipelines" / ".builder_step_tests").resolve()
         temp_pipeline_dir.mkdir(parents=True, exist_ok=True)
         temp_pipeline_path = temp_pipeline_dir / f"step_test_{uuid.uuid4().hex}.yml"
         temp_pipeline_path.write_text(yaml.safe_dump(temp_pipeline_doc, sort_keys=False), encoding="utf-8")
-        run_id = run_id_seed or uuid.uuid4().hex
-        run_started_at = run_started_seed or (datetime.utcnow().isoformat() + "Z")
         if executor_name == "hpcc_direct":
             ex = HpccDirectExecutor(
                 env_config=env_vars,

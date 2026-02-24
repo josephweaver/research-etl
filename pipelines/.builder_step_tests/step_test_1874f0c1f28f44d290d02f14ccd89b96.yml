@@ -1,0 +1,11 @@
+project_id: land_core
+vars:
+  name: sample_multistep
+  workdir: /mnt/scratch/weave151/work/sample_multistep/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}
+  logdir: /mnt/scratch/weave151/work/sample_multistep/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}/logs
+dirs:
+  workdir: /mnt/scratch/weave151/work/sample_multistep/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}
+  logdir: /mnt/scratch/weave151/work/sample_multistep/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}/logs
+steps:
+- name: step_0
+  script: echo 'message=hello 1'
