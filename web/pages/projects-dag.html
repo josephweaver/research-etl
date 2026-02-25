@@ -1,0 +1,301 @@
+﻿<!doctype html>
+<html lang="en" data-page="projects-dag">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Research ETL UI</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jstree@3.3.16/dist/themes/default/style.min.css" />
+  <link rel="stylesheet" href="/web/assets/css/app.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav class="topnav">
+      <div class="links">
+        <a id="nav_ops" href="/">Operations</a>
+        <a id="nav_pipelines" href="/pipelines">Pipelines</a>
+        <a id="nav_datasets" href="/datasets">Datasets</a>
+        <a id="nav_plugins" href="/plugins">Plugins</a>
+        <a id="nav_project_dag" href="/project-dag">Project DAG</a>
+        <a id="nav_new_pipeline" href="/pipelines/new">New Pipeline</a>
+        <a id="nav_context_back" class="context" href="#" style="display:none;">Back</a>
+      </div>
+      <div class="jump">
+        <div class="who">
+          <label for="nav_user">User</label>
+          <select id="nav_user">
+            <option value="admin">admin</option>
+            <option value="land-core">land-core</option>
+            <option value="gee-lee">gee-lee</option>
+          </select>
+          <label for="nav_project">Project</label>
+          <select id="nav_project">
+            <option value="">project (all)</option>
+          </select>
+          <label for="nav_env">Env</label>
+          <select id="nav_env">
+            <option value="">env (optional)</option>
+          </select>
+        </div>
+        <input id="nav_live_id" placeholder="run id for live view" />
+        <button id="btn_nav_live">Live</button>
+      </div>
+    </nav>
+    <input id="b_file_picker" type="file" accept=".yml,.yaml" style="display:none;" />
+    <div class="head">
+      <h1 id="page_title">Research ETL Runs</h1>
+      <div class="muted">Auto-refresh every 12s</div>
+    </div>
+    <div class="grid">
+      <section class="panel">
+        <h3 id="left_title">Recent Runs</h3>
+        <div id="ops_panel">
+          <div class="controls">
+            <button id="btn_ops_refresh">Refresh Ops</button>
+            <span class="muted">Failed/running triage inbox</span>
+          </div>
+          <div class="filesplit">
+            <div class="filetree">
+              <div class="muted"><b>Failed Runs</b></div>
+              <div id="ops_failed" class="muted">Loading...</div>
+            </div>
+            <div class="viewer">
+              <div class="muted"><b>Running Runs</b></div>
+              <div id="ops_running" class="muted">Loading...</div>
+            </div>
+          </div>
+        </div>
+        <div id="pipelines_panel" style="display:none;">
+          <div class="controls">
+            <input id="p_q" placeholder="Search pipeline path" />
+            <button id="btn_pipelines">Refresh Pipelines</button>
+          </div>
+          <table>
+            <thead><tr><th>Pipeline</th><th>Last</th><th>Started</th><th>Runs</th><th>Failure</th></tr></thead>
+            <tbody id="pipelines"></tbody>
+          </table>
+        </div>
+        <div class="controls">
+          <select id="f_status">
+            <option value="">All status</option>
+            <option value="queued">queued</option>
+            <option value="running">running</option>
+            <option value="succeeded">succeeded</option>
+            <option value="failed">failed</option>
+          </select>
+          <select id="f_executor">
+            <option value="">All executors</option>
+            <option value="local">local</option>
+            <option value="slurm">slurm</option>
+          </select>
+          <input id="f_q" placeholder="Search run_id/pipeline" />
+          <button id="btn_apply">Apply</button>
+        </div>
+        <table>
+          <thead><tr><th>Run ID</th><th>Status</th><th>Started</th><th>Pipeline</th></tr></thead>
+          <tbody id="runs"></tbody>
+        </table>
+      </section>
+      <section class="panel">
+        <h3 id="right_title">Run Detail</h3>
+        <div id="pipeline_summary" class="muted" style="display:none;"></div>
+        <div id="pipeline_validations" class="muted" style="display:none;"></div>
+        <div id="plugins_controls" class="controls" style="display:none;">
+          <select id="plugins_env">
+            <option value="">env (optional)</option>
+          </select>
+          <button id="btn_plugins_refresh">Refresh Plugins</button>
+          <span id="plugins_msg" class="muted"></span>
+        </div>
+        <div id="builder_panel" style="display:none;">
+          <div class="builder-surface" id="builder_surface">
+            <div class="builder-card" id="builder_preview_card">
+              <div class="builder-head">
+                <h4>Pipeline Config</h4>
+                <span id="builder_pipeline_status" class="status-pill not-run">not run</span>
+              </div>
+              <div class="controls">
+                <select id="b_pipeline_source">
+                  <option value="">repo (auto)</option>
+                </select>
+                <div id="b_pipeline_combo" class="combo-picker">
+                  <input id="b_pipeline_path" placeholder="pipeline path within selected repo (e.g. yanroy/download.yml)" autocomplete="off" spellcheck="false" />
+                  <datalist id="b_pipeline_path_suggestions"></datalist>
+                  <div class="combo-dropdown">
+                    <div id="b_pipeline_tree"></div>
+                  </div>
+                </div>
+                <button id="btn_builder_create" style="display:none;">Create</button>
+                <button id="btn_builder_import_local">Import Local</button>
+                <button id="btn_builder_save">Save Draft</button>
+                <button id="btn_builder_generate">Generate</button>
+                <button id="btn_builder_validate">Validate Draft</button>
+                <button id="btn_builder_run" class="spin-btn"><span>Run Pipeline</span><span class="spin"></span></button>
+                <button id="btn_builder_publish">Publish to Main</button>
+                <button id="btn_builder_terminate">Terminate Run</button>
+                <span id="builder_msg" class="muted"></span>
+              </div>
+              <div class="controls">
+                <input id="b_intent" placeholder="intent for AI draft generation" />
+                <input id="b_constraints" placeholder="constraints (optional)" />
+              </div>
+              <div class="controls">
+                <select id="b_project_id">
+                  <option value="">project (optional)</option>
+                </select>
+                <select id="b_run_mode">
+                  <option value="draft">Draft Mode (workspace)</option>
+                  <option value="repro">Repro Mode (auto/git-pinned)</option>
+                </select>
+                <label class="muted"><input type="checkbox" id="b_dry_run" /> dry_run</label>
+                <label class="muted"><input type="checkbox" id="b_verbose" checked /> verbose</label>
+                <label class="muted"><input type="checkbox" id="b_git_sync" /> git_sync</label>
+                <input id="b_git_branch" placeholder="git branch (auto-create if empty)" />
+                <span id="b_git_repo_status" class="muted"></span>
+              </div>
+              <div class="controls">
+                <input id="b_max_retries" placeholder="max_retries (default: 0)" />
+                <input id="b_retry_delay" placeholder="retry_delay_seconds (default: 0.0)" />
+              </div>
+              <div class="builder-head">
+                <h4>Requires Pipelines</h4>
+                <button id="btn_builder_add_req">Add Require</button>
+              </div>
+              <div id="b_requires" class="builder-list"></div>
+              <div class="builder-head">
+                <h4>Pipeline Vars</h4>
+                <button id="btn_builder_add_var">Add Var</button>
+              </div>
+              <div id="b_vars" class="builder-list"></div>
+              <div class="builder-head">
+                <h4>Directories (Deprecated)</h4>
+                <span class="muted">Use vars `workdir`/`logdir` with type `path`.</span>
+              </div>
+              <div id="b_dirs" class="builder-list" style="display:none;"></div>
+              <div class="builder-head">
+                <h4>Steps</h4>
+                <button id="btn_builder_add_step">Add Step</button>
+              </div>
+              <div id="b_steps" class="builder-list"></div>
+            </div>
+            <div class="builder-card">
+              <div class="builder-head">
+                <h4>YAML Preview / Builder Output</h4>
+                <button id="btn_builder_toggle_preview" type="button">Expand</button>
+              </div>
+              <div id="builder_preview_body">
+                <section class="builder-subsection" id="builder_section_yaml">
+                  <div class="builder-subsection-head">
+                    <h4>YAML Preview (read-only)</h4>
+                    <button id="btn_builder_toggle_yaml" type="button">Collapse</button>
+                  </div>
+                  <div class="builder-subsection-body">
+                    <textarea id="b_yaml" readonly style="width:100%; min-height:420px; font-family:Consolas,monospace; font-size:12px;"></textarea>
+                  </div>
+                </section>
+                <section class="builder-subsection" id="builder_section_output">
+                  <div class="builder-subsection-head">
+                    <h4>Builder Output</h4>
+                    <button id="btn_builder_toggle_output" type="button">Collapse</button>
+                  </div>
+                  <div class="builder-subsection-body">
+                    <pre id="builder_output">No draft action yet.</pre>
+                  </div>
+                </section>
+                <section class="builder-subsection" id="builder_section_vars">
+                  <div class="builder-subsection-head">
+                    <h4>Variable Tracker</h4>
+                    <button id="btn_builder_toggle_vars" type="button">Collapse</button>
+                  </div>
+                  <div class="builder-subsection-body">
+                    <div id="builder_namespace_tree"></div>
+                    <pre id="builder_namespace">Loading...</pre>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="project_dag_page_panel" style="display:none;">
+          <div class="builder-subsection">
+            <div class="builder-subsection-head">
+              <h4>Project DAG</h4>
+              <button id="btn_project_dag_refresh" type="button">Refresh DAG</button>
+            </div>
+            <div class="builder-subsection-body">
+              <div class="builder-dag-controls">
+                <span id="project_dag_msg" class="muted">Select a project to view dependency DAG.</span>
+              </div>
+              <div class="builder-dag-canvas">
+                <svg id="project_dag_svg" viewBox="0 0 960 320" preserveAspectRatio="xMinYMin meet"></svg>
+              </div>
+              <div class="dag-legend">
+                <span class="status-pill successful">succeeded</span>
+                <span class="status-pill running">running</span>
+                <span class="status-pill queued">queued</span>
+                <span class="status-pill failed">failed</span>
+                <span class="status-pill not-run">not-run</span>
+                <span class="status-pill stale">stale</span>
+                <span class="status-pill missing">missing</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="run_actions_panel">
+        <div class="controls">
+          <input id="a_pipeline" placeholder="pipeline path (e.g. pipelines/sample.yml)" />
+          <select id="a_executor">
+            <option value="local">local</option>
+            <option value="slurm">slurm</option>
+            <option value="hpcc_direct">hpcc_direct</option>
+          </select>
+          <button id="btn_validate">Validate</button>
+          <button id="btn_run">Run</button>
+          <span id="action_msg" class="muted"></span>
+        </div>
+        <div class="controls">
+          <input id="a_global_config" placeholder="global_config (optional)" />
+          <input id="a_environments_config" placeholder="environments_config (optional)" />
+          <input id="a_env" placeholder="env name (when environments_config set)" />
+        </div>
+        <div class="controls">
+          <input id="a_plugins_dir" placeholder="plugins_dir (default: plugins)" />
+          <input id="a_workdir" placeholder="workdir (default: .runs)" />
+          <input id="a_max_retries" placeholder="max_retries (optional)" />
+          <input id="a_retry_delay" placeholder="retry_delay_seconds (optional)" />
+          <label class="muted"><input type="checkbox" id="a_dry_run" /> dry_run</label>
+          <label class="muted"><input type="checkbox" id="a_verbose" /> verbose (slurm/hpcc_direct)</label>
+        </div>
+        <div class="controls">
+          <button id="btn_resume">Resume Selected</button>
+          <button id="btn_stop">Stop Selected</button>
+          <span id="resume_msg" class="muted"></span>
+        </div>
+        <div class="controls">
+          <input id="r_plugins_dir" placeholder="plugins_dir (default: plugins)" />
+          <input id="r_workdir" placeholder="workdir (default: .runs)" />
+        </div>
+        <div class="controls">
+          <input id="r_max_retries" placeholder="max_retries (default: 0)" />
+          <input id="r_retry_delay" placeholder="retry_delay_seconds (default: 0.0)" />
+          <select id="r_executor">
+            <option value="">executor override (default: original)</option>
+            <option value="local">local</option>
+            <option value="slurm">slurm</option>
+            <option value="hpcc_direct">hpcc_direct</option>
+          </select>
+        </div>
+        <div id="detail" class="muted">Select a run to view details.</div>
+        </div>
+      </section>
+    </div>
+  </div>
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jstree@3.3.16/dist/jstree.min.js"></script>
+  <script src="/web/assets/js/app.js"></script>
+  <script src="/web/assets/js/boot-common.js"></script>
+  <script src="/web/assets/js/feature-project-dag.js"></script>
+</body>
+</html>
+
+
+
