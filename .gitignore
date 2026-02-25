@@ -11,3 +11,4 @@ dist/
 /.runs_dep_demo
 .pipeline_assets_cache
 /.tmp
+{basedir}/logs/bootstrap/web.log
