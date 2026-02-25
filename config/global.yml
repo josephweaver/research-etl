@@ -1,10 +1,10 @@
-basedir: .out
-workdir: "{basedir}/work"
+basedir: ../.out
+workdir: "../.out/work"
 bindir: .
-logdir: "{basedir}/logs"
-datadir: "{basedir}/data"
-tmpdir: "{basedir}/tmp"
-artifactsdir: "{basedir}/artifacts"
+logdir: "../.out/logs"
+datadir: "../.out/data"
+tmpdir: "../.out/tmp"
+artifactsdir: "../.out/artifacts"
 resolve_max_passes: 10
 
 

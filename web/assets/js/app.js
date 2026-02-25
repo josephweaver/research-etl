@@ -839,7 +839,7 @@
           if ((st.when || "").trim()) lines.push(`    when: ${_yamlEsc(st.when)}`);
         }
       }
-      return lines.join("\\n") + "\\n";
+      return lines.join("\n") + "\n";
     }
     function syncYamlPreview(){
       const area = document.getElementById("b_yaml");
