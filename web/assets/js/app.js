@@ -772,15 +772,6 @@
           _yamlPushTypedKey(lines, "  ", k, vars[k], varTypes[k]);
         }
       }
-      // Builder now derives directory contract from typed vars.
-      // `workdir`/`logdir` live in vars (typically type=path).
-      lines.push("dirs:");
-      const varsWorkdir = String(vars.workdir ?? "").trim();
-      const varsLogdir = String(vars.logdir ?? "").trim();
-      const derivedWorkdir = varsWorkdir || "{env.workdir}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}";
-      const derivedLogdir = varsLogdir || "{workdir}/logs";
-      lines.push(`  workdir: ${_yamlEsc(derivedWorkdir)}`);
-      lines.push(`  logdir: ${_yamlEsc(derivedLogdir)}`);
       lines.push("steps:");
       const steps = m.steps || [];
       if(!steps.length){
