@@ -47,7 +47,12 @@ def register_datasets_args(
     p_datasets_store.add_argument("--stage", default="staging", choices=["staging", "published"], help="Storage stage")
     p_datasets_store.add_argument("--version", default=None, help="Version label (default generated UTC label)")
     p_datasets_store.add_argument("--environment", default=None, help="Target environment name")
-    p_datasets_store.add_argument("--runtime-context", default="local", help="Current runtime context (local|slurm)")
+    p_datasets_store.add_argument(
+        "--runtime-context",
+        dest="runtime_mode",
+        default=None,
+        help="Dataset routing runtime mode override (local|slurm). Defaults from selected env/executor.",
+    )
     p_datasets_store.add_argument("--location-alias", default=None, help="Named data location alias (for example LC_GDrive)")
     p_datasets_store.add_argument("--locations-config", default=None, help="Path to data locations config YAML")
     p_datasets_store.add_argument("--location-type", default=None, help="Target location type (policy key)")
@@ -64,7 +69,12 @@ def register_datasets_args(
     p_datasets_get.add_argument("dataset_id", help="Dataset id to retrieve")
     p_datasets_get.add_argument("--version", default="latest", help="Version label or 'latest'")
     p_datasets_get.add_argument("--environment", default=None, help="Preferred source environment")
-    p_datasets_get.add_argument("--runtime-context", default="local", help="Current runtime context (local|slurm)")
+    p_datasets_get.add_argument(
+        "--runtime-context",
+        dest="runtime_mode",
+        default=None,
+        help="Dataset routing runtime mode override (local|slurm). Defaults from selected env/executor.",
+    )
     p_datasets_get.add_argument("--location-alias", default=None, help="Named data location alias (for example LC_GDrive)")
     p_datasets_get.add_argument("--locations-config", default=None, help="Path to data locations config YAML")
     p_datasets_get.add_argument("--location-type", default=None, help="Optional location type filter")
@@ -97,6 +107,19 @@ def register_datasets_args(
     )
     p_datasets_dict_pr.add_argument("--dry-run", action="store_true", help="Show commands without writing/pushing")
     p_datasets_dict_pr.set_defaults(func=cmd_datasets_dictionary_pr)
+
+
+def _resolve_runtime_mode(args: argparse.Namespace) -> str:
+    explicit = str(getattr(args, "runtime_mode", "") or "").strip().lower()
+    if explicit:
+        return explicit
+    ctx = getattr(args, "runtime_context", None)
+    if ctx is None:
+        return "local"
+    executor = str(getattr(ctx, "selected_executor", "") or "").strip().lower()
+    if executor in {"slurm", "hpcc_direct"}:
+        return "slurm"
+    return "local"
 
 
 def cmd_datasets_list(args: argparse.Namespace) -> int:
@@ -189,13 +212,14 @@ def cmd_datasets_store(args: argparse.Namespace) -> int:
     - return code: `0` on success, `1` on failure.
     """
     try:
+        runtime_mode = _resolve_runtime_mode(args)
         receipt = store_data(
             dataset_id=args.dataset_id,
             source_path=args.path,
             stage=args.stage,
             version_label=args.version,
             environment=args.environment,
-            runtime_context=args.runtime_context,
+            runtime_context=runtime_mode,
             location_alias=args.location_alias,
             locations_config_path=args.locations_config,
             location_type=args.location_type,
@@ -239,11 +263,12 @@ def cmd_datasets_get(args: argparse.Namespace) -> int:
     - return code: `0` on success, `1` on failure.
     """
     try:
+        runtime_mode = _resolve_runtime_mode(args)
         receipt = get_data(
             dataset_id=args.dataset_id,
             version=args.version,
             environment=args.environment,
-            runtime_context=args.runtime_context,
+            runtime_context=runtime_mode,
             location_alias=args.location_alias,
             locations_config_path=args.locations_config,
             location_type=args.location_type,

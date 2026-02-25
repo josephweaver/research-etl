@@ -1,0 +1,104 @@
+[2026-02-25T15:47:09Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T15:47:09Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T15:47:09Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T15:47:09Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T15:51:36Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T15:51:36Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T15:51:36Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T15:51:36Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T15:51:42Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T15:51:42Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T15:51:42Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T15:51:42Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T15:53:19Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T15:53:19Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T15:53:19Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T15:53:19Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T15:53:27Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T15:53:27Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T15:53:27Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T15:53:27Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:03:02Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:03:02Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:03:02Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:03:02Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:05:32Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:05:32Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:05:32Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:05:32Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:05:38Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:05:38Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:05:38Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:05:38Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:07:08Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:07:08Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:07:09Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:07:09Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:07:14Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:07:14Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:07:14Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:07:14Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:08:43Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:08:43Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:08:43Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:08:43Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:09:22Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:09:22Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:09:22Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:09:22Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:09:28Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:09:28Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:09:28Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:09:28Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:13:39Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:13:39Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:13:39Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:13:39Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:14:27Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:14:27Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:14:27Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:14:27Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:14:40Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:14:40Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:14:40Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:14:40Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:16:59Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:16:59Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:16:59Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:16:59Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:17:26Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:17:26Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:17:26Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:17:26Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:19:44Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:19:44Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:19:44Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:19:44Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:27:47Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:27:47Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:27:47Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:27:47Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T16:27:53Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T16:27:53Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T16:27:53Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T16:27:53Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T17:30:13Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T17:30:13Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T17:30:13Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T17:30:13Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T17:30:18Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T17:30:18Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T17:30:18Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T17:30:18Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T17:42:23Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T17:42:23Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T17:42:23Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T17:42:23Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T17:42:30Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T17:42:30Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T17:42:30Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T17:42:30Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log
+[2026-02-25T17:42:38Z] [INFO] [etl.web_api] Bootstrap context initialization started
+[2026-02-25T17:42:38Z] [INFO] [etl.web_api] Bootstrap context loaded env= executor= project_id=default
+[2026-02-25T17:42:38Z] [INFO] [etl.web_api] Variable catalog built max_passes=10 keys=16
+[2026-02-25T17:42:38Z] [INFO] [etl.web_api] Web bootstrap runtime context initialized log=C:/Joe Local Only/College/Research/etl/{basedir}/logs/bootstrap/web.log

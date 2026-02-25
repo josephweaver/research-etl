@@ -28,6 +28,7 @@ from etl.db_sync_queue import apply_tracking_queue
 from etl.entrypoint import guarded_entrypoint
 from etl.cli_parser import build_parser as build_cli_parser
 from etl.cli_cmd.common import emit_error_with_report
+from etl.runtime_context import RuntimeContextError, RuntimeContextRequest, build_runtime_context
 from etl.cli_cmd.run import cmd_run
 from etl.cli_cmd.datasets import (
     cmd_datasets_list,
@@ -97,6 +98,27 @@ def build_parser() -> argparse.ArgumentParser:
 def _main_impl(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args, unknown_args = parser.parse_known_args(argv)
+    try:
+        env_name = getattr(args, "env", None)
+        if str(getattr(args, "command", "") or "").strip() == "run" and not env_name:
+            env_name = "local"
+        runtime_context = build_runtime_context(
+            RuntimeContextRequest(
+                global_config=Path(args.global_config) if getattr(args, "global_config", None) else None,
+                projects_config=Path(args.projects_config) if getattr(args, "projects_config", None) else None,
+                environments_config=Path(args.environments_config) if getattr(args, "environments_config", None) else None,
+                env_name=str(env_name).strip() if env_name else None,
+                pipeline_path=Path(args.pipeline) if getattr(args, "pipeline", None) else None,
+                project_id=str(getattr(args, "project_id", "") or "").strip() or None,
+                commandline_var_entries=list(getattr(args, "var", []) or []),
+                bootstrap_label=f"cli-{str(getattr(args, 'command', 'cmd') or 'cmd')}",
+                logger_name="cli",
+            )
+        )
+        setattr(args, "runtime_context", runtime_context)
+    except RuntimeContextError as exc:
+        emit_error_with_report(f"Runtime context error: {exc}", exc, args)
+        return 1
     logger = configure_app_logger()
     if unknown_args:
         print(f"[etl][WARN] ignoring unknown arguments: {' '.join(str(x) for x in unknown_args)}")

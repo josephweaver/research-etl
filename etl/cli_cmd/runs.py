@@ -16,7 +16,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from etl.cli_cmd.common import CommandHandler
+from etl.cli_cmd.common import CommandHandler, resolve_workdir_from_solver
 from etl.tracking import find_run, load_runs
 
 
@@ -29,14 +29,32 @@ def register_runs_args(
     # CLI inputs: runs list/show options and positional run id for show.
     # CLI output: run summaries or a detailed single-run report.
     p_runs_list = runs_sub.add_parser("list", help="List recorded runs")
-    p_runs_list.add_argument("--store", default=".runs/runs.jsonl", help="Run record store path")
+    p_runs_list.add_argument("--store", default=None, help="Run record store path (default resolved from runtime context)")
     p_runs_list.add_argument("-n", "--num", type=int, default=10, help="Number of runs to show")
     p_runs_list.set_defaults(func=cmd_runs_list)
 
     p_runs_show = runs_sub.add_parser("show", help="Show details for a run")
     p_runs_show.add_argument("run_id", help="Run ID to show")
-    p_runs_show.add_argument("--store", default=".runs/runs.jsonl", help="Run record store path")
+    p_runs_show.add_argument("--store", default=None, help="Run record store path (default resolved from runtime context)")
     p_runs_show.set_defaults(func=cmd_runs_show)
+
+
+def _resolve_default_workdir(args: argparse.Namespace) -> str:
+    ctx = getattr(args, "runtime_context", None)
+    if ctx is None:
+        return ".runs"
+    try:
+        solver = ctx.solver("target")
+    except Exception:
+        return ".runs"
+    return resolve_workdir_from_solver(solver=solver, fallback=".runs")
+
+
+def _resolve_store_path(args: argparse.Namespace) -> Path:
+    explicit = str(getattr(args, "store", "") or "").strip()
+    if explicit:
+        return Path(explicit)
+    return Path(_resolve_default_workdir(args)) / "runs.jsonl"
 
 
 def cmd_runs_list(args: argparse.Namespace) -> int:
@@ -50,7 +68,7 @@ def cmd_runs_list(args: argparse.Namespace) -> int:
     - stdout: run summary lines.
     - return code: `0` (also when no records are found).
     """
-    records = load_runs(Path(args.store))
+    records = load_runs(_resolve_store_path(args))
     if not records:
         print("No run records found.")
         return 0
@@ -71,7 +89,7 @@ def cmd_runs_show(args: argparse.Namespace) -> int:
     - stderr: not-found message.
     - return code: `0` on success, `1` when run does not exist.
     """
-    rec = find_run(Path(args.store), args.run_id)
+    rec = find_run(_resolve_store_path(args), args.run_id)
     if not rec:
         print(f"Run not found: {args.run_id}", file=sys.stderr)
         return 1

@@ -14,7 +14,9 @@ High-level idea:
 
 import argparse
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict
 
 from etl.cli_cmd.common import CommandHandler
 from etl.config import ConfigError, load_global_config, resolve_global_config_path
@@ -26,6 +28,52 @@ from etl.projects import (
     resolve_project_id,
     resolve_projects_config_path,
 )
+from etl.variable_solver import VariableSolver
+
+
+@dataclass(frozen=True)
+class ValidateVariableContext:
+    """Solver-backed variable context used during validation parsing."""
+
+    solver: VariableSolver
+    parse_context_vars: Dict[str, Any]
+
+    def global_vars(self) -> Dict[str, Any]:
+        return dict(self.solver.get("global", {}, resolve=False) or {})
+
+    def env_vars(self) -> Dict[str, Any]:
+        return dict(self.solver.get("env", {}, resolve=False) or {})
+
+
+def _resolve_solver_max_passes(*, global_vars: Dict[str, Any], env_vars: Dict[str, Any], default: int = 20) -> int:
+    raw = env_vars.get("resolve_max_passes", global_vars.get("resolve_max_passes", default))
+    try:
+        value = int(raw)
+    except Exception:
+        value = default
+    return max(1, min(100, value))
+
+
+def _build_validate_variable_context(
+    *,
+    base_solver: VariableSolver | None,
+    global_vars: Dict[str, Any],
+    env_vars: Dict[str, Any],
+    parse_context_vars: Dict[str, Any],
+) -> ValidateVariableContext:
+    max_passes = _resolve_solver_max_passes(global_vars=global_vars, env_vars=env_vars)
+    if base_solver is not None:
+        solver = VariableSolver(max_passes=max_passes, initial=base_solver.context())
+    else:
+        solver = VariableSolver(max_passes=max_passes)
+    solver.overlay("global", global_vars or {}, add_namespace=True, add_flat=True)
+    solver.overlay("globals", global_vars or {}, add_namespace=True, add_flat=False)
+    solver.overlay("env", env_vars or {}, add_namespace=True, add_flat=True)
+    solver.overlay("context", parse_context_vars or {}, add_namespace=True, add_flat=False)
+    return ValidateVariableContext(
+        solver=solver,
+        parse_context_vars=dict(parse_context_vars or {}),
+    )
 
 
 def register_validate_args(
@@ -58,8 +106,17 @@ def cmd_validate(args: argparse.Namespace) -> int:
     - stderr: config, asset-resolution, or parser validation errors.
     - return code: `0` on valid pipeline, `1` on failure.
     """
+    base_ctx = getattr(args, "runtime_context", None)
+    base_target_solver: VariableSolver | None = None
+    if base_ctx is not None:
+        try:
+            base_target_solver = base_ctx.solver("target")
+        except Exception:
+            base_target_solver = None
     pipeline_path = Path(args.pipeline)
-    global_vars = {}
+    global_vars = dict(getattr(base_ctx, "global_vars", {}) or {})
+    env_vars = dict(getattr(base_ctx, "exec_env", {}) or {})
+    parse_context_vars = dict(getattr(base_ctx, "parse_context_vars", {}) or {})
     selected_global_config: Path | None = None
     try:
         selected_global_config = resolve_global_config_path(
@@ -75,6 +132,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
             print(f"Global config error: {exc}", file=sys.stderr)
             return 1
         args.global_config = str(selected_global_config)
+    vars_ctx = _build_validate_variable_context(
+        base_solver=base_target_solver,
+        global_vars=global_vars,
+        env_vars=env_vars,
+        parse_context_vars=parse_context_vars,
+    )
     selected_projects_config: Path | None = None
     try:
         selected_projects_config = resolve_projects_config_path(
@@ -98,14 +161,23 @@ def cmd_validate(args: argparse.Namespace) -> int:
             project_vars=tentative_project_vars,
             repo_root=Path(".").resolve(),
         )
-        pre = parse_pipeline(pipeline_path, global_vars=global_vars, env_vars={})
+        pre = parse_pipeline(
+            pipeline_path,
+            global_vars=vars_ctx.global_vars(),
+            env_vars=vars_ctx.env_vars(),
+            context_vars=vars_ctx.parse_context_vars,
+        )
         project_id = resolve_project_id(
             explicit_project_id=getattr(args, "project_id", None),
             pipeline_project_id=getattr(pre, "project_id", None),
             pipeline_path=pipeline_path,
         )
         project_vars = load_project_vars(project_id=project_id, projects_config_path=selected_projects_config)
-        parse_kwargs = {"global_vars": global_vars, "env_vars": {}}
+        parse_kwargs = {
+            "global_vars": vars_ctx.global_vars(),
+            "env_vars": vars_ctx.env_vars(),
+            "context_vars": vars_ctx.parse_context_vars,
+        }
         if project_vars:
             parse_kwargs["project_vars"] = project_vars
         pipeline = parse_pipeline(pipeline_path, **parse_kwargs)

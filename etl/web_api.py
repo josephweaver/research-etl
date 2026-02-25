@@ -69,6 +69,7 @@ from .projects import (
 )
 from .plugins.base import PluginLoadError, load_plugin
 from .runner import run_pipeline
+from .runtime_context import RuntimeContext, RuntimeContextError, RuntimeContextRequest, build_runtime_context
 from .tracking import fetch_plugin_resource_stats, upsert_run_status
 from .variable_solver import VariableSolver
 from .web_queries import (
@@ -102,6 +103,26 @@ _LOCAL_RUN_LOG_RING: dict[str, list[str]] = {}
 _LOCAL_RUN_LOG_RING_MAX = 2000
 _BUILDER_STEP_TEST_LOCK = threading.Lock()
 _BUILDER_STEP_TESTS: dict[str, dict[str, Any]] = {}
+_WEB_RUNTIME_CONTEXT: Optional[RuntimeContext] = None
+
+
+@app.on_event("startup")
+def _init_web_runtime_context() -> None:
+    global _WEB_RUNTIME_CONTEXT
+    try:
+        _WEB_RUNTIME_CONTEXT = build_runtime_context(
+            RuntimeContextRequest(
+                bootstrap_label="web",
+                logger_name="etl.web_api",
+            )
+        )
+        _LOG.info(
+            "Web bootstrap runtime context initialized log=%s",
+            _WEB_RUNTIME_CONTEXT.logging.bootstrap_log_file.as_posix(),
+        )
+    except RuntimeContextError as exc:
+        _LOG.warning("Web bootstrap runtime context initialization failed: %s", exc)
+        _WEB_RUNTIME_CONTEXT = None
 
 
 @dataclass(frozen=True)

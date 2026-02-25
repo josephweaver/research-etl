@@ -13,36 +13,54 @@ High-level idea:
 """
 
 import argparse
-import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-from etl.cli_cmd.common import CommandHandler, emit_error_with_report
-from etl.config import ConfigError, load_global_config, resolve_global_config_path
-from etl.execution_config import (
-    ExecutionConfigError,
-    apply_execution_env_overrides,
-    load_execution_config,
-    resolve_execution_config_path,
-    resolve_execution_env_templates,
-    validate_environment_executor,
-)
+from etl.cli_cmd.common import CommandHandler, emit_error_with_report, resolve_workdir_from_solver
 from etl.executors import HpccDirectExecutor, LocalExecutor, SlurmExecutor
 from etl.executors.slurm import SlurmSubmitError
 from etl.pipeline import PipelineError, parse_pipeline
-from etl.pipeline_assets import PipelineAssetError, resolve_pipeline_path_from_project_sources
 from etl.projects import (
     ProjectConfigError,
     load_project_vars,
     resolve_project_id,
-    resolve_projects_config_path,
 )
 from etl.provenance import collect_run_provenance
+from etl.runtime_context import (
+    apply_db_mode_from_exec_env,
+    collect_secret_vars,
+    merge_context_with_secrets,
+    parse_cli_var_overrides,
+)
 from etl.tracking import load_runs
+from etl.variable_solver import VariableSolver
 
-DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
+
+@dataclass(frozen=True)
+class RunVariableContext:
+    """Solver-backed variable context used during run/dependency submission."""
+
+    solver: VariableSolver
+    parse_context_vars: Dict[str, Any]
+
+    def global_vars(self) -> Dict[str, Any]:
+        return dict(self.solver.get("global", {}, resolve=False) or {})
+
+    def env_vars(self) -> Dict[str, Any]:
+        return dict(self.solver.get("env", {}, resolve=False) or {})
+
+    def commandline_vars(self) -> Dict[str, Any]:
+        return dict(self.solver.get("commandline", {}, resolve=False) or {})
+
+
+@dataclass(frozen=True)
+class PipelineResolveContext:
+    """Shared parse context for dependency graph resolution."""
+
+    vars_ctx: RunVariableContext
 
 
 def register_run_args(
@@ -112,122 +130,60 @@ def _run_store_path(workdir: str) -> Path:
     return Path(workdir) / "runs.jsonl"
 
 
-def _first_non_empty_text(*values: Any) -> str | None:
-    for value in values:
-        text = str(value or "").strip()
-        if text:
-            return text
-    return None
+def _resolve_solver_max_passes(*, global_vars: Dict[str, Any], env_vars: Dict[str, Any], default: int = 20) -> int:
+    raw = env_vars.get("resolve_max_passes", global_vars.get("resolve_max_passes", default))
+    try:
+        value = int(raw)
+    except Exception:
+        value = default
+    return max(1, min(100, value))
 
 
-def _resolve_workdir(
+def _build_run_variable_context(
     *,
-    cli_workdir: str | None,
-    commandline_vars: Dict[str, Any] | None = None,
-    pipeline,
-    env_vars: Dict[str, Any],
+    base_solver: VariableSolver | None,
     global_vars: Dict[str, Any],
-) -> str:
-    resolved = _first_non_empty_text(
-        cli_workdir,
-        (commandline_vars or {}).get("workdir"),
-        getattr(pipeline, "workdir", None),
-        env_vars.get("workdir"),
-        global_vars.get("workdir"),
-    )
-    return resolved or ".runs"
-
-
-def _assign_dotted_path(target: Dict[str, Any], dotted_key: str, value: Any) -> None:
-    parts = [p.strip() for p in str(dotted_key or "").split(".")]
-    if not parts or any(not p for p in parts):
-        raise ValueError(f"Invalid --var key: '{dotted_key}'")
-    cur: Dict[str, Any] = target
-    for part in parts[:-1]:
-        nxt = cur.get(part)
-        if not isinstance(nxt, dict):
-            nxt = {}
-            cur[part] = nxt
-        cur = nxt
-    cur[parts[-1]] = value
-
-
-def _parse_cli_var_overrides(entries: List[str] | None) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
-    for raw in list(entries or []):
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        if "=" not in text:
-            raise ValueError(f"Invalid --var '{text}': expected KEY=VALUE")
-        key, value = text.split("=", 1)
-        key_text = key.strip()
-        if not key_text:
-            raise ValueError(f"Invalid --var '{text}': key may not be empty")
-        _assign_dotted_path(out, key_text, value)
-    return out
-
-
-def _parse_secret_env_keys(exec_env: Dict[str, Any]) -> List[str]:
-    raw = exec_env.get("secret_env_keys")
-    items: List[str]
-    if isinstance(raw, (list, tuple, set)):
-        items = [str(x).strip() for x in raw]
-    elif raw is None:
-        env_raw = str(os.environ.get("ETL_SECRET_ENV_KEYS") or "").strip()
-        if env_raw:
-            items = [x.strip() for x in env_raw.replace(";", ",").split(",")]
-        else:
-            items = list(DEFAULT_SECRET_ENV_KEYS)
+    env_vars: Dict[str, Any],
+    commandline_vars: Dict[str, Any],
+    parse_context_vars: Dict[str, Any],
+) -> RunVariableContext:
+    max_passes = _resolve_solver_max_passes(global_vars=global_vars, env_vars=env_vars)
+    if base_solver is not None:
+        solver = VariableSolver(max_passes=max_passes, initial=base_solver.context())
     else:
-        items = [x.strip() for x in str(raw).replace(";", ",").split(",")]
-    out: List[str] = []
-    seen: Set[str] = set()
-    for key in items:
-        if not key:
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(key)
-    return out
+        solver = VariableSolver(max_passes=max_passes)
+    solver.overlay("global", global_vars or {}, add_namespace=True, add_flat=True)
+    solver.overlay("globals", global_vars or {}, add_namespace=True, add_flat=False)
+    solver.overlay("env", env_vars or {}, add_namespace=True, add_flat=True)
+    solver.overlay("commandline", commandline_vars or {}, add_namespace=True, add_flat=True)
+    solver.overlay("context", parse_context_vars or {}, add_namespace=True, add_flat=False)
+    return RunVariableContext(
+        solver=solver,
+        parse_context_vars=dict(parse_context_vars or {}),
+    )
 
 
-def _collect_secret_vars(exec_env: Dict[str, Any]) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    for key in _parse_secret_env_keys(exec_env):
-        val = os.environ.get(key)
-        if val is None:
-            continue
-        text = str(val).strip()
-        if not text:
-            continue
-        out[key] = text
-    return out
-
-
-def _merge_context_with_secrets(context_vars: Dict[str, Any], secret_vars: Dict[str, str]) -> Dict[str, Any]:
-    merged = dict(context_vars or {})
-    if not secret_vars:
-        return merged
-    secret_ns: Dict[str, Any] = dict(secret_vars)
-    existing = merged.get("secret")
-    if isinstance(existing, dict):
-        secret_ns.update({str(k): v for k, v in existing.items()})
-    merged["secret"] = secret_ns
-    return merged
-
-
-def _apply_db_mode_from_exec_env(exec_env: Dict[str, Any]) -> None:
-    mode = str(exec_env.get("db_mode") or "").strip()
-    if mode:
-        os.environ["ETL_DB_MODE"] = mode
-    verbose = exec_env.get("db_verbose")
-    if verbose is not None:
-        if bool(verbose):
-            os.environ["ETL_DB_VERBOSE"] = "1"
-        else:
-            os.environ["ETL_DB_VERBOSE"] = "0"
+def _resolve_workdir_with_solver(
+    *,
+    base_solver: VariableSolver | None,
+    pipeline,
+    project_vars: Dict[str, Any],
+) -> str:
+    """Resolve workdir precedence through VariableSolver overlays."""
+    max_passes = max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20))
+    if base_solver is not None:
+        # Start from entrypoint scope state and layer pipeline/run specifics.
+        solver = VariableSolver(max_passes=max_passes, initial=base_solver.context())
+    else:
+        solver = VariableSolver(max_passes=max_passes)
+    solver.overlay("project", project_vars or {}, add_namespace=True, add_flat=True)
+    solver.overlay("pipe", dict(getattr(pipeline, "vars", {}) or {}), add_namespace=True, add_flat=True)
+    solver.overlay("dirs", dict(getattr(pipeline, "dirs", {}) or {}), add_namespace=True, add_flat=True)
+    return resolve_workdir_from_solver(
+        solver=solver,
+        pipeline_workdir=str(getattr(pipeline, "workdir", "") or ""),
+        fallback=".runs",
+    )
 
 
 def _has_successful_run_for_pipeline(pipeline_path: Path, *, workdir: str) -> bool:
@@ -246,9 +202,7 @@ def _has_successful_run_for_pipeline(pipeline_path: Path, *, workdir: str) -> bo
 def _resolve_required_pipelines(
     pipeline_path: Path,
     *,
-    global_vars: Dict[str, Any],
-    env_vars: Dict[str, Any],
-    context_vars: Dict[str, Any] | None,
+    ctx: PipelineResolveContext,
     stack: List[Path],
     visiting: Set[str],
     ordered: List[Path],
@@ -263,7 +217,12 @@ def _resolve_required_pipelines(
 
     visiting.add(key)
     stack.append(canonical)
-    pipeline = parse_pipeline(canonical, global_vars=global_vars, env_vars=env_vars, context_vars=context_vars)
+    pipeline = parse_pipeline(
+        canonical,
+        global_vars=ctx.vars_ctx.global_vars(),
+        env_vars=ctx.vars_ctx.env_vars(),
+        context_vars=ctx.vars_ctx.parse_context_vars,
+    )
     base_dir = canonical.parent
     for req in pipeline.requires_pipelines:
         req_path = Path(req)
@@ -275,9 +234,7 @@ def _resolve_required_pipelines(
                 req_path = (base_dir / req_path).resolve()
         _resolve_required_pipelines(
             req_path,
-            global_vars=global_vars,
-            env_vars=env_vars,
-            context_vars=context_vars,
+            ctx=ctx,
             stack=stack,
             visiting=visiting,
             ordered=ordered,
@@ -292,9 +249,7 @@ def _submit_pipeline_run(
     args: argparse.Namespace,
     *,
     pipeline_path: Path,
-    global_vars: Dict[str, Any],
-    exec_env: Dict[str, Any],
-    commandline_vars: Dict[str, Any],
+    vars_ctx: RunVariableContext,
     resume_run_id: str | None,
 ) -> int:
     plugins_dir_path = Path(args.plugins_dir)
@@ -304,7 +259,10 @@ def _submit_pipeline_run(
         pipeline_inside_repo = True
     except ValueError:
         pipeline_inside_repo = False
-    parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
+    global_vars = vars_ctx.global_vars()
+    exec_env = vars_ctx.env_vars()
+    commandline_vars = vars_ctx.commandline_vars()
+    parse_context_vars = vars_ctx.parse_context_vars
     try:
         pre_pipeline = parse_pipeline(
             pipeline_path,
@@ -342,12 +300,10 @@ def _submit_pipeline_run(
     except (PipelineError, FileNotFoundError) as exc:
         print(f"Invalid pipeline: {exc}", file=sys.stderr)
         return 1
-    resolved_workdir = _resolve_workdir(
-        cli_workdir=None,
-        commandline_vars=commandline_vars,
+    resolved_workdir = _resolve_workdir_with_solver(
+        base_solver=vars_ctx.solver,
         pipeline=pipeline,
-        env_vars=exec_env,
-        global_vars=global_vars,
+        project_vars=project_vars,
     )
     cli_argv = list(getattr(args, "_raw_argv", []))
     if cli_argv:
@@ -515,80 +471,46 @@ def cmd_run(args: argparse.Namespace) -> int:
     - side effects: optional dependency runs + executor job submission.
     - return code: `0` when submitted/running/succeeded, `1` on failure.
     """
-    pipeline_path = Path(args.pipeline)
-    global_vars = {}
-    exec_env = {}
-    selected_global_config: Path | None = None
-    selected_environments_config: Path | None = None
-    selected_env_name: str | None = None
+    base_ctx = getattr(args, "runtime_context", None)
+    if base_ctx is None:
+        print("Runtime context error: missing runtime_context for `run` command.", file=sys.stderr)
+        return 1
     try:
-        selected_global_config = resolve_global_config_path(
-            Path(args.global_config) if args.global_config else None
+        base_target_solver = base_ctx.solver("target")
+    except Exception:
+        print("Runtime context error: missing target variable solver.", file=sys.stderr)
+        return 1
+    global_vars = dict(getattr(base_ctx, "global_vars", {}) or {})
+    exec_env = dict(getattr(base_ctx, "exec_env", {}) or {})
+    if not exec_env:
+        print(
+            "Runtime context error: execution environment was not resolved. "
+            "Provide --env (or ensure default local env exists).",
+            file=sys.stderr,
         )
-    except ConfigError as exc:
-        print(f"Global config error: {exc}", file=sys.stderr)
         return 1
-    if selected_global_config:
-        try:
-            global_vars = load_global_config(selected_global_config)
-        except ConfigError as exc:
-            print(f"Global config error: {exc}", file=sys.stderr)
-            return 1
-        args.global_config = str(selected_global_config)
-    selected_projects_config: Path | None = None
-    try:
-        selected_projects_config = resolve_projects_config_path(
-            Path(args.projects_config) if getattr(args, "projects_config", None) else None
-        )
-    except ProjectConfigError as exc:
-        print(f"Projects config error: {exc}", file=sys.stderr)
+    selected_env_name = str(getattr(base_ctx, "env_name", "") or "").strip() or None
+    if not selected_env_name:
+        print("Runtime context error: environment name is not set.", file=sys.stderr)
         return 1
-    if selected_projects_config:
-        args.projects_config = str(selected_projects_config)
-    try:
-        selected_environments_config = resolve_execution_config_path(
-            Path(args.environments_config) if args.environments_config else None
-        )
-    except ExecutionConfigError as exc:
-        print(f"Environments config error: {exc}", file=sys.stderr)
-        return 1
-    if args.env:
-        selected_env_name = args.env
-    elif not args.executor:
-        selected_env_name = "local"
-    if selected_environments_config and selected_env_name:
-        try:
-            envs = load_execution_config(selected_environments_config)
-            exec_env = envs.get(selected_env_name, {})
-            if not exec_env:
-                print(f"Execution env '{selected_env_name}' not found in config", file=sys.stderr)
-                return 1
-            validate_environment_executor(selected_env_name, exec_env, executor=args.executor)
-            exec_env = apply_execution_env_overrides(exec_env)
-            exec_env = resolve_execution_env_templates(exec_env, global_vars=global_vars)
-        except ExecutionConfigError as exc:
-            print(f"Environments config error: {exc}", file=sys.stderr)
-            return 1
-    if args.env and not selected_environments_config:
-        print("Environments config error: `--env` was provided but no environments config was found.", file=sys.stderr)
-        return 1
-    if selected_environments_config:
-        args.environments_config = str(selected_environments_config)
-    if selected_env_name:
-        args.env = selected_env_name
     env_executor = str(exec_env.get("executor") or "").strip().lower()
-    selected_executor = env_executor or str(args.executor or "").strip().lower() or "local"
+    if not env_executor:
+        print("Runtime context error: selected environment does not define `executor`.", file=sys.stderr)
+        return 1
+    selected_executor = env_executor
+    if getattr(base_ctx, "global_config_path", None):
+        args.global_config = str(base_ctx.global_config_path)
+    if getattr(base_ctx, "projects_config_path", None):
+        args.projects_config = str(base_ctx.projects_config_path)
+    if getattr(base_ctx, "environments_config_path", None):
+        args.environments_config = str(base_ctx.environments_config_path)
+    args.env = selected_env_name
     if args.executor:
-        if env_executor:
-            print(
-                "[etl][WARN] `--executor` is deprecated; using executor from `--env` configuration.",
-                file=sys.stderr,
-            )
-        else:
-            print(
-                "[etl][WARN] `--executor` is deprecated; prefer setting/using `--env` with an executor.",
-                file=sys.stderr,
-            )
+        print(
+            "[etl][WARN] `--executor` is deprecated and ignored; "
+            "set executor in the selected `--env` configuration.",
+            file=sys.stderr,
+        )
     args.executor = selected_executor
     max_retries = args.max_retries if args.max_retries is not None else int(exec_env.get("step_max_retries", 0) or 0)
     retry_delay_seconds = (
@@ -604,33 +526,25 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     exec_env["step_max_retries"] = max_retries
     exec_env["step_retry_delay_seconds"] = retry_delay_seconds
-    _apply_db_mode_from_exec_env(exec_env)
+    apply_db_mode_from_exec_env(exec_env)
+    commandline_vars = dict(getattr(base_ctx, "commandline_vars", {}) or {})
     try:
-        commandline_vars = _parse_cli_var_overrides(getattr(args, "var", None))
-    except ValueError as exc:
+        parsed_cli_vars = parse_cli_var_overrides(getattr(args, "var", None))
+        commandline_vars.update(parsed_cli_vars)
+    except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1
     if args.workdir:
         commandline_vars["workdir"] = str(args.workdir)
-    parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
-    try:
-        tentative_project_id = resolve_project_id(
-            explicit_project_id=getattr(args, "project_id", None),
-            pipeline_project_id=None,
-            pipeline_path=pipeline_path,
-        )
-        tentative_project_vars = load_project_vars(
-            project_id=tentative_project_id,
-            projects_config_path=selected_projects_config,
-        )
-        pipeline_path = resolve_pipeline_path_from_project_sources(
-            pipeline_path,
-            project_vars=tentative_project_vars,
-            repo_root=Path(".").resolve(),
-        )
-    except (ProjectConfigError, PipelineAssetError) as exc:
-        print(f"Pipeline asset resolution error: {exc}", file=sys.stderr)
-        return 1
+    parse_context_vars = merge_context_with_secrets(commandline_vars, collect_secret_vars(exec_env))
+    run_vars_ctx = _build_run_variable_context(
+        base_solver=base_target_solver,
+        global_vars=global_vars,
+        env_vars=exec_env,
+        commandline_vars=commandline_vars,
+        parse_context_vars=parse_context_vars,
+    )
+    pipeline_path = Path(getattr(base_ctx, "pipeline_path", None) or args.pipeline)
     if not pipeline_path.exists():
         print(f"Pipeline path not found: {pipeline_path}", file=sys.stderr)
         return 1
@@ -639,18 +553,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         return _submit_pipeline_run(
             args,
             pipeline_path=pipeline_path.resolve(),
-            global_vars=global_vars,
-            exec_env=exec_env,
-            commandline_vars=commandline_vars,
+            vars_ctx=run_vars_ctx,
             resume_run_id=args.resume_run_id,
         )
     try:
+        dep_ctx = PipelineResolveContext(
+            vars_ctx=run_vars_ctx,
+        )
         ordered_reqs: List[Path] = []
         _resolve_required_pipelines(
             pipeline_path.resolve(),
-            global_vars=global_vars,
-            env_vars=exec_env,
-            context_vars=parse_context_vars,
+            ctx=dep_ctx,
             stack=[],
             visiting=set(),
             ordered=ordered_reqs,
@@ -666,19 +579,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         try:
             dep_pipeline = parse_pipeline(
                 dep,
-                global_vars=global_vars,
-                env_vars=exec_env,
-                context_vars=parse_context_vars,
+                global_vars=run_vars_ctx.global_vars(),
+                env_vars=run_vars_ctx.env_vars(),
+                context_vars=run_vars_ctx.parse_context_vars,
             )
         except (PipelineError, FileNotFoundError) as exc:
             print(f"Invalid pipeline: {exc}", file=sys.stderr)
             return 1
-        dep_workdir = _resolve_workdir(
-            cli_workdir=None,
-            commandline_vars=commandline_vars,
+        dep_workdir = _resolve_workdir_with_solver(
+            base_solver=run_vars_ctx.solver,
             pipeline=dep_pipeline,
-            env_vars=exec_env,
-            global_vars=global_vars,
+            project_vars={},
         )
         if _has_successful_run_for_pipeline(dep, workdir=dep_workdir):
             print(f"Dependency already satisfied: {dep}")
@@ -687,9 +598,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         dep_rc = _submit_pipeline_run(
             args,
             pipeline_path=dep,
-            global_vars=global_vars,
-            exec_env=exec_env,
-            commandline_vars=commandline_vars,
+            vars_ctx=run_vars_ctx,
             resume_run_id=None,
         )
         if dep_rc != 0:
@@ -699,8 +608,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     return _submit_pipeline_run(
         args,
         pipeline_path=target,
-        global_vars=global_vars,
-        exec_env=exec_env,
-        commandline_vars=commandline_vars,
+        vars_ctx=run_vars_ctx,
         resume_run_id=args.resume_run_id,
     )
