@@ -558,6 +558,7 @@ class SlurmExecutor(Executor):
         return mean + (3.0 * max(0.0, std))
 
     def _resolve_batch_resources(self, steps: List[Any]) -> Dict[str, Optional[Any]]:
+        # Start from environment defaults; each step can only raise these requests.
         requested_time_min = _parse_slurm_time_to_minutes(str(self.env.time or ""))
         requested_cpus = int(self.env.cpus_per_task or 0) or None
         requested_mem_mb = _parse_mem_to_mb(str(self.env.mem or ""))
@@ -574,6 +575,7 @@ class SlurmExecutor(Executor):
         history_map = dict(history_map.get("resource_history") or {})
 
         for step in steps:
+            # Merge static plugin metadata + explicit step.resources for sizing.
             plugin_resources = self._resolve_plugin_resources(step)
             step_resources = dict(getattr(step, "resources", {}) or {})
             merged = dict(plugin_resources)
@@ -584,6 +586,7 @@ class SlurmExecutor(Executor):
             plugin_ref = str(plugin_resources.get("plugin_ref") or "").strip()
             hist_key = f"{plugin_name}@{plugin_version}" if plugin_name and plugin_version else ""
             stats = dict(history_map.get(hist_key) or {})
+            # Runtime history from DB can override config-based defaults when available.
             db_stats = fetch_plugin_resource_stats(
                 plugin_name=plugin_name,
                 plugin_version=plugin_version,
@@ -649,6 +652,7 @@ class SlurmExecutor(Executor):
         }
 
     def submit(self, pipeline_path: str, context: Dict[str, Any]) -> SubmissionResult:
+        # 1) Resolve run identity and parse the pipeline with all variable scopes.
         pipeline_input = Path(pipeline_path)
         pipeline_path = pipeline_input.as_posix()
         resume_run_id = context.get("resume_run_id")
@@ -684,6 +688,7 @@ class SlurmExecutor(Executor):
         if not batches:
             self._statuses[run_id] = RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="No selected steps to run.")
             return SubmissionResult(run_id=run_id, message="No selected steps to run.")
+        # 2) Build a solver namespace and compute cluster-side run/work paths.
         submission_records = []
         submitted_step_jobs = 0
         prev_jobid = None
@@ -763,6 +768,7 @@ class SlurmExecutor(Executor):
         git_commit_sha = None
         git_remote_override = str(context.get("execution_env", {}).get("git_remote_url") or self.env.git_remote_url or "").strip() or None
 
+        # 3) Decide which source model setup should use (workspace/git/bundle/snapshot).
         if self.enforce_git_checkout:
             if source_mode == "workspace" and not allow_workspace_source:
                 raise SlurmSubmitError("execution_source=workspace requires allow_workspace_source=true")
@@ -924,6 +930,7 @@ class SlurmExecutor(Executor):
         # Pipeline-level dirs.logdir remains the explicit override.
         base_logdir = Path(pipeline_logdir_resolved) if use_pipeline_logdir else (Path(remote_workdir) / "logs")
 
+        # 4) Stage optional source artifacts and submit a setup job first.
         if self.env.ssh_host and self.env.sync and not self.enforce_git_checkout:
             self._sync_repo()
         source_bundle_remote = self._stage_source_asset(
@@ -987,6 +994,7 @@ class SlurmExecutor(Executor):
         prev_jobid = setup_jobid
         submission_records.append(setup_jobid)
 
+        # 5) Submit step jobs in dependency order (single, foreach-array, or batch arrays).
         for batch_idx, batch in enumerate(batches):
             # Cap array size if needed (for now we treat batch as single job if size==1, else array)
             if len(batch) == 1:
@@ -1133,6 +1141,7 @@ class SlurmExecutor(Executor):
             )
 
         if self.enable_controller_job:
+            # Optional terminal controller job for child job tracking/coordination.
             controller_script = self._render_controller_script(
                 run_id=run_id,
                 workdir=remote_workdir,
@@ -1401,6 +1410,7 @@ class SlurmExecutor(Executor):
             return "dry-run"
 
         if self.env.ssh_host:
+            # Remote mode: write local temp sbatch, copy via scp, then submit over ssh.
             target = build_target_host(self.env.ssh_user, self.env.ssh_host)
             if self.propagate_db_secret:
                 self._ensure_remote_secrets_file(target)
@@ -1456,6 +1466,7 @@ class SlurmExecutor(Executor):
             out = (proc_submit.stdout or "").strip().split()
             return out[-1] if out else "unknown"
         else:
+            # Local mode: write sbatch file directly under workdir and submit locally.
             with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch", prefix=f"etl-{label}-", dir=self.workdir, newline="\n") as tmp:
                 tmp_path = Path(tmp.name)
             if label == "setup":
