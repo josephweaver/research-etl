@@ -3112,10 +3112,15 @@
         msg.textContent = "Validating draft...";
       }
       try {
+        const payload = builderPayload();
+        if(auto){
+          payload.require_dir_contract = false;
+          payload.require_resolved_inputs = false;
+        }
         const res = await fetch(`/api/builder/validate`, {
           method:"POST",
           headers: {"Content-Type":"application/json"},
-          body: JSON.stringify(builderPayload()),
+          body: JSON.stringify(payload),
         });
         if(!res.ok){
           let raw = {};
