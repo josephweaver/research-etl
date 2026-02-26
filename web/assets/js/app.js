@@ -3145,16 +3145,16 @@
           renderBuilderPipelineStatus();
           return;
         }
-        const payload = await res.json();
-        setBuilderParamIssues(payload.unresolved_inputs || []);
+        const responsePayload = await res.json();
+        setBuilderParamIssues(responsePayload.unresolved_inputs || []);
         builderValidationState = "valid";
         if(builderPipelineRunState !== "run_ok"){
           builderPipelineRunState = "not-run";
         }
         if(!auto){
-          msg.textContent = `Valid draft: ${payload.step_count} steps`;
+          msg.textContent = `Valid draft: ${responsePayload.step_count} steps`;
         }
-        out.textContent = JSON.stringify(payload, null, 2);
+        out.textContent = JSON.stringify(responsePayload, null, 2);
         renderBuilderModel();
         renderBuilderPipelineStatus();
       } finally {
