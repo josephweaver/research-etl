@@ -7,12 +7,12 @@
 from __future__ import annotations
 
 import inspect
-import multiprocessing as mp
+import logging
 import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from queue import Empty
+from queue import Empty, Queue
 from typing import Any, Optional
 
 from fastapi import HTTPException
@@ -22,6 +22,7 @@ from ..variable_solver import VariableSolver
 
 _BUILDER_STEP_TEST_LOCK = threading.Lock()
 _BUILDER_STEP_TESTS: dict[str, dict[str, Any]] = {}
+_LOG = logging.getLogger("etl.web.builder_handlers")
 
 
 def api_builder_source(
@@ -700,7 +701,11 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
     plugins_dir = Path(payload.get("plugins_dir") or "plugins")
     pipeline_workdir = ""
     for key in ("work", "workdir", "work_dir"):
-        candidate = str(pipeline.dirs.get(key) or "").strip()
+        candidate = str((pipeline.vars or {}).get(key) or "").strip()
+        if candidate:
+            pipeline_workdir = candidate
+            break
+        candidate = str((pipeline.dirs or {}).get(key) or "").strip()
         if candidate:
             pipeline_workdir = candidate
             break
@@ -739,6 +744,15 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
         steps=[target_step],
     )
     executor_name = str(payload.get("executor") or env_vars.get("executor") or "local").strip().lower()
+    _LOG.info(
+        "builder step test start step=%s index=%s executor=%s env=%s project_id=%s pipeline_hint=%s",
+        str(target_step.name),
+        target_step_index,
+        executor_name,
+        str(env_name or ""),
+        str(payload.get("project_id") or getattr(pipeline, "project_id", "") or ""),
+        str(pipeline_hint or ""),
+    )
 
     if executor_name == "local":
         try:
@@ -881,6 +895,12 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
                     "step_indices": [int(target_step_index if target_step_index is not None else 0)],
                 },
             )
+            _LOG.info(
+                "builder step test submitted remote run_id=%s executor=%s pipeline=%s",
+                str(submit.run_id),
+                executor_name,
+                str(resolved_pipeline_path),
+            )
             st = ex.status(submit.run_id)
             state = st.state.value if hasattr(st.state, "value") else str(st.state)
             success = str(state).lower() in {"succeeded", "success"}
@@ -944,6 +964,12 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
                 "allow_dirty_git": allow_dirty_git,
                 "project_id": deps["normalize_project_id"](str(payload.get("project_id") or getattr(pipeline, "project_id", "") or "").strip() or None),
             },
+        )
+        _LOG.info(
+            "builder step test submitted remote run_id=%s executor=%s pipeline=%s",
+            str(submit.run_id),
+            executor_name,
+            str(temp_pipeline_path),
         )
         st = ex.status(submit.run_id)
         state = st.state.value if hasattr(st.state, "value") else str(st.state)
@@ -1024,6 +1050,9 @@ def _builder_step_test_snapshot(test_id: str) -> Optional[dict[str, Any]]:
         if not rec2:
             return None
         if msg is not None:
+            if rec2.get("state") == "cancelled":
+                rec2["done_ts"] = rec2.get("done_ts") or now_ts
+                return dict(rec2)
             if bool(msg.get("ok")):
                 rec2["state"] = "completed"
                 rec2["result"] = dict(msg.get("result") or {})
@@ -1049,9 +1078,8 @@ def api_builder_test_step_start(payload: Optional[dict[str, Any]], deps: dict[st
     payload["run_id"] = str(payload.get("run_id") or "").strip() or uuid.uuid4().hex
     payload["run_started_at"] = str(payload.get("run_started_at") or "").strip() or (datetime.utcnow().isoformat() + "Z")
 
-    ctx = mp.get_context("spawn")
-    result_queue = ctx.Queue()
-    proc = ctx.Process(
+    result_queue: Queue = Queue()
+    proc = threading.Thread(
         target=_builder_step_test_worker,
         args=(payload, result_queue, deps),
         daemon=True,
@@ -1109,7 +1137,7 @@ def api_builder_test_step_stop(payload: Optional[dict[str, Any]]) -> dict:
         proc = rec.get("proc")
         if state in {"completed", "failed", "cancelled"}:
             return {"test_id": key, "state": state}
-        if proc is not None and proc.is_alive():
+        if proc is not None and hasattr(proc, "is_alive") and proc.is_alive() and hasattr(proc, "terminate"):
             try:
                 proc.terminate()
                 proc.join(timeout=2.0)

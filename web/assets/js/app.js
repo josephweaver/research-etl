@@ -3229,6 +3229,7 @@
         ? String(builderEnvExecutorMap[payload.env] || "").trim().toLowerCase()
         : "";
       const effectiveExecutor = hintedExecutor || envExecutor || "local";
+      payload.executor = effectiveExecutor;
       const remoteExecutor = effectiveExecutor === "slurm" || effectiveExecutor === "hpcc_direct";
       const shouldGitSync = !!payload.git_sync || remoteExecutor;
 
@@ -3268,6 +3269,7 @@
         }
         await refreshBuilderGitStatus();
       }
+      msg.textContent = `Testing step ${idx + 1} on executor '${effectiveExecutor}'...`;
       const startRes = await fetch(`/api/builder/test-step/start`, {
         method:"POST",
         headers: {"Content-Type":"application/json"},
