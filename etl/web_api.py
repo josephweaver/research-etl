@@ -1516,10 +1516,11 @@ def _dir_category(key: str) -> Optional[str]:
 
 def _validate_pipeline_dir_contract(pipeline: Pipeline) -> None:
     counts = {"work": 0, "log": 0, "artifact": 0, "stage": 0, "tmp": 0}
-    for key in (pipeline.dirs or {}).keys():
-        cat = _dir_category(str(key))
-        if cat:
-            counts[cat] += 1
+    for section in (pipeline.vars or {}, pipeline.dirs or {}):
+        for key in section.keys():
+            cat = _dir_category(str(key))
+            if cat:
+                counts[cat] += 1
     errors: list[str] = []
     if counts["work"] != 1:
         errors.append(f"Exactly one work directory is required (found {counts['work']}).")

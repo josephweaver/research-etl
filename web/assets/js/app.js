@@ -264,11 +264,7 @@
       const out = model || {};
       out.vars = (out.vars && typeof out.vars === "object") ? out.vars : {};
       out.var_types = (out.var_types && typeof out.var_types === "object") ? out.var_types : {};
-      out.dirs = out.dirs || {};
-      if(Object.keys(out.dirs).length){
-        return out;
-      }
-      out.dirs = { ...defaultBuilderDirs() };
+      out.dirs = (out.dirs && typeof out.dirs === "object") ? out.dirs : {};
       return out;
     }
     function normalizeBuilderModelPlugins(model){
