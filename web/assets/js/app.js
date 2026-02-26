@@ -1283,11 +1283,19 @@
       renderBuilderModel();
       syncYamlPreview();
     }
-    async function refreshBuilderGitStatus(){
+    async function refreshBuilderGitStatus(opts){
       if(!isBuilderView) return;
       const el = document.getElementById("b_git_repo_status");
       if(!el) return;
-      const res = await fetch(`/api/builder/git-status`);
+      const qp = new URLSearchParams();
+      const projectSel = document.getElementById("b_project_id");
+      const sourceSel = document.getElementById("b_pipeline_source");
+      const projectId = String((opts && opts.project_id) || (projectSel ? projectSel.value : "") || currentProjectId()).trim();
+      const pipelineSource = String((opts && opts.pipeline_source) || (sourceSel ? sourceSel.value : "") || builderSelectedPipelineSource).trim();
+      if(projectId) qp.set("project_id", projectId);
+      if(pipelineSource) qp.set("pipeline_source", pipelineSource);
+      const url = `/api/builder/git-status${qp.toString() ? `?${qp.toString()}` : ""}`;
+      const res = await fetch(url);
       if(!res.ok){
         el.textContent = `git: ${await readMessage(res)}`;
         return;
@@ -3274,7 +3282,10 @@
           msg.textContent = errText;
           return;
         }
-        await refreshBuilderGitStatus();
+        await refreshBuilderGitStatus({
+          project_id: payload.project_id || "",
+          pipeline_source: payload.pipeline_source || "",
+        });
       }
       msg.textContent = `Testing step ${idx + 1} on executor '${effectiveExecutor}'...`;
       const startRes = await fetch(`/api/builder/test-step/start`, {
