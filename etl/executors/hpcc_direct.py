@@ -140,6 +140,15 @@ def _parse_step_indices(value: Any, step_count: int) -> list[int]:
     return out
 
 
+def _last_non_empty_text(value: Any) -> str:
+    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for line in reversed(lines):
+        text = str(line or "").strip()
+        if text:
+            return text
+    return ""
+
+
 class HpccDirectExecutor(Executor):
     name = "hpcc_direct"
 
@@ -760,11 +769,12 @@ class HpccDirectExecutor(Executor):
         stdout = str(proc.stdout or "").strip()
         stderr = str(proc.stderr or "").strip()
         detail = stderr or stdout or ("remote output streamed to console" if self.verbose else "")
+        summary = _last_non_empty_text(detail) or detail
         if proc.returncode == 0:
             status = RunStatus(
                 run_id=run_id,
                 state=RunState.SUCCEEDED,
-                message=detail[:4000],
+                message=summary[:4000],
                 started_at=started_dt,
                 ended_at=ended_dt,
             )
@@ -772,7 +782,7 @@ class HpccDirectExecutor(Executor):
             status = RunStatus(
                 run_id=run_id,
                 state=RunState.FAILED,
-                message=f"remote run_batch rc={proc.returncode}: {detail[:4000]}",
+                message=f"remote run_batch rc={proc.returncode}: {summary[:4000]}",
                 started_at=started_dt,
                 ended_at=ended_dt,
             )

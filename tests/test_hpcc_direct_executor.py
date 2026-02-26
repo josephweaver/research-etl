@@ -190,6 +190,48 @@ def test_hpcc_direct_submit_records_failed_status(monkeypatch, tmp_path: Path) -
     assert "rc=1" in status.message
 
 
+def test_hpcc_direct_submit_uses_last_non_empty_line_for_status_message(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "pipelines").mkdir(parents=True, exist_ok=True)
+    pipeline_path = repo / "pipelines" / "sample.yml"
+    pipeline_path.write_text("steps: []\n", encoding="utf-8")
+    monkeypatch.setattr(
+        hpcc_mod,
+        "parse_pipeline",
+        lambda *_a, **_k: Pipeline(steps=[Step(name="s1", script="echo.py")]),
+    )
+    monkeypatch.setattr(
+        hpcc_mod,
+        "resolve_execution_spec",
+        lambda **_k: GitExecutionSpec(
+            commit_sha="32adb6b10db9aaaa111122223333444455556666",
+            origin_url="git@github.com:org/research-etl.git",
+            repo_name="research-etl",
+            git_is_dirty=False,
+        ),
+    )
+    seen_scripts: list[str] = []
+    monkeypatch.setattr(
+        HpccDirectExecutor,
+        "_run_ssh_script",
+        _fake_ssh_runner(
+            seen_scripts,
+            returncode=0,
+            stdout="[2026-02-26T13:24:49Z] [INFO] [etl] run_batch start\n[2026-02-26T13:24:50Z] [INFO] [etl] run_batch completed successfully\n",
+            stderr="",
+        ),
+    )
+    ex = HpccDirectExecutor(
+        env_config={"ssh_host": "dev.hpcc.local", "remote_repo": "/scratch/alice/research-etl", "propagate_secrets": False},
+        repo_root=repo,
+        dry_run=False,
+    )
+    _ = ex.submit(str(pipeline_path), {"run_id": "r2"})
+    status = ex.status("r2")
+    assert status.state.value == "succeeded"
+    assert status.message == "[2026-02-26T13:24:50Z] [INFO] [etl] run_batch completed successfully"
+
+
 def test_hpcc_direct_requires_ssh_host(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     (repo / "pipelines").mkdir(parents=True, exist_ok=True)
