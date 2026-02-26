@@ -128,17 +128,24 @@ def sync_pipeline_asset_source(source: PipelineAssetSource, *, cache_root: Path,
         local = Path(str(source.local_repo_path)).expanduser()
         if not local.is_absolute():
             local = (root / local).resolve()
-        if not local.exists() or not local.is_dir():
-            raise PipelineAssetError(f"local_repo_path not found: {local}")
-        is_repo = run_logged_subprocess(
-            ["git", "-C", str(local), "rev-parse", "--is-inside-work-tree"],
-            logger=_LOG,
-            action="git",
-            check=False,
-        )
-        if is_repo.returncode != 0:
-            raise PipelineAssetError(f"local_repo_path is not a git repo: {local}")
-        return local
+        if local.exists() and local.is_dir():
+            is_repo = run_logged_subprocess(
+                ["git", "-C", str(local), "rev-parse", "--is-inside-work-tree"],
+                logger=_LOG,
+                action="git",
+                check=False,
+            )
+            if is_repo.returncode == 0:
+                return local
+            _LOG.warning(
+                "pipeline asset local_repo_path is not a git repo; falling back to repo_url sync: %s",
+                local,
+            )
+        else:
+            _LOG.warning(
+                "pipeline asset local_repo_path not found; falling back to repo_url sync: %s",
+                local,
+            )
 
     cache_root = Path(cache_root).resolve()
     cache_root.mkdir(parents=True, exist_ok=True)

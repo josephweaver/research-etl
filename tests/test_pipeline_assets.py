@@ -10,8 +10,10 @@ import pytest
 
 from etl.pipeline_assets import (
     PipelineAssetError,
+    PipelineAssetSource,
     pipeline_asset_sources_from_project_vars,
     resolve_pipeline_path_from_project_sources,
+    sync_pipeline_asset_source,
 )
 
 
@@ -73,3 +75,24 @@ def test_resolve_pipeline_path_from_project_sources_uses_external_source(monkeyp
         repo_root=repo_root,
     )
     assert resolved == ext_pipeline.resolve()
+
+
+def test_sync_pipeline_asset_source_falls_back_when_local_repo_path_missing(monkeypatch, tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run_git(args, *, cwd=None):
+        calls.append(list(args))
+        return ""
+
+    monkeypatch.setattr("etl.pipeline_assets._run_git", _fake_run_git)
+    monkeypatch.setattr("etl.pipeline_assets._SYNCED_REPOS", set())
+
+    src = PipelineAssetSource(
+        repo_url="https://example.com/shared.git",
+        ref="main",
+        local_repo_path="does/not/exist",
+    )
+    out = sync_pipeline_asset_source(src, cache_root=tmp_path / "cache", repo_root=tmp_path / "repo_root")
+
+    assert out.parent == (tmp_path / "cache").resolve()
+    assert any(cmd[:2] == ["clone", "https://example.com/shared.git"] for cmd in calls)

@@ -20,6 +20,9 @@
 		},
 		{
 			"path": "../RiskModel-HPCC"
+		},
+		{
+			"path": "../.out"
 		}
 	],
 	"settings": {

@@ -10,10 +10,11 @@ from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 router = APIRouter()
 WEB_PAGES_DIR = Path(__file__).resolve().parents[3] / "web" / "pages"
+WEB_ASSETS_DIR = Path(__file__).resolve().parents[3] / "web" / "assets"
 
 
 @lru_cache(maxsize=32)
@@ -41,6 +42,14 @@ def _render_web_page(page_name: str) -> HTMLResponse:
 @router.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     return _render_web_page("index.html")
+
+
+@router.get("/favicon.ico")
+def favicon() -> FileResponse:
+    icon = (WEB_ASSETS_DIR / "favicon.svg").resolve()
+    if not icon.exists():
+        raise HTTPException(status_code=404, detail="Favicon not found.")
+    return FileResponse(str(icon), media_type="image/svg+xml")
 
 
 @router.get("/pipelines", response_class=HTMLResponse)
@@ -96,4 +105,3 @@ def pipeline_detail_index(pipeline_id: str) -> HTMLResponse:
 def run_live_index(run_id: str) -> HTMLResponse:
     _ = run_id
     return _render_web_page("run-live.html")
-
