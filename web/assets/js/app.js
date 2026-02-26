@@ -2531,10 +2531,10 @@
         return;
       }
       const data = buildBuilderJsTreeData(files, dirs);
-      holder.innerHTML = "";
       const $holder = $(holder);
       try { $holder.jstree("destroy"); } catch {}
       $holder.off(".jstree");
+      holder.innerHTML = "";
       $holder.jstree({
         core: { data, multiple: false },
         plugins: ["wholerow", "sort", "search"],
@@ -2576,7 +2576,9 @@
         document.getElementById("b_pipeline_path").value = normalizeBuilderPipelineName(rel);
         hideBuilderTreeDropdown();
         builderLoaded = false;
-        await loadBuilderSource();
+        setTimeout(() => {
+          loadBuilderSource();
+        }, 0);
       });
       // Avoid auto-select on ready: selecting during rapid destroy/recreate
       // can race and trigger jsTree internals on a torn-down instance.
