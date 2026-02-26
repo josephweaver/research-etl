@@ -22,6 +22,7 @@ import shlex
 import subprocess
 import threading
 import uuid
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -564,6 +565,9 @@ class HpccDirectExecutor(Executor):
             "--run-started-at",
             shlex.quote(started_at),
         ]
+        context_file = str(context.get("context_file") or "").strip()
+        if context_file:
+            batch_cmd += ["--context-file", shlex.quote(context_file)]
         if self.global_config and global_remote:
             batch_cmd += ["--global-config", shlex.quote(global_remote)]
         if self.projects_config and projects_remote:
@@ -712,6 +716,16 @@ class HpccDirectExecutor(Executor):
         run_lines.append("export PYTHONUNBUFFERED=1")
         run_lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
         run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
+        context_seed = context.get("seed_context")
+        if context_file and isinstance(context_seed, dict):
+            context_json = json.dumps(context_seed, separators=(",", ":"), default=str)
+            run_lines.extend(
+                [
+                    f"CONTEXT_FILE={shlex.quote(context_file)}",
+                    "mkdir -p \"$(dirname \\\"$CONTEXT_FILE\\\")\"",
+                    f"cat > \"$CONTEXT_FILE\" <<'ETL_CONTEXT_JSON'\n{context_json}\nETL_CONTEXT_JSON",
+                ]
+            )
         run_lines.append(" ".join(batch_cmd))
 
         if self.dry_run:

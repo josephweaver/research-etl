@@ -142,6 +142,10 @@
                 <select id="b_project_id">
                   <option value="">project (optional)</option>
                 </select>
+                <select id="b_session_id">
+                  <option value="">session: new</option>
+                </select>
+                <button id="btn_builder_new_session" type="button">New Session</button>
                 <select id="b_run_mode">
                   <option value="draft">Draft Mode (workspace)</option>
                   <option value="repro">Repro Mode (auto/git-pinned)</option>
@@ -155,6 +159,10 @@
               <div class="controls">
                 <input id="b_max_retries" placeholder="max_retries (default: 0)" />
                 <input id="b_retry_delay" placeholder="retry_delay_seconds (default: 0.0)" />
+              </div>
+              <div class="controls">
+                <input id="b_source_run_id" placeholder="seed session from run_id (optional)" />
+                <button id="btn_builder_import_run_state" type="button">Load Run State</button>
               </div>
               <div class="builder-head">
                 <h4>Requires Pipelines</h4>

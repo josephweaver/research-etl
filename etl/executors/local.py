@@ -20,7 +20,7 @@ from ..git_checkout import GitCheckoutError, GitExecutionSpec
 from ..pipeline import Pipeline, parse_pipeline, PipelineError
 from ..runner import run_pipeline, RunResult
 from ..source_control import SourceExecutionSpec, make_git_source_provider
-from ..tracking import record_run, load_run_step_states
+from ..tracking import record_run, load_run_step_states, upsert_run_context_snapshot
 from ..variable_solver import VariableSolver
 
 _SOURCE_PROVIDER = make_git_source_provider()
@@ -208,6 +208,13 @@ class LocalExecutor(Executor):
             )
         except PipelineError as exc:
             raise RuntimeError(f"Pipeline parse failed: {exc}") from exc
+        requested_step_indices = _parse_step_indices(context.get("step_indices"), len(pipeline.steps))
+        if requested_step_indices:
+            pipeline.steps = [pipeline.steps[i] for i in requested_step_indices]
+        seed_context = dict(context.get("seed_context") or {})
+        if seed_context:
+            pipeline.vars = dict(getattr(pipeline, "vars", {}) or {})
+            pipeline.vars.update(seed_context)
         effective_workdir = _resolve_effective_workdir(pipeline)
         resume_run_id = context.get("resume_run_id")
         resume_succeeded_steps = None
@@ -242,6 +249,21 @@ class LocalExecutor(Executor):
             prior_step_outputs=prior_step_outputs,
             log_func=context.get("log"),
             step_log_func=context.get("step_log"),
+            context_snapshot_func=lambda **snap: upsert_run_context_snapshot(
+                run_id=str((snap.get("context") or {}).get("sys", {}).get("run", {}).get("id") or context.get("run_id") or ""),
+                pipeline=str(pipeline_path),
+                project_id=context.get("project_id"),
+                executor=self.name,
+                event_type=str(snap.get("event_type") or "snapshot"),
+                context=dict(snap.get("context") or {}),
+                step_name=str(snap.get("step_name") or "").strip() or None,
+                step_index=snap.get("step_index"),
+                snapshot_file=(
+                    effective_workdir
+                    / "_context_snapshots"
+                    / f"{str((snap.get('context') or {}).get('sys', {}).get('run', {}).get('id') or context.get('run_id') or 'run').strip()}.jsonl"
+                ),
+            ),
         )
         # attach timestamps
         run_result.started_at = context.get("started_at") or datetime.utcnow().isoformat() + "Z"  # type: ignore[attr-defined]
@@ -311,3 +333,31 @@ class LocalExecutor(Executor):
         if truncated:
             text += "\n\n...[truncated]"
         return {"path": rel, "content": text, "truncated": truncated}
+
+
+def _parse_step_indices(value: Any, step_count: int) -> list[int]:
+    if value is None or value == "":
+        return []
+    raw_items: list[Any]
+    if isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        raw_items = [x.strip() for x in str(value).replace(";", ",").split(",")]
+    out: list[int] = []
+    seen: set[int] = set()
+    for raw in raw_items:
+        text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            idx = int(text)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid step index in context.step_indices: {text}") from exc
+        if idx < 0 or idx >= int(step_count):
+            raise RuntimeError(f"Step index out of range in context.step_indices: {idx} (step_count={step_count})")
+        if idx in seen:
+            continue
+        seen.add(idx)
+        out.append(idx)
+    out.sort()
+    return out

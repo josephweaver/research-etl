@@ -648,8 +648,21 @@ def api_builder_generate(payload: Optional[dict[str, Any]], deps: dict[str, Any]
 
 def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> dict[str, Any]:
     payload = payload or {}
+    session_id = str(payload.get("session_id") or "").strip() or None
+    if "builder_step_session_prepare" in deps:
+        prepared = deps["builder_step_session_prepare"](payload)
+        payload = dict(prepared.get("payload") or payload)
+        session = dict(prepared.get("session") or {})
+        session_id = str(session.get("session_id") or payload.get("session_id") or "").strip() or session_id
     run_id_seed = str(payload.get("run_id") or "").strip() or None
     run_started_seed = str(payload.get("run_started_at") or "").strip() or None
+    context_file = str(payload.get("context_file") or "").strip() or ""
+    session_context = {}
+    if context_file and "builder_step_session_load_context" in deps:
+        try:
+            session_context = dict(deps["builder_step_session_load_context"](context_file=context_file) or {})
+        except Exception:
+            session_context = {}
     run_started_dt = None
     if run_started_seed:
         try:
@@ -752,7 +765,13 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
         resolve_max_passes=int(getattr(pipeline, "resolve_max_passes", solver.max_passes) or solver.max_passes),
         steps=[target_step],
     )
+    if session_context:
+        mini.vars.update(dict(session_context))
     executor_name = str(payload.get("executor") or env_vars.get("executor") or "local").strip().lower()
+    local_run_result = None
+    local_step_result = None
+    remote_submit = None
+    remote_status = None
     _LOG.info(
         "builder step test start step=%s index=%s executor=%s env=%s project_id=%s pipeline_hint=%s",
         str(target_step.name),
@@ -775,11 +794,28 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
                 dry_run=dry_run,
                 max_retries=max_retries,
                 retry_delay_seconds=retry_delay_seconds,
+                context_snapshot_func=(
+                    (lambda **snap: deps["upsert_run_context_snapshot"](
+                        run_id=str((snap.get("context") or {}).get("sys", {}).get("run", {}).get("id") or run_id_seed or ""),
+                        pipeline=str(payload.get("pipeline") or pipeline_hint or ""),
+                        project_id=deps["normalize_project_id"](str(payload.get("project_id") or getattr(pipeline, "project_id", "") or "").strip() or None),
+                        executor="builder_step",
+                        event_type=str(snap.get("event_type") or "snapshot"),
+                        context=dict(snap.get("context") or {}),
+                        step_name=str(snap.get("step_name") or "").strip() or None,
+                        step_index=snap.get("step_index"),
+                        snapshot_file=(Path(workdir) / "_context_snapshots" / f"{str((snap.get('context') or {}).get('sys', {}).get('run', {}).get('id') or run_id_seed or 'run')}.jsonl"),
+                    ))
+                    if "upsert_run_context_snapshot" in deps
+                    else None
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=f"Step test failed: {exc}") from exc
 
         step_result = result.steps[0] if result.steps else None
+        local_run_result = result
+        local_step_result = step_result
         last_log_line = ""
         if step_result is not None:
             step_name_safe = str(getattr(step_result.step, "name", target_step.name) or target_step.name)
@@ -795,6 +831,8 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
                 if last_log_line:
                     break
         return {
+            "session_id": session_id,
+            "context_file": context_file or None,
             "run_id": result.run_id,
             "artifact_dir": result.artifact_dir,
             "step_name": target_step.name,
@@ -895,6 +933,7 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
                 context={
                     "run_id": run_id,
                     "run_started_at": run_started_at,
+                    "context_file": context_file,
                     "execution_env": env_vars,
                     "global_vars": global_vars,
                     "project_vars": project_vars,
@@ -911,9 +950,13 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
                 str(resolved_pipeline_path),
             )
             st = ex.status(submit.run_id)
+            remote_submit = submit
+            remote_status = st
             state = st.state.value if hasattr(st.state, "value") else str(st.state)
             success = str(state).lower() in {"succeeded", "success"}
             return {
+                "session_id": session_id,
+                "context_file": context_file or None,
                 "run_id": submit.run_id,
                 "artifact_dir": None,
                 "step_name": target_step.name,
@@ -967,6 +1010,7 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
             context={
                 "run_id": run_id,
                 "run_started_at": run_started_at,
+                "context_file": context_file,
                 "execution_env": env_vars,
                 "global_vars": global_vars,
                 "project_vars": project_vars,
@@ -981,9 +1025,13 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
             str(temp_pipeline_path),
         )
         st = ex.status(submit.run_id)
+        remote_submit = submit
+        remote_status = st
         state = st.state.value if hasattr(st.state, "value") else str(st.state)
         success = str(state).lower() in {"succeeded", "success"}
         return {
+            "session_id": session_id,
+            "context_file": context_file or None,
             "run_id": submit.run_id,
             "artifact_dir": None,
             "step_name": target_step.name,
@@ -1002,6 +1050,48 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Step test failed: {exc}") from exc
     finally:
+        try:
+            # Persist successful step outputs for session replay across step tests.
+            if context_file and "builder_step_session_save_context" in deps:
+                step_result = local_step_result
+                if (
+                    step_result is not None
+                    and bool(getattr(step_result, "success", False))
+                    and not bool(getattr(step_result, "skipped", False))
+                    and bool(getattr(step_result, "step", None))
+                    and bool(getattr(step_result.step, "output_var", None))
+                ):
+                    merged_ctx = dict(session_context or {})
+                    merged_ctx[str(step_result.step.output_var)] = dict(getattr(step_result, "outputs", {}) or {})
+                    deps["builder_step_session_save_context"](context_file=context_file, context=merged_ctx)
+        except Exception:
+            pass
+        try:
+            if "builder_step_session_record_result" in deps:
+                final_result: dict[str, Any] = {}
+                if local_run_result is not None and local_step_result is not None:
+                    step_result = local_step_result
+                    final_result = {
+                        "run_id": str(getattr(local_run_result, "run_id", "") or ""),
+                        "step_name": str(getattr(getattr(step_result, "step", None), "name", target_step.name) or target_step.name),
+                        "step_index": target_step_index,
+                        "success": bool(getattr(step_result, "success", False)),
+                        "error": str(getattr(step_result, "error", "") or ""),
+                    }
+                elif remote_submit is not None and remote_status is not None:
+                    state = remote_status.state.value if hasattr(remote_status.state, "value") else str(remote_status.state)
+                    success = str(state).lower() in {"succeeded", "success"}
+                    final_result = {
+                        "run_id": str(getattr(remote_submit, "run_id", "") or ""),
+                        "step_name": str(target_step.name),
+                        "step_index": target_step_index,
+                        "success": bool(success),
+                        "error": "" if success else str(getattr(remote_status, "message", "") or getattr(remote_submit, "message", "") or ""),
+                    }
+                if final_result:
+                    deps["builder_step_session_record_result"](session_id=session_id, result=final_result)
+        except Exception:
+            pass
         try:
             if temp_pipeline_path:
                 temp_pipeline_path.unlink(missing_ok=True)
@@ -1083,9 +1173,14 @@ def _builder_step_test_snapshot(test_id: str) -> Optional[dict[str, Any]]:
 def api_builder_test_step_start(payload: Optional[dict[str, Any]], deps: dict[str, Any]) -> dict:
     payload = dict(payload or {})
     _builder_step_tests_compact()
+    prepared = deps["builder_step_session_prepare"](payload) if "builder_step_session_prepare" in deps else {"payload": payload}
+    payload = dict(prepared.get("payload") or payload)
     test_id = uuid.uuid4().hex
+    payload["session_id"] = str(payload.get("session_id") or "").strip() or str(payload.get("run_id") or "").strip() or uuid.uuid4().hex
     payload["run_id"] = str(payload.get("run_id") or "").strip() or uuid.uuid4().hex
     payload["run_started_at"] = str(payload.get("run_started_at") or "").strip() or (datetime.utcnow().isoformat() + "Z")
+    if "builder_step_session_prepare" in deps:
+        payload = dict(deps["builder_step_session_prepare"](payload).get("payload") or payload)
 
     result_queue: Queue = Queue()
     proc = threading.Thread(
@@ -1107,8 +1202,16 @@ def api_builder_test_step_start(payload: Optional[dict[str, Any]], deps: dict[st
             "error": "",
             "status_code": 500,
             "run_id": payload.get("run_id"),
+            "session_id": payload.get("session_id"),
+            "context_file": payload.get("context_file"),
         }
-    return {"test_id": test_id, "state": "running", "run_id": payload.get("run_id")}
+    return {
+        "test_id": test_id,
+        "state": "running",
+        "run_id": payload.get("run_id"),
+        "session_id": payload.get("session_id"),
+        "context_file": payload.get("context_file"),
+    }
 
 
 def api_builder_test_step_status(test_id: str) -> dict:
@@ -1130,7 +1233,13 @@ def api_builder_test_step_status(test_id: str) -> dict:
         }
     if state == "cancelled":
         return {"test_id": key, "state": state, "error": str(snap.get("error") or "Step test cancelled.")}
-    return {"test_id": key, "state": "running", "run_id": snap.get("run_id")}
+    return {
+        "test_id": key,
+        "state": "running",
+        "run_id": snap.get("run_id"),
+        "session_id": snap.get("session_id"),
+        "context_file": snap.get("context_file"),
+    }
 
 
 def api_builder_test_step_stop(payload: Optional[dict[str, Any]]) -> dict:

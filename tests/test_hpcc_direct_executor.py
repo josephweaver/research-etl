@@ -79,6 +79,7 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
         {
             "run_id": "runabc",
             "run_started_at": "2026-02-17T01:02:03Z",
+            "context_file": "/scratch/alice/runs/_builder_sessions/runabc/context.json",
             "execution_env": {
                 "step_max_retries": 2,
                 "step_retry_delay_seconds": 1.5,
@@ -102,6 +103,7 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
     assert "export ETL_DB_VERBOSE=1" in remote_script
     assert "--steps 0,1" in remote_script
     assert "--project-id land_core" in remote_script
+    assert "--context-file /scratch/alice/runs/_builder_sessions/runabc/context.json" in remote_script
 
 
 def test_hpcc_direct_submit_uses_pipeline_remote_hint_for_external_pipeline(monkeypatch, tmp_path: Path) -> None:

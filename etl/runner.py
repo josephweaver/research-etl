@@ -653,6 +653,7 @@ def run_pipeline(
     log_func=None,
     step_log_func=None,
     foreach_selection: Optional[Dict[str, int]] = None,
+    context_snapshot_func=None,
 ) -> RunResult:
     run_id = run_id or uuid.uuid4().hex
     ts = run_started or datetime.utcnow()
@@ -698,6 +699,11 @@ def run_pipeline(
         ctx_vars,
         max_passes=max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20)),
     )
+    if context_snapshot_func is not None:
+        try:
+            context_snapshot_func(event_type="run_started", context=dict(ctx_vars), step_name=None, step_index=None)
+        except Exception:
+            pass
     prior_step_outputs = prior_step_outputs or {}
     foreach_selection = foreach_selection or {}
     resolve_max_passes = max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20))
@@ -785,6 +791,16 @@ def run_pipeline(
                 step_results.append(res)
                 if res.success and step.output_var:
                     ctx_vars[step.output_var] = res.outputs
+                    if context_snapshot_func is not None:
+                        try:
+                            context_snapshot_func(
+                                event_type="step_succeeded",
+                                context=dict(ctx_vars),
+                                step_name=str(step.name),
+                                step_index=len(step_results) - 1,
+                            )
+                        except Exception:
+                            pass
                 if not res.success and not res.skipped:
                     failed = True
                     break
@@ -819,6 +835,16 @@ def run_pipeline(
                         step_results.append(res)
                         if res.success and res.step.output_var:
                             ctx_vars[res.step.output_var] = res.outputs
+                            if context_snapshot_func is not None:
+                                try:
+                                    context_snapshot_func(
+                                        event_type="step_succeeded",
+                                        context=dict(ctx_vars),
+                                        step_name=str(res.step.name),
+                                        step_index=len(step_results) - 1,
+                                    )
+                                except Exception:
+                                    pass
                         if not res.success and not res.skipped:
                             pass
         if failed:

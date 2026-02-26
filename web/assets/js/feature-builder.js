@@ -28,6 +28,8 @@
   bind("btn_builder_generate", generateBuilderDraft);
   bind("btn_builder_validate", validateBuilderDraft);
   bind("btn_builder_run", runBuilderPipeline);
+  bind("btn_builder_new_session", async () => { await createBuilderSessionFromUi(); });
+  bind("btn_builder_import_run_state", async () => { await importBuilderRunStateToSession(); });
   bind("btn_builder_publish", publishBuilderPipeline);
   bind("btn_builder_terminate", terminateBuilderPipeline);
 
@@ -74,6 +76,15 @@
       syncYamlPreview();
       await refreshBuilderProjectVars(next);
       await refreshBuilderTreeFiles();
+      await refreshBuilderSessions();
+    };
+  }
+
+  const sessionSel = document.getElementById("b_session_id");
+  if(sessionSel){
+    sessionSel.onchange = async () => {
+      const next = String(sessionSel.value || "").trim();
+      await onBuilderSessionSelect(next);
     };
   }
 

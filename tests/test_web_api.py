@@ -569,6 +569,38 @@ def test_web_api_builder_projects_lists_projects(tmp_path: Path) -> None:
     assert payload["projects"] == ["gee_lee", "land_core"]
 
 
+def test_web_api_builder_sessions_create_list_get(monkeypatch, tmp_path: Path) -> None:
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(web_api.app)
+    create = client.post(
+        "/api/builder/sessions",
+        json={
+            "pipeline": "prism/download.yml",
+            "project_id": "land_core",
+            "env": "hpcc_dev",
+            "executor": "hpcc_direct",
+        },
+    )
+    assert create.status_code == 200
+    session = create.json()["session"]
+    session_id = str(session["session_id"])
+    assert session_id
+    assert str(session["context_file"]).endswith("/context.json")
+
+    listing = client.get("/api/builder/sessions", params={"project_id": "land_core"})
+    assert listing.status_code == 200
+    rows = listing.json()["sessions"]
+    assert any(str(r.get("session_id")) == session_id for r in rows)
+
+    fetched = client.get(f"/api/builder/sessions/{session_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["session"]["session_id"] == session_id
+
+
 def test_web_api_builder_project_vars_returns_merged_vars(tmp_path: Path) -> None:
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
@@ -2078,10 +2110,12 @@ def test_web_api_builder_test_step_uses_hpcc_direct_executor_when_env_requests_i
     payload = r.json()
     assert payload["executor"] == "hpcc_direct"
     assert payload["run_id"] == "remote_step_1"
+    assert str(payload.get("session_id") or "").strip() != ""
     assert payload["success"] is True
     assert payload["last_log_line"] == "ok"
     assert seen["submit_context"]["execution_env"]["executor"] == "hpcc_direct"
     assert seen["submit_context"]["allow_dirty_git"] is True
+    assert str(seen["submit_context"].get("context_file") or "").endswith("/context.json")
 
 
 def test_web_api_builder_test_step_remote_preserves_foreach_fields(monkeypatch):

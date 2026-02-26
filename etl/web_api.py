@@ -68,7 +68,12 @@ from .projects import (
 from .plugins.base import PluginLoadError, load_plugin
 from .runner import run_pipeline
 from .runtime_context import RuntimeContext, RuntimeContextError, RuntimeContextRequest, build_runtime_context
-from .tracking import fetch_plugin_resource_stats, upsert_run_status
+from .tracking import (
+    fetch_plugin_resource_stats,
+    upsert_run_status,
+    upsert_run_context_snapshot,
+    load_latest_run_context_snapshot,
+)
 from .variable_solver import VariableSolver
 from .web import action_handlers as web_action_handlers
 from .web.app import register_ui
@@ -115,6 +120,7 @@ _LOCAL_RUN_CANCEL_REQUESTED: set[str] = set()
 _LOCAL_RUN_LOG_RING: dict[str, list[str]] = {}
 _LOCAL_RUN_LOG_RING_MAX = 2000
 _WEB_RUNTIME_CONTEXT: Optional[RuntimeContext] = None
+_BUILDER_SESSIONS_LOCK = threading.Lock()
 
 
 @app.on_event("startup")
@@ -206,6 +212,383 @@ def _last_non_empty_line(lines: list[str]) -> str:
         if text:
             return text
     return ""
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _builder_sessions_root() -> Path:
+    root = (Path(".") / ".runs" / "builder" / "sessions").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _normalize_builder_session_id(raw: Optional[str]) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return uuid.uuid4().hex
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", text)
+    text = text.strip(".-")
+    return text or uuid.uuid4().hex
+
+
+def _builder_session_dir(session_id: str) -> Path:
+    safe_id = _normalize_builder_session_id(session_id)
+    return (_builder_sessions_root() / safe_id).resolve()
+
+
+def _builder_session_file(session_id: str) -> Path:
+    return _builder_session_dir(session_id) / "session.json"
+
+
+def _builder_session_context_file(session_id: str) -> Path:
+    return _builder_session_dir(session_id) / "context.json"
+
+
+def _read_json_file(path: Path, default: Any) -> Any:
+    if not path.exists() or not path.is_file():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def _db_session_row_to_obj(row: Any) -> dict[str, Any]:
+    return {
+        "session_id": str(row[0] or ""),
+        "run_id": str(row[1] or ""),
+        "run_started_at": row[2].isoformat().replace("+00:00", "Z") if row[2] is not None else "",
+        "pipeline": str(row[3] or ""),
+        "project_id": str(row[4] or ""),
+        "env": str(row[5] or ""),
+        "executor": str(row[6] or ""),
+        "status": str(row[7] or ""),
+        "context_file": str(row[8] or ""),
+        "last_step_name": str(row[9] or ""),
+        "last_step_index": row[10],
+        "last_result": str(row[11] or ""),
+        "last_error": str(row[12] or ""),
+        "last_updated_at": row[13].isoformat().replace("+00:00", "Z") if row[13] is not None else "",
+        "created_at": row[14].isoformat().replace("+00:00", "Z") if row[14] is not None else "",
+        "updated_at": row[15].isoformat().replace("+00:00", "Z") if row[15] is not None else "",
+    }
+
+
+def _db_load_builder_session(session_id: str) -> Optional[dict[str, Any]]:
+    db_url = get_database_url()
+    if not db_url:
+        return None
+    sid = _normalize_builder_session_id(session_id)
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        session_id, run_id, run_started_at, pipeline, project_id,
+                        env_name, executor, status, context_file, last_step_name,
+                        last_step_index, last_result, last_error, last_updated_at,
+                        created_at, updated_at
+                    FROM etl_builder_sessions
+                    WHERE session_id = %s
+                    """,
+                    (sid,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        return _db_session_row_to_obj(row)
+    except Exception:
+        return None
+
+
+def _db_upsert_builder_session(session: dict[str, Any]) -> Optional[dict[str, Any]]:
+    db_url = get_database_url()
+    if not db_url:
+        return None
+    sid = _normalize_builder_session_id(str(session.get("session_id") or ""))
+    if not sid:
+        return None
+    run_id = str(session.get("run_id") or "").strip() or uuid.uuid4().hex
+    run_started_at = str(session.get("run_started_at") or "").strip() or _utc_now_iso()
+    context_file = str(session.get("context_file") or "").strip() or _builder_session_context_file(sid).as_posix()
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO etl_builder_sessions (
+                        session_id, run_id, run_started_at, pipeline, project_id, env_name, executor,
+                        status, context_file, last_step_name, last_step_index, last_result, last_error,
+                        last_updated_at, created_at, updated_at
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s,
+                        %s, NOW(), NOW()
+                    )
+                    ON CONFLICT (session_id)
+                    DO UPDATE SET
+                        run_id = EXCLUDED.run_id,
+                        run_started_at = COALESCE(EXCLUDED.run_started_at, etl_builder_sessions.run_started_at),
+                        pipeline = EXCLUDED.pipeline,
+                        project_id = EXCLUDED.project_id,
+                        env_name = EXCLUDED.env_name,
+                        executor = EXCLUDED.executor,
+                        status = EXCLUDED.status,
+                        context_file = EXCLUDED.context_file,
+                        last_step_name = EXCLUDED.last_step_name,
+                        last_step_index = EXCLUDED.last_step_index,
+                        last_result = EXCLUDED.last_result,
+                        last_error = EXCLUDED.last_error,
+                        last_updated_at = EXCLUDED.last_updated_at,
+                        updated_at = NOW()
+                    RETURNING
+                        session_id, run_id, run_started_at, pipeline, project_id,
+                        env_name, executor, status, context_file, last_step_name,
+                        last_step_index, last_result, last_error, last_updated_at,
+                        created_at, updated_at
+                    """,
+                    (
+                        sid,
+                        run_id,
+                        run_started_at,
+                        str(session.get("pipeline") or "").strip() or None,
+                        normalize_project_id(session.get("project_id")) if session.get("project_id") else None,
+                        str(session.get("env") or "").strip() or None,
+                        str(session.get("executor") or "").strip() or None,
+                        str(session.get("status") or "active"),
+                        context_file,
+                        str(session.get("last_step_name") or "").strip() or None,
+                        session.get("last_step_index"),
+                        str(session.get("last_result") or "").strip() or None,
+                        str(session.get("last_error") or "").strip() or None,
+                        str(session.get("last_updated_at") or "").strip() or None,
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if not row:
+            return None
+        return _db_session_row_to_obj(row)
+    except Exception:
+        return None
+
+
+def _db_insert_builder_session_step(*, session_id: str, result: dict[str, Any]) -> None:
+    db_url = get_database_url()
+    if not db_url:
+        return
+    sid = _normalize_builder_session_id(session_id)
+    if not sid:
+        return
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO etl_builder_session_steps (
+                        session_id, run_id, step_name, step_index, success, error
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        sid,
+                        str(result.get("run_id") or "").strip() or None,
+                        str(result.get("step_name") or "").strip() or None,
+                        result.get("step_index"),
+                        bool(result.get("success")),
+                        str(result.get("error") or "").strip() or None,
+                    ),
+                )
+            conn.commit()
+    except Exception:
+        return
+
+
+def _db_list_builder_sessions(*, pipeline: Optional[str], project_id: Optional[str], env: Optional[str]) -> Optional[list[dict[str, Any]]]:
+    db_url = get_database_url()
+    if not db_url:
+        return None
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if pipeline:
+        where_parts.append("pipeline = %s")
+        params.append(str(pipeline).strip())
+    if project_id:
+        where_parts.append("project_id = %s")
+        params.append(normalize_project_id(project_id))
+    if env:
+        where_parts.append("env_name = %s")
+        params.append(str(env).strip())
+    where_sql = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                        session_id, run_id, run_started_at, pipeline, project_id,
+                        env_name, executor, status, context_file, last_step_name,
+                        last_step_index, last_result, last_error, last_updated_at,
+                        created_at, updated_at
+                    FROM etl_builder_sessions
+                    {where_sql}
+                    ORDER BY updated_at DESC, created_at DESC, session_id DESC
+                    """,
+                    tuple(params),
+                )
+                rows = cur.fetchall() or []
+        return [_db_session_row_to_obj(r) for r in rows]
+    except Exception:
+        return None
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _load_builder_session(session_id: str) -> Optional[dict[str, Any]]:
+    sid = _normalize_builder_session_id(session_id)
+    db_data = _db_load_builder_session(sid)
+    if isinstance(db_data, dict):
+        if not str(db_data.get("context_file") or "").strip():
+            db_data["context_file"] = _builder_session_context_file(sid).as_posix()
+        return db_data
+    data = _read_json_file(_builder_session_file(sid), default=None)
+    if not isinstance(data, dict):
+        return None
+    data["session_id"] = sid
+    if not str(data.get("context_file") or "").strip():
+        data["context_file"] = _builder_session_context_file(sid).as_posix()
+    return data
+
+
+def _save_builder_session(session: dict[str, Any]) -> dict[str, Any]:
+    sid = _normalize_builder_session_id(str(session.get("session_id") or ""))
+    now = _utc_now_iso()
+    cur = dict(_load_builder_session(sid) or {})
+    out = dict(cur)
+    out.update(dict(session or {}))
+    out["session_id"] = sid
+    out["created_at"] = str(out.get("created_at") or cur.get("created_at") or now)
+    out["updated_at"] = now
+    if not str(out.get("run_id") or "").strip():
+        out["run_id"] = uuid.uuid4().hex
+    if not str(out.get("run_started_at") or "").strip():
+        out["run_started_at"] = now
+    if not str(out.get("context_file") or "").strip():
+        out["context_file"] = _builder_session_context_file(sid).as_posix()
+    db_out = _db_upsert_builder_session(out)
+    if isinstance(db_out, dict):
+        out = dict(db_out)
+    with _BUILDER_SESSIONS_LOCK:
+        _write_json_atomic(_builder_session_file(sid), out)
+    return out
+
+
+def _builder_step_session_prepare(payload: Optional[dict[str, Any]]) -> dict[str, Any]:
+    data = dict(payload or {})
+    requested_sid = str(data.get("session_id") or "").strip()
+    run_id = str(data.get("run_id") or "").strip()
+    sid = _normalize_builder_session_id(requested_sid or run_id or uuid.uuid4().hex)
+    current = _load_builder_session(sid) or {}
+    now = _utc_now_iso()
+    session = _save_builder_session(
+        {
+            "session_id": sid,
+            "run_id": run_id or str(current.get("run_id") or "").strip() or uuid.uuid4().hex,
+            "run_started_at": str(data.get("run_started_at") or "").strip() or str(current.get("run_started_at") or now),
+            "pipeline": str(data.get("pipeline") or "").strip() or str(current.get("pipeline") or "").strip(),
+            "project_id": str(data.get("project_id") or "").strip() or str(current.get("project_id") or "").strip(),
+            "env": str(data.get("env") or "").strip() or str(current.get("env") or "").strip(),
+            "executor": str(data.get("executor") or "").strip() or str(current.get("executor") or "").strip(),
+            "status": str(current.get("status") or "active"),
+        }
+    )
+    context_path = Path(str(session.get("context_file") or "").strip() or _builder_session_context_file(sid).as_posix())
+    if not context_path.exists():
+        _write_json_atomic(context_path, {})
+    data["session_id"] = sid
+    data["run_id"] = str(session.get("run_id") or "")
+    data["run_started_at"] = str(session.get("run_started_at") or "")
+    data["context_file"] = context_path.as_posix()
+    return {"session": session, "payload": data}
+
+
+def _builder_step_session_load_context(*, context_file: Optional[str]) -> dict[str, Any]:
+    path = Path(str(context_file or "").strip()) if str(context_file or "").strip() else Path()
+    data = _read_json_file(path, default={}) if path else {}
+    return data if isinstance(data, dict) else {}
+
+
+def _builder_step_session_save_context(*, context_file: Optional[str], context: dict[str, Any]) -> None:
+    path_text = str(context_file or "").strip()
+    if not path_text:
+        return
+    _write_json_atomic(Path(path_text), dict(context or {}))
+
+
+def _builder_step_session_record_result(*, session_id: Optional[str], result: dict[str, Any]) -> None:
+    sid = _normalize_builder_session_id(str(session_id or "").strip())
+    if not sid:
+        return
+    current = _load_builder_session(sid)
+    if current is None:
+        return
+    success = bool(result.get("success"))
+    updates = {
+        "session_id": sid,
+        "status": "active",
+        "last_step_name": str(result.get("step_name") or ""),
+        "last_step_index": result.get("step_index"),
+        "last_run_id": str(result.get("run_id") or current.get("run_id") or ""),
+        "last_result": "success" if success else "failed",
+        "last_error": str(result.get("error") or "") if not success else "",
+        "last_updated_at": _utc_now_iso(),
+    }
+    _save_builder_session(updates)
+    _db_insert_builder_session_step(session_id=sid, result=result)
+
+
+def _builder_sessions_list(*, pipeline: Optional[str], project_id: Optional[str], env: Optional[str]) -> dict[str, Any]:
+    db_sessions = _db_list_builder_sessions(pipeline=pipeline, project_id=project_id, env=env)
+    if db_sessions is not None:
+        return {"sessions": db_sessions}
+    root = _builder_sessions_root()
+    pip = str(pipeline or "").strip()
+    pid = normalize_project_id(project_id) if project_id else None
+    env_name = str(env or "").strip()
+    sessions: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*/session.json")):
+        data = _read_json_file(path, default=None)
+        if not isinstance(data, dict):
+            continue
+        sid = path.parent.name
+        data["session_id"] = sid
+        if pid and normalize_project_id(data.get("project_id")) != pid:
+            continue
+        if pip and str(data.get("pipeline") or "").strip() != pip:
+            continue
+        if env_name and str(data.get("env") or "").strip() != env_name:
+            continue
+        if not str(data.get("context_file") or "").strip():
+            data["context_file"] = _builder_session_context_file(sid).as_posix()
+        sessions.append(data)
+    sessions.sort(key=lambda s: str(s.get("updated_at") or s.get("created_at") or ""), reverse=True)
+    return {"sessions": sessions}
+
+
+def _builder_session_get(session_id: str) -> dict[str, Any]:
+    sid = _normalize_builder_session_id(session_id)
+    session = _load_builder_session(sid)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Builder session not found: {sid}")
+    return {"session": session}
 
 
 def _release_local_run(run_id: str) -> None:
@@ -525,6 +908,9 @@ app.include_router(
         builder_test_step_start=lambda **kwargs: api_builder_test_step_start(**kwargs),
         builder_test_step_status=lambda **kwargs: api_builder_test_step_status(**kwargs),
         builder_test_step_stop=lambda **kwargs: api_builder_test_step_stop(**kwargs),
+        builder_sessions_list=lambda **kwargs: api_builder_sessions_list(**kwargs),
+        builder_sessions_create=lambda **kwargs: api_builder_sessions_create(**kwargs),
+        builder_sessions_get=lambda **kwargs: api_builder_sessions_get(**kwargs),
     )
 )
 app.include_router(
@@ -2405,6 +2791,11 @@ def _builder_handler_deps() -> dict[str, Any]:
         "infer_external_pipeline_remote_hint": _infer_external_pipeline_remote_hint,
         "tail_text_lines": _tail_text_lines,
         "last_non_empty_line": _last_non_empty_line,
+        "upsert_run_context_snapshot": upsert_run_context_snapshot,
+        "builder_step_session_prepare": _builder_step_session_prepare,
+        "builder_step_session_load_context": _builder_step_session_load_context,
+        "builder_step_session_save_context": _builder_step_session_save_context,
+        "builder_step_session_record_result": _builder_step_session_record_result,
         "DEFAULT_RESOLVE_MAX_PASSES": DEFAULT_RESOLVE_MAX_PASSES,
     }
 
@@ -2447,6 +2838,31 @@ def api_builder_test_step_status(test_id: str = Query(default="")) -> dict:
 
 def api_builder_test_step_stop(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     return web_builder_handlers.api_builder_test_step_stop(payload)
+
+
+def api_builder_sessions_list(
+    pipeline: Optional[str] = Query(default=None),
+    project_id: Optional[str] = Query(default=None),
+    env: Optional[str] = Query(default=None),
+) -> dict:
+    return _builder_sessions_list(pipeline=pipeline, project_id=project_id, env=env)
+
+
+def api_builder_sessions_create(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    base_payload = dict(payload or {})
+    source_run_id = str(base_payload.get("source_run_id") or "").strip()
+    prepared = _builder_step_session_prepare(base_payload)
+    if source_run_id:
+        context_file = str((prepared.get("payload") or {}).get("context_file") or "").strip()
+        if context_file:
+            snapshot_ctx = load_latest_run_context_snapshot(source_run_id)
+            if snapshot_ctx:
+                _builder_step_session_save_context(context_file=context_file, context=snapshot_ctx)
+    return {"session": prepared["session"]}
+
+
+def api_builder_sessions_get(session_id: str) -> dict:
+    return _builder_session_get(session_id)
 
 
 def _payload_with_pipeline(payload: Optional[dict[str, Any]], pipeline_id: str) -> dict[str, Any]:

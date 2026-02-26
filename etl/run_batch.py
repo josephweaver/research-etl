@@ -47,7 +47,7 @@ from etl.projects import (
     ProjectConfigError,
 )
 from etl.runner import run_pipeline, RunResult
-from etl.tracking import upsert_run_status, upsert_step_attempt, load_run_step_states
+from etl.tracking import upsert_run_status, upsert_step_attempt, load_run_step_states, upsert_run_context_snapshot
 from etl.entrypoint import guarded_entrypoint
 
 DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
@@ -493,6 +493,17 @@ def _main_impl(argv: list[str] | None = None) -> int:
             }
             if args.foreach_item_index is not None
             else None
+        ),
+        context_snapshot_func=lambda **snap: upsert_run_context_snapshot(
+            run_id=run_id,
+            pipeline=str(resolved_pipeline_path),
+            project_id=project_id,
+            executor=tracking_executor,
+            event_type=str(snap.get("event_type") or "snapshot"),
+            context=dict(snap.get("context") or {}),
+            step_name=str(snap.get("step_name") or "").strip() or None,
+            step_index=snap.get("step_index"),
+            snapshot_file=(Path(args.workdir) / "_context_snapshots" / f"{run_id}.jsonl"),
         ),
     )
     _vprint(args.verbose, f"batch execution finished: success={result.success}")

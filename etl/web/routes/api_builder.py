@@ -30,6 +30,9 @@ def build_api_builder_router(
     builder_test_step_start: Callable[..., dict[str, Any]],
     builder_test_step_status: Callable[..., dict[str, Any]],
     builder_test_step_stop: Callable[..., dict[str, Any]],
+    builder_sessions_list: Callable[..., dict[str, Any]],
+    builder_sessions_create: Callable[..., dict[str, Any]],
+    builder_sessions_get: Callable[..., dict[str, Any]],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -139,5 +142,20 @@ def build_api_builder_router(
     def api_builder_test_step_stop(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
         return builder_test_step_stop(payload=payload)
 
-    return router
+    @router.get("/api/builder/sessions")
+    def api_builder_sessions_list(
+        pipeline: Optional[str] = Query(default=None),
+        project_id: Optional[str] = Query(default=None),
+        env: Optional[str] = Query(default=None),
+    ) -> dict:
+        return builder_sessions_list(pipeline=pipeline, project_id=project_id, env=env)
 
+    @router.post("/api/builder/sessions")
+    def api_builder_sessions_create(payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+        return builder_sessions_create(payload=payload)
+
+    @router.get("/api/builder/sessions/{session_id}")
+    def api_builder_sessions_get(session_id: str) -> dict:
+        return builder_sessions_get(session_id=session_id)
+
+    return router

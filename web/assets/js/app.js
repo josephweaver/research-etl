@@ -58,6 +58,9 @@
     let builderValidateInFlight = false;
     let builderNamespaceDigest = "";
     let builderRunSeed = null;
+    let builderSessionId = "";
+    let builderSessions = [];
+    let builderPipelineRuns = [];
     let builderLastRunId = "";
     let builderLastRunExecutor = "";
     let builderEnvironmentsConfig = "";
@@ -66,6 +69,7 @@
     const PROJECT_STORAGE_KEY = "etl_ui_project";
     const ENV_STORAGE_KEY = "etl_ui_env";
     const BUILDER_LAST_PIPELINE_KEY = "etl_builder_last_pipeline";
+    const BUILDER_LAST_SESSION_KEY = "etl_builder_last_session_id";
     const VALID_UI_USERS = new Set(["admin", "land-core", "gee-lee"]);
     const _nativeFetch = window.fetch.bind(window);
     function currentAsUser(){
@@ -171,6 +175,7 @@
         localStorage.setItem(ENV_STORAGE_KEY, next);
         if(isBuilderView){
           renderBuilderModel();
+          await refreshBuilderSessions();
           if(!builderPreviewSectionCollapsed.vars){
             await refreshBuilderNamespace();
           }
@@ -326,6 +331,216 @@
         builderRunSeed = makeRunSeed();
       }
       return builderRunSeed;
+    }
+    function loadBuilderSessionId(){
+      try {
+        return String(localStorage.getItem(BUILDER_LAST_SESSION_KEY) || "").trim();
+      } catch {
+        return "";
+      }
+    }
+    function saveBuilderSessionId(value){
+      const text = String(value || "").trim();
+      builderSessionId = text;
+      try {
+        if(text) localStorage.setItem(BUILDER_LAST_SESSION_KEY, text);
+        else localStorage.removeItem(BUILDER_LAST_SESSION_KEY);
+      } catch {}
+      const sel = document.getElementById("b_session_id");
+      if(sel){
+        sel.value = text ? `session:${text}` : "";
+      }
+    }
+    function _fmtWhen(text){
+      const raw = String(text || "").trim();
+      if(!raw) return "";
+      try {
+        return new Date(raw).toLocaleString();
+      } catch {
+        return raw;
+      }
+    }
+    function _builderSessionOptionLabel(sess){
+      const sid = String((sess || {}).session_id || "").trim();
+      const st = String((sess || {}).updated_at || (sess || {}).created_at || "").trim();
+      const step = String((sess || {}).last_step_name || "").trim();
+      const result = String((sess || {}).last_result || "").trim();
+      const parts = [`session ${sid.slice(0, 12)}`];
+      if(st) parts.push(_fmtWhen(st));
+      if(step) parts.push(`${step}${result ? `:${result}` : ""}`);
+      return parts.join(" | ");
+    }
+    function _builderRunOptionLabel(run){
+      const r = run || {};
+      const rid = String(r.run_id || "").trim();
+      const status = String(r.status || "").trim() || "unknown";
+      const executor = String(r.executor || "").trim() || "executor?";
+      const started = _fmtWhen(r.started_at);
+      const parts = [`run ${rid.slice(0, 12)}`, status, executor];
+      if(started) parts.push(started);
+      return parts.join(" | ");
+    }
+    async function refreshBuilderSessions(){
+      if(!isBuilderView) return;
+      const sel = document.getElementById("b_session_id");
+      if(!sel) return;
+      const payload = builderPayload();
+      const qp = new URLSearchParams();
+      if(payload.pipeline) qp.set("pipeline", payload.pipeline);
+      if(payload.project_id) qp.set("project_id", payload.project_id);
+      if(payload.env) qp.set("env", payload.env);
+      const res = await fetch(`/api/builder/sessions?${qp.toString()}`);
+      if(!res.ok){
+        sel.innerHTML = `<option value="">session: new</option>`;
+        return;
+      }
+      const data = await res.json();
+      const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      builderSessions = sessions;
+      let runs = [];
+      if(payload.pipeline){
+        try {
+          const rr = await fetch(`/api/pipelines/${encodeURIComponent(payload.pipeline)}/runs?limit=100`);
+          if(rr.ok){
+            const rows = await rr.json();
+            runs = Array.isArray(rows) ? rows : [];
+          }
+        } catch {}
+      }
+      builderPipelineRuns = runs;
+      let html = `<option value="">session: new</option>`;
+      if(sessions.length){
+        html += `<optgroup label="Saved Sessions">`;
+        html += sessions.map(s => `<option value="session:${esc(s.session_id)}">${esc(_builderSessionOptionLabel(s))}</option>`).join("");
+        html += `</optgroup>`;
+      }
+      if(runs.length){
+        html += `<optgroup label="Pipeline Executions">`;
+        html += runs.map(r => `<option value="run:${esc(r.run_id)}">${esc(_builderRunOptionLabel(r))}</option>`).join("");
+        html += `</optgroup>`;
+      }
+      sel.innerHTML = html;
+      const remembered = builderSessionId || loadBuilderSessionId();
+      if(remembered && sessions.some(s => String(s.session_id || "").trim() === remembered)){
+        sel.value = `session:${remembered}`;
+        saveBuilderSessionId(remembered);
+      } else {
+        sel.value = "";
+      }
+    }
+    async function createBuilderSessionFromUi(){
+      if(!isBuilderView) return;
+      const payload = builderPayload();
+      const body = {};
+      if(payload.pipeline) body.pipeline = payload.pipeline;
+      if(payload.project_id) body.project_id = payload.project_id;
+      if(payload.env) body.env = payload.env;
+      if(payload.executor) body.executor = payload.executor;
+      const res = await fetch(`/api/builder/sessions`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(body),
+      });
+      const msg = document.getElementById("builder_msg");
+      if(!res.ok){
+        if(msg) msg.textContent = await readMessage(res);
+        return;
+      }
+      const session = (await res.json()).session || {};
+      const sid = String(session.session_id || "").trim();
+      if(sid){
+        saveBuilderSessionId(sid);
+      }
+      const runId = String(session.run_id || "").trim();
+      const runStartedAt = String(session.run_started_at || "").trim();
+      if(runId && runStartedAt){
+        builderRunSeed = { run_id: runId, run_started_at: runStartedAt };
+      }
+      await refreshBuilderSessions();
+      const sel = document.getElementById("b_session_id");
+      if(sel && sid){
+        sel.value = `session:${sid}`;
+      }
+      if(msg) msg.textContent = sid ? `Session ${sid} ready.` : "Session ready.";
+    }
+    async function importBuilderRunStateToSession(){
+      if(!isBuilderView) return;
+      const runIdEl = document.getElementById("b_source_run_id");
+      const runId = String(runIdEl && runIdEl.value ? runIdEl.value : "").trim();
+      const msg = document.getElementById("builder_msg");
+      if(!runId){
+        if(msg) msg.textContent = "Provide run_id to load.";
+        return;
+      }
+      const payload = builderPayload();
+      const body = {
+        source_run_id: runId,
+      };
+      if(payload.pipeline) body.pipeline = payload.pipeline;
+      if(payload.project_id) body.project_id = payload.project_id;
+      if(payload.env) body.env = payload.env;
+      if(payload.executor) body.executor = payload.executor;
+      const res = await fetch(`/api/builder/sessions`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(body),
+      });
+      if(!res.ok){
+        if(msg) msg.textContent = await readMessage(res);
+        return;
+      }
+      const session = (await res.json()).session || {};
+      const sid = String(session.session_id || "").trim();
+      if(sid){
+        saveBuilderSessionId(sid);
+      }
+      const runIdOut = String(session.run_id || "").trim();
+      const runStartedAt = String(session.run_started_at || "").trim();
+      if(runIdOut && runStartedAt){
+        builderRunSeed = { run_id: runIdOut, run_started_at: runStartedAt };
+      }
+      await refreshBuilderSessions();
+      const sel = document.getElementById("b_session_id");
+      if(sel && sid){
+        sel.value = `session:${sid}`;
+      }
+      if(msg){
+        msg.textContent = sid
+          ? `Loaded state from run ${runId} into session ${sid}.`
+          : `Loaded state from run ${runId}.`;
+      }
+    }
+    async function onBuilderSessionSelect(sessionId){
+      const raw = String(sessionId || "").trim();
+      if(!raw){
+        saveBuilderSessionId("");
+        builderRunSeed = null;
+        return;
+      }
+      if(raw.startsWith("run:")){
+        const runId = raw.slice(4).trim();
+        const runIdEl = document.getElementById("b_source_run_id");
+        if(runIdEl){
+          runIdEl.value = runId;
+        }
+        await importBuilderRunStateToSession();
+        return;
+      }
+      const sid = raw.startsWith("session:") ? raw.slice(8).trim() : raw;
+      const res = await fetch(`/api/builder/sessions/${encodeURIComponent(sid)}`);
+      const msg = document.getElementById("builder_msg");
+      if(!res.ok){
+        if(msg) msg.textContent = await readMessage(res);
+        return;
+      }
+      const session = (await res.json()).session || {};
+      saveBuilderSessionId(String(session.session_id || sid));
+      const runId = String(session.run_id || "").trim();
+      const runStartedAt = String(session.run_started_at || "").trim();
+      if(runId && runStartedAt){
+        builderRunSeed = { run_id: runId, run_started_at: runStartedAt };
+      }
+      if(msg) msg.textContent = `Selected session ${String(session.session_id || sid)}.`;
     }
     function normalizeBuilderPipelineName(raw){
       let s = String(raw || "").trim().replaceAll("\\\\","/");
@@ -835,6 +1050,7 @@
       area.value = next;
       if(changed){
         builderRunSeed = null;
+        saveBuilderSessionId("");
         builderLastRunId = "";
         builderLastRunExecutor = "";
         builderValidationState = "unknown";
@@ -933,6 +1149,8 @@
       if (workdir) body.workdir = workdir;
       if (retries) body.max_retries = Number(retries);
       if (delay) body.retry_delay_seconds = Number(delay);
+      const sessionId = String(builderSessionId || loadBuilderSessionId()).trim();
+      if (sessionId) body.session_id = sessionId;
       body.dry_run = document.getElementById("b_dry_run").checked;
       body.verbose = document.getElementById("b_verbose").checked;
       body.git_sync = document.getElementById("b_git_sync").checked;
@@ -2460,6 +2678,7 @@
         )
       );
       builderRunSeed = null;
+      saveBuilderSessionId("");
       renderBuilderModel();
       syncYamlPreview();
       renderBuilderCreateMode();
@@ -2710,7 +2929,9 @@
           builderModel.project_id = String(projectSel.value || "").trim();
         }
         builderRunSeed = null;
+        saveBuilderSessionId("");
         await loadBuilderPlugins();
+        await refreshBuilderSessions();
         renderBuilderModel();
         syncYamlPreview();
         document.getElementById("builder_msg").textContent = "Select a pipeline from the tree, or choose [new pipeline].";
@@ -2739,6 +2960,7 @@
           builderModel.project_id = String(projectSel.value || "").trim();
         }
         builderRunSeed = null;
+        saveBuilderSessionId("");
         builderLoaded = false;
         return;
       } else {
@@ -2757,9 +2979,11 @@
           }
         }
         builderRunSeed = null;
+        saveBuilderSessionId("");
         saveBuilderLastPipeline(pipeline, builderSelectedPipelineSource, builderModel.project_id || (projectSel ? projectSel.value : ""));
       }
       await loadBuilderPlugins();
+      await refreshBuilderSessions();
       renderBuilderModel();
       syncYamlPreview();
       builderLoaded = true;
@@ -3102,6 +3326,7 @@
         }
       }
       builderRunSeed = null;
+      saveBuilderSessionId("");
       renderBuilderModel();
       syncYamlPreview();
       builderValidationState = data.valid ? "valid" : "unknown";
@@ -3236,6 +3461,12 @@
       const seed = ensureBuilderRunSeed();
       payload.run_id = seed.run_id;
       payload.run_started_at = seed.run_started_at;
+      if(!builderSessionId){
+        builderSessionId = loadBuilderSessionId();
+      }
+      if(builderSessionId){
+        payload.session_id = builderSessionId;
+      }
       payload.step_index = idx;
       const runMode = String((document.getElementById("b_run_mode") || {}).value || "draft").trim().toLowerCase();
       payload.allow_dirty_git = runMode !== "repro";
@@ -3303,6 +3534,10 @@
         return;
       }
       const startData = await startRes.json();
+      if(startData && startData.session_id){
+        saveBuilderSessionId(startData.session_id);
+        await refreshBuilderSessions();
+      }
       const testId = String(startData.test_id || "").trim();
       if(!testId){
         builderStepStatus[idx] = "failed";
@@ -3365,6 +3600,10 @@
         return;
       }
       builderStepStatus[idx] = data.success ? "run_ok" : "failed";
+      if(data && data.session_id){
+        saveBuilderSessionId(data.session_id);
+        await refreshBuilderSessions();
+      }
       builderStepOutput[idx] = JSON.stringify(data, null, 2);
       builderStepOutputCollapsed[idx] = false;
       builderStepLastLog[idx] = String(data.last_log_line || (data.success ? "Step test completed." : data.error || "Step test failed."));

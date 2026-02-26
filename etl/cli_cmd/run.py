@@ -35,7 +35,7 @@ from etl.runtime_context import (
     merge_context_with_secrets,
     parse_cli_var_overrides,
 )
-from etl.tracking import load_runs
+from etl.tracking import load_runs, load_latest_run_context_snapshot
 from etl.variable_solver import VariableSolver
 
 
@@ -97,6 +97,16 @@ def register_run_args(
     p_run.add_argument("--max-retries", type=int, default=None, help="Max retries per step after first failure")
     p_run.add_argument("--retry-delay-seconds", type=float, default=None, help="Delay between retries in seconds")
     p_run.add_argument("--resume-run-id", default=None, help="Resume by skipping steps that succeeded in a prior run_id")
+    p_run.add_argument(
+        "--state-run-id",
+        default=None,
+        help="Load latest persisted context snapshot from a prior run_id and seed current execution state.",
+    )
+    p_run.add_argument(
+        "--step-indices",
+        default=None,
+        help="Comma-separated step indices to execute (0-based).",
+    )
     p_run.add_argument(
         "--ignore-dependencies",
         action="store_true",
@@ -398,6 +408,12 @@ def _submit_pipeline_run(
                 "allow_workspace_source": allow_workspace_source,
                 "allow_dirty_git": bool(args.allow_dirty_git),
                 "project_id": project_id,
+                "step_indices": str(args.step_indices or "").strip() or None,
+                "seed_context": (
+                    load_latest_run_context_snapshot(str(args.state_run_id))
+                    if str(args.state_run_id or "").strip()
+                    else {}
+                ),
             },
         )
     except Exception as exc:  # noqa: BLE001

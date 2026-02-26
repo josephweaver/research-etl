@@ -63,6 +63,21 @@ def _step_to_dict(step_result: StepResult) -> Dict[str, Any]:
     }
 
 
+def _append_context_snapshot_file(
+    *,
+    snapshot_file: Optional[Path],
+    payload: Dict[str, Any],
+) -> None:
+    if snapshot_file is None:
+        return
+    try:
+        snapshot_file.parent.mkdir(parents=True, exist_ok=True)
+        with snapshot_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, default=str) + "\n")
+    except Exception:
+        return
+
+
 def _upsert_run_db(
     rec: RunRecord,
     *,
@@ -516,6 +531,98 @@ def upsert_step_attempt(
             pass
 
 
+def upsert_run_context_snapshot(
+    *,
+    run_id: str,
+    pipeline: Optional[str],
+    project_id: Optional[str],
+    executor: Optional[str],
+    event_type: str,
+    context: Dict[str, Any],
+    step_name: Optional[str] = None,
+    step_index: Optional[int] = None,
+    recorded_at: Optional[str] = None,
+    snapshot_file: Optional[Path] = None,
+) -> None:
+    payload = {
+        "run_id": str(run_id),
+        "pipeline": str(pipeline or ""),
+        "project_id": str(project_id or ""),
+        "executor": str(executor or ""),
+        "event_type": str(event_type or "snapshot"),
+        "step_name": str(step_name or ""),
+        "step_index": step_index,
+        "context": dict(context or {}),
+        "recorded_at": str(recorded_at or _now_iso()),
+    }
+    _append_context_snapshot_file(snapshot_file=snapshot_file, payload=payload)
+
+    db_url = get_database_url()
+    if not db_url:
+        db_log(f"upsert_run_context_snapshot skipped: no database URL configured run_id={run_id}")
+        return
+    db_log(
+        "connect: upsert_run_context_snapshot "
+        f"run_id={run_id} event={event_type} step={step_name or ''}"
+    )
+    with psycopg.connect(db_url) as conn:
+        with conn.cursor() as cur:
+            db_log(
+                "query: insert etl_run_context_snapshots "
+                f"run_id={run_id} event={event_type} step={step_name or ''}"
+            )
+            cur.execute(
+                """
+                INSERT INTO etl_run_context_snapshots (
+                    run_id, pipeline, project_id, executor, event_type, step_name, step_index, context_json, recorded_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                """,
+                (
+                    str(run_id),
+                    str(pipeline or "").strip() or None,
+                    str(project_id or "").strip() or None,
+                    str(executor or "").strip() or None,
+                    str(event_type or "snapshot"),
+                    str(step_name or "").strip() or None,
+                    int(step_index) if step_index is not None else None,
+                    json.dumps(dict(context or {}), default=str),
+                    str(recorded_at or _now_iso()),
+                ),
+            )
+        conn.commit()
+
+
+def load_latest_run_context_snapshot(run_id: str) -> Dict[str, Any]:
+    db_url = get_database_url()
+    if db_url:
+        try:
+            db_log(f"connect: load_latest_run_context_snapshot run_id={run_id}")
+            with psycopg.connect(db_url) as conn:
+                with conn.cursor() as cur:
+                    db_log(f"query: select etl_run_context_snapshots latest run_id={run_id}")
+                    cur.execute(
+                        """
+                        SELECT context_json
+                        FROM etl_run_context_snapshots
+                        WHERE run_id = %s
+                        ORDER BY recorded_at DESC, snapshot_id DESC
+                        LIMIT 1
+                        """,
+                        (str(run_id),),
+                    )
+                    row = cur.fetchone()
+            if row:
+                raw = row[0]
+                if isinstance(raw, str):
+                    return dict(json.loads(raw or "{}"))
+                if isinstance(raw, dict):
+                    return dict(raw)
+        except Exception:
+            pass
+    return {}
+
+
 def record_run(
     run_result: RunResult,
     pipeline_path: str,
@@ -794,4 +901,6 @@ __all__ = [
     "fetch_plugin_resource_stats",
     "upsert_run_status",
     "upsert_step_attempt",
+    "upsert_run_context_snapshot",
+    "load_latest_run_context_snapshot",
 ]
