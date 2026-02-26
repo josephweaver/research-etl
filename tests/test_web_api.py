@@ -2062,7 +2062,14 @@ def test_web_api_builder_test_step_uses_hpcc_direct_executor_when_env_requests_i
             return type("Sub", (), {"run_id": "remote_step_1", "message": "submitted"})()
 
         def status(self, run_id):
-            return type("St", (), {"state": type("State", (), {"value": "succeeded"})(), "message": "ok"})()
+            return type(
+                "St",
+                (),
+                {
+                    "state": type("State", (), {"value": "succeeded"})(),
+                    "message": "line 1\nline 2\nok",
+                },
+            )()
 
     monkeypatch.setattr(web_api, "HpccDirectExecutor", _FakeHpccDirectExecutor)
     client = TestClient(web_api.app)
@@ -2072,6 +2079,7 @@ def test_web_api_builder_test_step_uses_hpcc_direct_executor_when_env_requests_i
     assert payload["executor"] == "hpcc_direct"
     assert payload["run_id"] == "remote_step_1"
     assert payload["success"] is True
+    assert payload["last_log_line"] == "ok"
     assert seen["submit_context"]["execution_env"]["executor"] == "hpcc_direct"
     assert seen["submit_context"]["allow_dirty_git"] is True
 

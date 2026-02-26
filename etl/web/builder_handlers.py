@@ -25,6 +25,15 @@ _BUILDER_STEP_TESTS: dict[str, dict[str, Any]] = {}
 _LOG = logging.getLogger("etl.web.builder_handlers")
 
 
+def _last_non_empty_text(value: Any) -> str:
+    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for line in reversed(lines):
+        text = str(line or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def api_builder_source(
     pipeline: str,
     project_id: Optional[str],
@@ -796,7 +805,7 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
             "error": step_result.error if step_result else "No step result produced.",
             "outputs": step_result.outputs if step_result else {},
             "attempts": step_result.attempts if step_result else [],
-            "last_log_line": last_log_line,
+            "last_log_line": _last_non_empty_text(last_log_line),
         }
 
     import yaml
@@ -916,7 +925,7 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
                 "error": None if success else (st.message or submit.message or f"executor state={state}"),
                 "outputs": {},
                 "attempts": [],
-                "last_log_line": st.message or submit.message or "",
+                "last_log_line": _last_non_empty_text(st.message or submit.message or ""),
             }
 
         temp_pipeline_dir = (repo_root / "pipelines" / ".builder_step_tests").resolve()
@@ -986,7 +995,7 @@ def execute_builder_step_test(payload: dict[str, Any], deps: dict[str, Any]) -> 
             "error": None if success else (st.message or submit.message or f"executor state={state}"),
             "outputs": {},
             "attempts": [],
-            "last_log_line": st.message or submit.message or "",
+            "last_log_line": _last_non_empty_text(st.message or submit.message or ""),
         }
     except HTTPException:
         raise
