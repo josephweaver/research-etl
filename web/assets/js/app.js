@@ -1794,12 +1794,12 @@
               </div>
             </div>
             <label class="muted"><input type="checkbox" data-kind="step-enabled" data-idx="${idx}" ${st.enabled === false ? "" : "checked"} /> enabled</label>
-            <button class="spin-btn ${loading ? "loading" : ""}" data-test-step="${idx}" ${loading ? "disabled" : ""}>
+            <button type="button" class="spin-btn ${loading ? "loading" : ""}" data-test-step="${idx}" ${loading ? "disabled" : ""}>
               <span>Test Step</span><span class="spin"></span>
             </button>
-            ${loading ? `<button data-stop-step-test="${idx}">Stop</button>` : ``}
-            <button data-apply-step-rec="${idx}" ${hasRec ? "" : "disabled"}>Apply Recommended</button>
-            <button data-del-step="${idx}">Remove Step</button>
+            ${loading ? `<button type="button" data-stop-step-test="${idx}">Stop</button>` : ``}
+            <button type="button" data-apply-step-rec="${idx}" ${hasRec ? "" : "disabled"}>Apply Recommended</button>
+            <button type="button" data-del-step="${idx}">Remove Step</button>
           </div>
           <div class="muted">${esc(stepInlineStatus || "")}</div>
           <div class="param-panel">
@@ -2034,7 +2034,20 @@
       if(testStepBtn){
         const idx = Number(testStepBtn.getAttribute("data-test-step") || "-1");
         if(idx >= 0){
-          await testBuilderStepAt(idx);
+          try {
+            await testBuilderStepAt(idx);
+          } catch (err) {
+            const msg = document.getElementById("builder_msg");
+            const out = document.getElementById("builder_output");
+            builderStepStatus[idx] = "failed";
+            delete builderStepTesting[idx];
+            delete builderStepTestJob[idx];
+            const text = String((err && err.message) ? err.message : err || "Step test failed.");
+            builderStepLastLog[idx] = text;
+            renderBuilderModel();
+            if(msg){ msg.textContent = text; }
+            if(out){ out.textContent = text; }
+          }
         }
         return;
       }
@@ -2042,7 +2055,13 @@
       if(stopStepBtn){
         const idx = Number(stopStepBtn.getAttribute("data-stop-step-test") || "-1");
         if(idx >= 0){
-          await stopBuilderStepTestAt(idx);
+          try {
+            await stopBuilderStepTestAt(idx);
+          } catch (err) {
+            const msg = document.getElementById("builder_msg");
+            const text = String((err && err.message) ? err.message : err || "Failed to stop step test.");
+            if(msg){ msg.textContent = text; }
+          }
         }
         return;
       }
