@@ -96,3 +96,29 @@ def test_sync_pipeline_asset_source_falls_back_when_local_repo_path_missing(monk
 
     assert out.parent == (tmp_path / "cache").resolve()
     assert any(cmd[:2] == ["clone", "https://example.com/shared.git"] for cmd in calls)
+
+
+def test_resolve_pipeline_path_from_project_sources_handles_missing_absolute_local_path(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "workspace"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    ext_repo = tmp_path / "external"
+    ext_pipeline = ext_repo / "pipelines" / "sample.yml"
+    ext_pipeline.parent.mkdir(parents=True, exist_ok=True)
+    ext_pipeline.write_text("steps: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "etl.pipeline_assets.sync_pipeline_asset_source",
+        lambda source, cache_root: ext_repo,
+    )
+
+    missing_abs = (repo_root / "pipelines" / "sample.yml").resolve()
+    resolved = resolve_pipeline_path_from_project_sources(
+        missing_abs,
+        project_vars={
+            "pipeline_asset_sources": [
+                {"repo_url": "https://example.com/shared-etl-pipelines.git", "pipelines_dir": "pipelines"}
+            ]
+        },
+        repo_root=repo_root,
+    )
+    assert resolved == ext_pipeline.resolve()

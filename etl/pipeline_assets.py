@@ -183,7 +183,32 @@ def resolve_pipeline_path_from_project_sources(
     if not sources:
         return original
 
-    candidates = _normalize_pipeline_input(original)
+    repo_root_resolved = Path(repo_root).resolve()
+    candidates: List[Path] = []
+    # External sources are rooted at each source's pipelines_dir, so absolute
+    # local paths should be converted to repo-relative candidates when possible.
+    if original.is_absolute():
+        try:
+            rel_from_pipelines = original.resolve().relative_to((repo_root_resolved / "pipelines").resolve())
+            candidates.extend(_normalize_pipeline_input(rel_from_pipelines))
+        except Exception:
+            pass
+        try:
+            rel_from_repo = original.resolve().relative_to(repo_root_resolved)
+            candidates.extend(_normalize_pipeline_input(rel_from_repo))
+        except Exception:
+            pass
+    candidates.extend(_normalize_pipeline_input(original))
+    # De-duplicate while preserving order.
+    seen: set[str] = set()
+    uniq_candidates: List[Path] = []
+    for c in candidates:
+        key = c.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq_candidates.append(c)
+    candidates = uniq_candidates
     root = Path(cache_root or (Path(repo_root).resolve() / ".pipeline_assets_cache"))
     for src in sources:
         repo_dir = sync_pipeline_asset_source(src, cache_root=root)
