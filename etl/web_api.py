@@ -854,6 +854,22 @@ def _parse_dataset_create_payload(payload: Optional[dict[str, Any]]) -> dict[str
     }
 
 
+def _fetch_executor_capabilities() -> list[dict[str, Any]]:
+    repo_root = Path(".").resolve()
+    executors = [
+        LocalExecutor(),
+        SlurmExecutor(env_config={}, repo_root=repo_root, dry_run=True),
+        HpccDirectExecutor(env_config={}, repo_root=repo_root, dry_run=True),
+    ]
+    return [
+        {
+            "executor": ex.name,
+            "capabilities": ex.capabilities(),
+        }
+        for ex in executors
+    ]
+
+
 app.include_router(
     build_api_read_router(
         resolve_user_scope=_resolve_user_scope,
@@ -869,6 +885,7 @@ app.include_router(
         fetch_dataset_detail=lambda *args, **kwargs: fetch_dataset_detail(*args, **kwargs),
         fetch_runs=lambda **kwargs: fetch_runs(**kwargs),
         fetch_run_detail=lambda *args, **kwargs: fetch_run_detail(*args, **kwargs),
+        fetch_executor_capabilities=lambda: _fetch_executor_capabilities(),
         create_dataset=lambda **kwargs: create_dataset(**kwargs),
         WebQueryError=WebQueryError,
         DatasetServiceError=DatasetServiceError,

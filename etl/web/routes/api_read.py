@@ -26,11 +26,17 @@ def build_api_read_router(
     fetch_dataset_detail: Callable[..., Optional[dict[str, Any]]],
     fetch_runs: Callable[..., list[dict[str, Any]]],
     fetch_run_detail: Callable[..., Optional[dict[str, Any]]],
+    fetch_executor_capabilities: Callable[[], list[dict[str, Any]]],
     create_dataset: Callable[..., dict[str, Any]],
     WebQueryError: type[Exception],
     DatasetServiceError: type[Exception],
 ) -> APIRouter:
     router = APIRouter()
+
+    @router.get("/api/executors/capabilities")
+    def api_executor_capabilities(request: Request) -> list[dict[str, Any]]:
+        _ = resolve_user_scope(request)
+        return fetch_executor_capabilities()
 
     @router.get("/api/pipelines")
     def api_pipelines(
@@ -253,4 +259,3 @@ def build_api_read_router(
         return payload
 
     return router
-

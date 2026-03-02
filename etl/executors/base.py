@@ -62,6 +62,15 @@ class Executor(ABC):
     def status(self, run_id: str) -> RunStatus:
         """Return current status for a run."""
 
+    def capabilities(self) -> Dict[str, bool]:
+        """Return supported optional executor capabilities."""
+        return {
+            "cancel": False,
+            "artifact_tree": False,
+            "artifact_file": False,
+            "query_data": False,
+        }
+
     def cancel(self, run_id: str) -> RunStatus:
         """Attempt to cancel a run if supported."""
         raise NotImplementedError("cancel not implemented for this executor")

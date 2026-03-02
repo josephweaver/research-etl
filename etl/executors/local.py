@@ -96,6 +96,14 @@ class LocalExecutor(Executor):
         self._statuses[run_result.run_id] = status
         return status
 
+    def capabilities(self) -> Dict[str, bool]:
+        return {
+            "cancel": False,
+            "artifact_tree": True,
+            "artifact_file": True,
+            "query_data": False,
+        }
+
     def submit(self, pipeline_path: str, context: Dict[str, Any] | None = None) -> SubmissionResult:
         context = context or {}
         pipeline_ref = Path(pipeline_path)

@@ -197,6 +197,14 @@ class HpccDirectExecutor(Executor):
         self.required_secret_keys = _parse_str_list(self.env_config.get("required_secret_keys"))
         self._statuses: Dict[str, RunStatus] = {}
 
+    def capabilities(self) -> Dict[str, bool]:
+        return {
+            "cancel": False,
+            "artifact_tree": False,
+            "artifact_file": False,
+            "query_data": False,
+        }
+
     def _ssh_target(self) -> str:
         if not self.ssh_host:
             raise RuntimeError("hpcc_direct executor requires execution env field 'ssh_host'.")

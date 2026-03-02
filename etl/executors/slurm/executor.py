@@ -399,6 +399,14 @@ class SlurmExecutor(Executor):
         self.db_tunnel_command = str(env_config.get("db_tunnel_command") or "").strip()
         self._statuses: Dict[str, RunStatus] = {}
 
+    def capabilities(self) -> Dict[str, bool]:
+        return {
+            "cancel": False,
+            "artifact_tree": True,
+            "artifact_file": True,
+            "query_data": False,
+        }
+
     def _append_db_tunnel_lines(self, lines: list[str]) -> None:
         if not self.db_tunnel_command:
             return
