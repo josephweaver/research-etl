@@ -18,6 +18,10 @@ from typing import Any, Dict, Optional
 from .base import Executor, RunState, RunStatus, SubmissionResult
 from ..git_checkout import GitCheckoutError, GitExecutionSpec
 from ..pipeline import Pipeline, parse_pipeline, PipelineError
+from ..query.errors import QueryExecutionError
+from ..query.planner_duckdb import build_duckdb_query_plan
+from ..query.runners.duckdb_runner import run_duckdb_query_plan
+from ..query.spec import validate_query_spec
 from ..runner import run_pipeline, RunResult
 from ..source_control import SourceExecutionSpec, make_git_source_provider
 from ..tracking import record_run, load_run_step_states, upsert_run_context_snapshot
@@ -101,8 +105,22 @@ class LocalExecutor(Executor):
             "cancel": False,
             "artifact_tree": True,
             "artifact_file": True,
-            "query_data": False,
+            "query_data": True,
         }
+
+    def query_data(self, query_spec: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        ctx = dict(context or {})
+        normalized = validate_query_spec(query_spec)
+        plan = build_duckdb_query_plan(normalized, context=ctx)
+        try:
+            result = run_duckdb_query_plan(plan)
+        except QueryExecutionError as exc:
+            detail = dict(getattr(exc, "detail", {}) or {})
+            detail.setdefault("executor", self.name)
+            detail.setdefault("query_spec", normalized)
+            raise QueryExecutionError(str(exc), detail=detail) from exc
+        result["executor"] = self.name
+        return result
 
     def submit(self, pipeline_path: str, context: Dict[str, Any] | None = None) -> SubmissionResult:
         context = context or {}

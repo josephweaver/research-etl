@@ -42,6 +42,7 @@ from .executors.hpcc_direct import HpccDirectExecutor
 from .executors.local import LocalExecutor
 from .executors.slurm import SlurmExecutor
 from .git_checkout import infer_repo_name
+from .query.errors import QueryError
 from .pipeline import (
     DEFAULT_RESOLVE_MAX_PASSES,
     Pipeline,
@@ -79,6 +80,7 @@ from .variable_solver import VariableSolver
 from .web import action_handlers as web_action_handlers
 from .web.app import register_ui
 from .web import builder_handlers as web_builder_handlers
+from .web import query_handlers as web_query_handlers
 from .web import run_artifact_handlers as web_run_artifact_handlers
 from .web.helpers import (
     extract_unresolved_tokens as _extract_unresolved_tokens,
@@ -88,6 +90,7 @@ from .web.helpers import (
 from .web.routes.api_actions import build_api_actions_router
 from .web.routes.api_builder import build_api_builder_router
 from .web.routes.api_management import build_api_management_router
+from .web.routes.api_query import build_api_query_router
 from .web.routes.api_read import build_api_read_router
 from .web.routes.api_run_artifacts import build_api_run_artifacts_router
 from .web_queries import (
@@ -908,6 +911,11 @@ app.include_router(
     )
 )
 app.include_router(
+    build_api_query_router(
+        query_preview=lambda request, payload: api_query_preview(request, payload),
+    )
+)
+app.include_router(
     build_api_builder_router(
         builder_source=lambda **kwargs: api_builder_source(**kwargs),
         builder_files=lambda **kwargs: api_builder_files(**kwargs),
@@ -1426,6 +1434,23 @@ def _run_artifact_handler_deps() -> dict[str, Any]:
         "LOCAL_RUN_SNAPSHOT": _LOCAL_RUN_SNAPSHOT,
         "LOCAL_RUN_LOG_RING": _LOCAL_RUN_LOG_RING,
         "tail_text_lines": _tail_text_lines,
+    }
+
+
+def _query_handler_deps() -> dict[str, Any]:
+    return {
+        "normalize_project_id": normalize_project_id,
+        "resolve_user_scope": _resolve_user_scope,
+        "require_project_access": _require_project_access,
+        "resolve_global_vars": _resolve_global_vars,
+        "resolve_execution_env": _resolve_execution_env,
+        "resolve_execution_config_path": resolve_execution_config_path,
+        "load_execution_config": load_execution_config,
+        "ExecutionConfigError": ExecutionConfigError,
+        "LocalExecutor": LocalExecutor,
+        "SlurmExecutor": SlurmExecutor,
+        "HpccDirectExecutor": HpccDirectExecutor,
+        "QueryError": QueryError,
     }
 
 
@@ -3097,6 +3122,10 @@ def api_run_file(run_id: str, request: Request, path: str = Query(default="")) -
 
 def api_run_live_log(run_id: str, request: Request, limit: int = Query(default=200, ge=1, le=2000)) -> dict:
     return web_run_artifact_handlers.api_run_live_log(run_id, request, limit, _run_artifact_handler_deps())
+
+
+def api_query_preview(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    return web_query_handlers.api_query_preview(request, payload, _query_handler_deps())
 
 
 def api_stop_run(run_id: str, request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:

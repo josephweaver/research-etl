@@ -17,21 +17,54 @@ Completed:
     - `etl/web/routes/api_read.py`
     - `etl/web_api.py`
 - Endpoint sanity-tested locally (returns 200 and expected capability payload).
+- Query foundation implemented:
+  - shared query package and exports:
+    - `etl/query/__init__.py`
+  - shared typed query errors:
+    - `etl/query/errors.py`
+    - `QueryError`, `QueryPlannerError`, `QueryExecutionError`, `QueryTransportError`
+  - `query_spec` validation/normalization:
+    - `etl/query/spec.py`
+  - DuckDB planner (`query_spec` -> SQL + params):
+    - `etl/query/planner_duckdb.py`
+  - shared DuckDB runner:
+    - `etl/query/runners/duckdb_runner.py`
+- Executor query contract + local implementation:
+  - `Executor.query_data(...)` added:
+    - `etl/executors/base.py`
+  - local executor query enabled + wired to spec/planner/runner:
+    - `etl/executors/local.py`
+- Query API endpoint implemented:
+  - `POST /api/query/preview`
+  - wired through:
+    - `etl/web/routes/api_query.py`
+    - `etl/web/query_handlers.py`
+    - `etl/web_api.py`
+  - includes capability preflight (`query_data`) and typed error mapping:
+    - `planner_error` -> `400`
+    - `execution_error` -> `422`
+    - `transport_error` -> `502`
+- Tests added for query foundation and API behavior:
+  - `tests/test_query_spec.py`
+  - `tests/test_query_planner_duckdb.py`
+  - `tests/test_query_runner_duckdb.py`
+  - `tests/test_local_executor_query.py`
+  - `tests/test_web_api.py` (`/api/query/preview` cases)
 
 Current capability state:
 
-- `local`: `artifact_tree=true`, `artifact_file=true`, `cancel=false`, `query_data=false`
+- `local`: `artifact_tree=true`, `artifact_file=true`, `cancel=false`, `query_data=true`
 - `slurm`: `artifact_tree=true`, `artifact_file=true`, `cancel=false`, `query_data=false`
 - `hpcc_direct`: `artifact_tree=false`, `artifact_file=false`, `cancel=false`, `query_data=false`
 
 Not started yet:
 
-- `query_data` executor method implementation
-- query DSL/schema (`query_spec`) validation
-- planner (`query_spec` -> DuckDB SQL)
-- shared DuckDB runner
-- query API endpoints (`/api/query/preview`, etc.)
+- `hpcc_direct.query_data` implementation (remote query execution path)
+- `etl/query/remote_entry.py` for structured remote JSON in/out
+- remote error propagation preserving `error_code` + `detail`
+- optional additional query API endpoints (`/api/query/schema`, `/api/query/profile`)
 - UI integration for capability-driven enable/disable and live query preview
+- query governance hardening (path allowlists, row/time limits, audit logging)
 
 ## Goal
 

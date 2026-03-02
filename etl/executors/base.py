@@ -82,3 +82,7 @@ class Executor(ABC):
     def artifact_file(self, artifact_dir: str, relative_path: str, max_bytes: int = 256 * 1024) -> Dict[str, Any]:
         """Return file content payload for a relative path under artifact_dir."""
         raise NotImplementedError("artifact file retrieval not implemented for this executor")
+
+    def query_data(self, query_spec: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Execute a query request and return a normalized result payload."""
+        raise NotImplementedError("query data not implemented for this executor")

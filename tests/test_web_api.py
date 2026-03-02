@@ -135,6 +135,98 @@ def test_web_api_endpoints(monkeypatch):
     assert r11.json()["dataset_id"] == "serve.demo_v2"
 
 
+def test_web_api_query_preview_success(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    class _FakeLocalExecutor:
+        name = "local"
+
+        def capabilities(self):
+            return {"query_data": True}
+
+        def query_data(self, query_spec, context=None):
+            return {
+                "columns": [{"name": "id", "type": "INTEGER"}],
+                "rows": [[1], [2]],
+                "row_count_estimate": 2,
+                "elapsed_ms": 1,
+                "engine": "duckdb",
+                "executor": "local",
+            }
+
+    monkeypatch.setattr(web_api, "LocalExecutor", _FakeLocalExecutor)
+    client = TestClient(web_api.app)
+    r = client.post("/api/query/preview", json={"executor": "local", "query_spec": {"source": "data/demo.csv"}})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["engine"] == "duckdb"
+    assert payload["executor"] == "local"
+    assert payload["row_count_estimate"] == 2
+
+
+def test_web_api_query_preview_maps_planner_error(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.query.errors import QueryPlannerError
+    from fastapi.testclient import TestClient
+
+    class _FakeLocalExecutor:
+        name = "local"
+
+        def capabilities(self):
+            return {"query_data": True}
+
+        def query_data(self, query_spec, context=None):
+            raise QueryPlannerError("Bad query spec", detail={"field": "query_spec"})
+
+    monkeypatch.setattr(web_api, "LocalExecutor", _FakeLocalExecutor)
+    client = TestClient(web_api.app)
+    r = client.post("/api/query/preview", json={"executor": "local", "query_spec": {"source": "data/demo.csv"}})
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["error_code"] == "planner_error"
+    assert "Bad query spec" in detail["message"]
+
+
+def test_web_api_query_preview_maps_execution_error(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from etl.query.errors import QueryExecutionError
+    from fastapi.testclient import TestClient
+
+    class _FakeLocalExecutor:
+        name = "local"
+
+        def capabilities(self):
+            return {"query_data": True}
+
+        def query_data(self, query_spec, context=None):
+            raise QueryExecutionError("Engine failed", detail={"sql": "SELECT 1"})
+
+    monkeypatch.setattr(web_api, "LocalExecutor", _FakeLocalExecutor)
+    client = TestClient(web_api.app)
+    r = client.post("/api/query/preview", json={"executor": "local", "query_spec": {"source": "data/demo.csv"}})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["error_code"] == "execution_error"
+    assert "Engine failed" in detail["message"]
+
+
+def test_web_api_query_preview_rejects_unsupported_executor():
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    client = TestClient(web_api.app)
+    r = client.post("/api/query/preview", json={"executor": "slurm", "query_spec": {"source": "data/demo.csv"}})
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["error_code"] == "transport_error"
+    assert "does not support query_data" in detail["message"]
+
+
 def test_web_api_project_filters(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
