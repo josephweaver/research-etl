@@ -374,6 +374,28 @@
       parts.push(`run ${rid.slice(0, 12)}`, status, executor);
       return parts.join(" | ");
     }
+    function _builderPipelineMatchVariants(raw){
+      const p = normalizeBuilderPipelineName(String(raw || "").trim());
+      if(!p) return [];
+      const out = [p, `pipelines/${p}`];
+      const uniq = [];
+      const seen = new Set();
+      for(const v of out){
+        const key = String(v || "").trim().replaceAll("\\","/").toLowerCase();
+        if(!key || seen.has(key)) continue;
+        seen.add(key);
+        uniq.push(key);
+      }
+      return uniq;
+    }
+    function _builderRunMatchesPipeline(runPipeline, selectedPipeline){
+      const rp = String(runPipeline || "").trim().replaceAll("\\","/").toLowerCase();
+      if(!rp) return false;
+      const variants = _builderPipelineMatchVariants(selectedPipeline);
+      if(!variants.length) return false;
+      if(variants.includes(rp)) return true;
+      return variants.some(v => rp.endsWith(`/${v}`) || rp.endsWith(v));
+    }
     async function refreshBuilderSessions(){
       if(!isBuilderView) return;
       const sel = document.getElementById("b_session_id");
@@ -398,10 +420,19 @@
       let runs = [];
       if(payload.pipeline){
         try {
-          const rr = await fetch(`/api/pipelines/${encodeURIComponent(payload.pipeline)}/runs?limit=100`);
+          const rr = await fetch(`/api/runs?limit=500`);
           if(rr.ok){
             const rows = await rr.json();
-            runs = Array.isArray(rows) ? rows : [];
+            const filtered = (Array.isArray(rows) ? rows : []).filter(r =>
+              _builderRunMatchesPipeline(String((r || {}).pipeline || ""), payload.pipeline)
+            );
+            const runById = new Map();
+            for(const row of filtered){
+              const rid = String((row || {}).run_id || "").trim();
+              if(!rid) continue;
+              runById.set(rid, row);
+            }
+            runs = Array.from(runById.values());
           }
         } catch {}
       }
@@ -409,7 +440,7 @@
         const ta = Date.parse(String((a || {}).started_at || "")) || 0;
         const tb = Date.parse(String((b || {}).started_at || "")) || 0;
         return tb - ta;
-      });
+      }).slice(0, 100);
       builderPipelineRuns = runs;
       let html = `<option value="">session: new</option>`;
       if(sessions.length){

@@ -73,6 +73,7 @@ from .tracking import (
     upsert_run_status,
     upsert_run_context_snapshot,
     load_latest_run_context_snapshot,
+    load_runs,
 )
 from .variable_solver import VariableSolver
 from .web import action_handlers as web_action_handlers
@@ -861,7 +862,7 @@ app.include_router(
         combine_project_scoped_rows=_combine_project_scoped_rows,
         parse_dataset_create_payload=_parse_dataset_create_payload,
         fetch_pipelines=lambda **kwargs: fetch_pipelines(**kwargs),
-        fetch_pipeline_runs=lambda *args, **kwargs: fetch_pipeline_runs(*args, **kwargs),
+        fetch_pipeline_runs=lambda *args, **kwargs: _fetch_pipeline_runs_with_fallback(*args, **kwargs),
         fetch_pipeline_validations=lambda *args, **kwargs: fetch_pipeline_validations(*args, **kwargs),
         fetch_pipeline_detail=lambda *args, **kwargs: fetch_pipeline_detail(*args, **kwargs),
         fetch_datasets=lambda **kwargs: fetch_datasets(**kwargs),
@@ -1213,6 +1214,136 @@ def _git_main_health(root: Path) -> dict[str, Any]:
         "detail": " ".join(detail).strip(),
         "status": status,
     }
+
+
+def _pipeline_name_variants(pipeline_id: str) -> list[str]:
+    p = str(pipeline_id or "").strip().replace("\\", "/")
+    if not p:
+        return []
+    variants: list[str] = []
+    variants.append(p)
+    if p.lower().startswith("pipelines/"):
+        variants.append(p[len("pipelines/"):])
+    else:
+        variants.append(f"pipelines/{p}")
+    # Preserve order while de-duplicating.
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in variants:
+        key = v.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _fetch_pipeline_runs_local_fallback(
+    pipeline_id: str,
+    *,
+    limit: int = 50,
+    status: Optional[str] = None,
+    executor: Optional[str] = None,
+    project_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    if executor:
+        # Local JSONL run records currently do not include executor.
+        return []
+    variants = set(_pipeline_name_variants(pipeline_id))
+    if not variants:
+        return []
+    store = (Path(".") / ".runs" / "runs.jsonl").resolve()
+    recs = load_runs(store)
+    rows: list[dict[str, Any]] = []
+    for rec in recs:
+        pipeline = str(getattr(rec, "pipeline", "") or "").strip().replace("\\", "/")
+        if pipeline not in variants:
+            continue
+        if project_id and str(getattr(rec, "project_id", "") or "").strip() != str(project_id).strip():
+            continue
+        rec_status = str(getattr(rec, "status", "") or "").strip()
+        if status and rec_status != str(status).strip():
+            continue
+        rows.append(
+            {
+                "run_id": str(getattr(rec, "run_id", "") or ""),
+                "pipeline": pipeline,
+                "project_id": str(getattr(rec, "project_id", "") or "") or None,
+                "status": rec_status,
+                "success": bool(getattr(rec, "success", False)),
+                "started_at": str(getattr(rec, "started_at", "") or "") or None,
+                "ended_at": str(getattr(rec, "ended_at", "") or "") or None,
+                "message": str(getattr(rec, "message", "") or ""),
+                "executor": "",
+                "artifact_dir": None,
+            }
+        )
+    rows.sort(key=lambda r: DateTimeSafe.parse(str(r.get("started_at") or "")), reverse=True)
+    return rows[: max(1, min(int(limit), 500))]
+
+
+class DateTimeSafe:
+    @staticmethod
+    def parse(raw: str) -> datetime:
+        text = str(raw or "").strip()
+        if not text:
+            return datetime.fromtimestamp(0, tz=timezone.utc)
+        try:
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            return datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+def _fetch_pipeline_runs_with_fallback(
+    pipeline_id: str,
+    *,
+    limit: int = 50,
+    status: Optional[str] = None,
+    executor: Optional[str] = None,
+    project_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        # Query DB with both normalized path forms.
+        seen: set[str] = set()
+        for p in _pipeline_name_variants(pipeline_id):
+            db_rows = fetch_pipeline_runs(
+                p,
+                limit=limit,
+                status=status,
+                executor=executor,
+                project_id=project_id,
+            )
+            for row in db_rows:
+                rid = str((row or {}).get("run_id") or "").strip()
+                if not rid or rid in seen:
+                    continue
+                seen.add(rid)
+                rows.append(row)
+    except WebQueryError:
+        rows = []
+
+    local_rows = _fetch_pipeline_runs_local_fallback(
+        pipeline_id,
+        limit=limit,
+        status=status,
+        executor=executor,
+        project_id=project_id,
+    )
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in rows + local_rows:
+        rid = str((row or {}).get("run_id") or "").strip()
+        if not rid:
+            continue
+        by_id[rid] = row
+    merged = list(by_id.values())
+    merged.sort(key=lambda r: DateTimeSafe.parse(str((r or {}).get("started_at") or "")), reverse=True)
+    return merged[: max(1, min(int(limit), 500))]
 
 
 def _action_handler_deps() -> dict[str, Any]:
