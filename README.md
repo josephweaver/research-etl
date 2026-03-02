@@ -502,6 +502,19 @@ with the same top-level asset layout:
 - `pipelines`
 - `scripts`
 
+#### Yanroy quick-start notes (LandCore assets repo)
+
+- Yanroy operational pipelines/scripts live in the sibling repo `../landcore-etl-pipelines` (not this repo).
+- For the Google Maps publish handoff (when polygons already exist), run the last-stage pipeline:
+  - `pipelines/yanroy/google_maps.yml`
+  - This is the "last part only" path from combined polygons to web/map outputs.
+- In this flow, combined polygons are already filtered to states/tiles of interest.
+- `build_google_maps_field_keys.py` supports tile discovery fallback order:
+  - optional `tiles.of.interest.csv`,
+  - then optional `data/yanroy/meta/filtered.csv`,
+  - then discovered `h##v##` tile folders under `data/yanroy/filtered`.
+- On HPCC, data is expected under the configured `env.basedir` paths (for example `/mnt/scratch/weave151/...`), and runs are commonly launched via the `hpcc_msu_direct` environment.
+
 Windows note: if `etl` is not found, use `python -m cli ...` or add your user scripts path (for example `%APPDATA%\Python\Python310\Scripts`) to `PATH`.
 
 ## Database DDL bootstrap
