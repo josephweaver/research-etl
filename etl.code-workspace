@@ -23,6 +23,9 @@
 		},
 		{
 			"path": "../.out"
+		},
+		{
+			"path": "../verify_yanroy"
 		}
 	],
 	"settings": {
