@@ -403,6 +403,23 @@ def resolve_builder_runtime_from_payload(payload: dict[str, Any], deps: dict[str
     default_env_name_raw = str(payload.get("_default_env_name") or "").strip()
     env_name = str(payload.get("env") or "").strip() or (default_env_name_raw or None)
     commandline_vars = dict(payload.get("_commandline_vars") or {})
+    session_id = str(payload.get("session_id") or "").strip() or None
+    context_file = str(payload.get("context_file") or "").strip() or ""
+    if session_id and "load_builder_session" in deps:
+        try:
+            sess = dict(deps["load_builder_session"](session_id) or {})
+            if not context_file:
+                context_file = str(sess.get("context_file") or "").strip()
+        except Exception:
+            pass
+    session_context: dict[str, Any] = {}
+    if context_file and "builder_step_session_load_context" in deps:
+        try:
+            loaded = deps["builder_step_session_load_context"](context_file=context_file) or {}
+            if isinstance(loaded, dict):
+                session_context = dict(loaded)
+        except Exception:
+            session_context = {}
     preview_run_id = str(payload.get("_preview_run_id") or "").strip() or None
     preview_run_started = payload.get("_preview_run_started")
     global_vars = deps["resolve_global_vars"](global_config_path)
@@ -447,6 +464,14 @@ def resolve_builder_runtime_from_payload(payload: dict[str, Any], deps: dict[str
         preview_run_id=preview_run_id,
         preview_run_started=preview_run_started,
     )
+    if session_context:
+        output_ns = dict(namespace.get("outputs") or {})
+        for key, value in session_context.items():
+            name = str(key)
+            namespace[name] = value
+            output_ns[name] = value
+        namespace["outputs"] = output_ns
+        namespace["state"] = dict(session_context)
     solver = deps["build_web_request_solver"](
         global_vars=global_vars,
         env_vars=env_vars,
@@ -469,6 +494,9 @@ def resolve_builder_runtime_from_payload(payload: dict[str, Any], deps: dict[str
         "environments_config_path": environments_config_path,
         "projects_config_path": projects_config_path,
         "env_name": env_name,
+        "session_id": session_id,
+        "context_file": context_file or None,
+        "session_context": session_context,
     }
 
 

@@ -50,7 +50,6 @@
     let builderTreeFileSelection = "";
     let builderSelectedPipelineSource = "";
     let builderPipelineSources = [];
-    let builderCreateMode = false;
     let builderProjectInjectedVarValues = {};
     let builderNamespaceTimer = null;
     let builderLastTextTarget = null;
@@ -332,13 +331,6 @@
       }
       return builderRunSeed;
     }
-    function loadBuilderSessionId(){
-      try {
-        return String(localStorage.getItem(BUILDER_LAST_SESSION_KEY) || "").trim();
-      } catch {
-        return "";
-      }
-    }
     function saveBuilderSessionId(value){
       const text = String(value || "").trim();
       builderSessionId = text;
@@ -365,8 +357,9 @@
       const st = String((sess || {}).updated_at || (sess || {}).created_at || "").trim();
       const step = String((sess || {}).last_step_name || "").trim();
       const result = String((sess || {}).last_result || "").trim();
-      const parts = [`session ${sid.slice(0, 12)}`];
+      const parts = [];
       if(st) parts.push(_fmtWhen(st));
+      parts.push(`session ${sid.slice(0, 12)}`);
       if(step) parts.push(`${step}${result ? `:${result}` : ""}`);
       return parts.join(" | ");
     }
@@ -376,8 +369,9 @@
       const status = String(r.status || "").trim() || "unknown";
       const executor = String(r.executor || "").trim() || "executor?";
       const started = _fmtWhen(r.started_at);
-      const parts = [`run ${rid.slice(0, 12)}`, status, executor];
+      const parts = [];
       if(started) parts.push(started);
+      parts.push(`run ${rid.slice(0, 12)}`, status, executor);
       return parts.join(" | ");
     }
     async function refreshBuilderSessions(){
@@ -395,7 +389,11 @@
         return;
       }
       const data = await res.json();
-      const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      const sessions = (Array.isArray(data.sessions) ? data.sessions : []).slice().sort((a, b) => {
+        const ta = Date.parse(String((a || {}).updated_at || (a || {}).created_at || "")) || 0;
+        const tb = Date.parse(String((b || {}).updated_at || (b || {}).created_at || "")) || 0;
+        return tb - ta;
+      });
       builderSessions = sessions;
       let runs = [];
       if(payload.pipeline){
@@ -407,6 +405,11 @@
           }
         } catch {}
       }
+      runs = runs.slice().sort((a, b) => {
+        const ta = Date.parse(String((a || {}).started_at || "")) || 0;
+        const tb = Date.parse(String((b || {}).started_at || "")) || 0;
+        return tb - ta;
+      });
       builderPipelineRuns = runs;
       let html = `<option value="">session: new</option>`;
       if(sessions.length){
@@ -420,53 +423,17 @@
         html += `</optgroup>`;
       }
       sel.innerHTML = html;
-      const remembered = builderSessionId || loadBuilderSessionId();
-      if(remembered && sessions.some(s => String(s.session_id || "").trim() === remembered)){
-        sel.value = `session:${remembered}`;
-        saveBuilderSessionId(remembered);
+      const selected = String(builderSessionId || "").trim();
+      if(selected && sessions.some(s => String(s.session_id || "").trim() === selected)){
+        sel.value = `session:${selected}`;
       } else {
+        saveBuilderSessionId("");
         sel.value = "";
       }
     }
-    async function createBuilderSessionFromUi(){
+    async function importBuilderRunStateToSession(runIdOverride){
       if(!isBuilderView) return;
-      const payload = builderPayload();
-      const body = {};
-      if(payload.pipeline) body.pipeline = payload.pipeline;
-      if(payload.project_id) body.project_id = payload.project_id;
-      if(payload.env) body.env = payload.env;
-      if(payload.executor) body.executor = payload.executor;
-      const res = await fetch(`/api/builder/sessions`, {
-        method: "POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(body),
-      });
-      const msg = document.getElementById("builder_msg");
-      if(!res.ok){
-        if(msg) msg.textContent = await readMessage(res);
-        return;
-      }
-      const session = (await res.json()).session || {};
-      const sid = String(session.session_id || "").trim();
-      if(sid){
-        saveBuilderSessionId(sid);
-      }
-      const runId = String(session.run_id || "").trim();
-      const runStartedAt = String(session.run_started_at || "").trim();
-      if(runId && runStartedAt){
-        builderRunSeed = { run_id: runId, run_started_at: runStartedAt };
-      }
-      await refreshBuilderSessions();
-      const sel = document.getElementById("b_session_id");
-      if(sel && sid){
-        sel.value = `session:${sid}`;
-      }
-      if(msg) msg.textContent = sid ? `Session ${sid} ready.` : "Session ready.";
-    }
-    async function importBuilderRunStateToSession(){
-      if(!isBuilderView) return;
-      const runIdEl = document.getElementById("b_source_run_id");
-      const runId = String(runIdEl && runIdEl.value ? runIdEl.value : "").trim();
+      const runId = String(runIdOverride || "").trim();
       const msg = document.getElementById("builder_msg");
       if(!runId){
         if(msg) msg.textContent = "Provide run_id to load.";
@@ -504,6 +471,9 @@
       if(sel && sid){
         sel.value = `session:${sid}`;
       }
+      if(!builderPreviewSectionCollapsed.vars){
+        await refreshBuilderNamespace();
+      }
       if(msg){
         msg.textContent = sid
           ? `Loaded state from run ${runId} into session ${sid}.`
@@ -515,15 +485,14 @@
       if(!raw){
         saveBuilderSessionId("");
         builderRunSeed = null;
+        if(!builderPreviewSectionCollapsed.vars){
+          await refreshBuilderNamespace();
+        }
         return;
       }
       if(raw.startsWith("run:")){
         const runId = raw.slice(4).trim();
-        const runIdEl = document.getElementById("b_source_run_id");
-        if(runIdEl){
-          runIdEl.value = runId;
-        }
-        await importBuilderRunStateToSession();
+        await importBuilderRunStateToSession(runId);
         return;
       }
       const sid = raw.startsWith("session:") ? raw.slice(8).trim() : raw;
@@ -541,6 +510,9 @@
         builderRunSeed = { run_id: runId, run_started_at: runStartedAt };
       }
       if(msg) msg.textContent = `Selected session ${String(session.session_id || sid)}.`;
+      if(!builderPreviewSectionCollapsed.vars){
+        await refreshBuilderNamespace();
+      }
     }
     function normalizeBuilderPipelineName(raw){
       let s = String(raw || "").trim().replaceAll("\\\\","/");
@@ -1095,7 +1067,7 @@
       const runBtn = document.getElementById("btn_builder_run");
       if(runBtn){
         runBtn.classList.toggle("loading", !!builderPipelineRunning);
-        runBtn.disabled = !!builderPipelineRunning || !!builderCreateMode;
+        runBtn.disabled = !!builderPipelineRunning;
       }
       const termBtn = document.getElementById("btn_builder_terminate");
       if(termBtn){
@@ -1129,8 +1101,6 @@
     function builderPayload(){
       const body = { yaml_text: document.getElementById("b_yaml").value || "" };
       const pipeline = normalizeBuilderPipelineName(document.getElementById("b_pipeline_path").value.trim());
-      const intent = document.getElementById("b_intent").value.trim();
-      const constraints = document.getElementById("b_constraints").value.trim();
       const projectId = document.getElementById("b_project_id").value.trim();
       const sourceSel = document.getElementById("b_pipeline_source");
       const pipelineSource = String(sourceSel && sourceSel.value ? sourceSel.value : builderSelectedPipelineSource).trim();
@@ -1138,10 +1108,7 @@
       const workdir = deriveBuilderWorkdir();
       const retries = document.getElementById("b_max_retries").value.trim();
       const delay = document.getElementById("b_retry_delay").value.trim();
-      const gitBranch = document.getElementById("b_git_branch").value.trim();
       if (pipeline) body.pipeline = pipeline;
-      if (intent) body.intent = intent;
-      if (constraints) body.constraints = constraints;
       if (projectId) body.project_id = projectId;
       if (pipelineSource) body.pipeline_source = pipelineSource;
       if (envName) body.env = envName;
@@ -1149,12 +1116,10 @@
       if (workdir) body.workdir = workdir;
       if (retries) body.max_retries = Number(retries);
       if (delay) body.retry_delay_seconds = Number(delay);
-      const sessionId = String(builderSessionId || loadBuilderSessionId()).trim();
+      const sessionId = String(builderSessionId || "").trim();
       if (sessionId) body.session_id = sessionId;
       body.dry_run = document.getElementById("b_dry_run").checked;
       body.verbose = document.getElementById("b_verbose").checked;
-      body.git_sync = document.getElementById("b_git_sync").checked;
-      if (gitBranch) body.git_branch = gitBranch;
       return body;
     }
     async function loadBuilderProjects(){
@@ -1500,34 +1465,6 @@
       }
       renderBuilderModel();
       syncYamlPreview();
-    }
-    async function refreshBuilderGitStatus(opts){
-      if(!isBuilderView) return;
-      const el = document.getElementById("b_git_repo_status");
-      if(!el) return;
-      const qp = new URLSearchParams();
-      const projectSel = document.getElementById("b_project_id");
-      const sourceSel = document.getElementById("b_pipeline_source");
-      const projectId = String((opts && opts.project_id) || (projectSel ? projectSel.value : "") || currentProjectId()).trim();
-      const pipelineSource = String((opts && opts.pipeline_source) || (sourceSel ? sourceSel.value : "") || builderSelectedPipelineSource).trim();
-      if(projectId) qp.set("project_id", projectId);
-      if(pipelineSource) qp.set("pipeline_source", pipelineSource);
-      const url = `/api/builder/git-status${qp.toString() ? `?${qp.toString()}` : ""}`;
-      const res = await fetch(url);
-      if(!res.ok){
-        el.textContent = `git: ${await readMessage(res)}`;
-        return;
-      }
-      const g = await res.json();
-      if(g.sync_repo_configured === false){
-        el.textContent = "git_sync disabled (set ETL_BUILDER_GIT_SYNC_REPO)";
-        return;
-      }
-      const name = String(g.repo_name || "repo");
-      const branch = String(g.branch || "");
-      const commit = String(g.commit || "").slice(0, 8);
-      const dirty = !!g.dirty;
-      el.textContent = `${name}@${branch}:${commit}${dirty ? " *dirty" : ""}`;
     }
     async function loadBuilderEnvironments(){
       const sel = document.getElementById("nav_env");
@@ -2555,147 +2492,7 @@
         const fname = parts[parts.length - 1];
         nodes.push({ id: `f:${treePath}`, parent: parentId, text: fname, type: "file", icon: "jstree-file", relpath: pipelinePath, treepath: treePath, source: sourceLabel });
       }
-      nodes.push({
-        id: "new:pipeline",
-        parent: "#",
-        text: "[new pipeline]",
-        type: "new",
-        icon: "jstree-file new-pipeline-icon",
-      });
       return nodes;
-    }
-    function builderKnownPipelineExists(pipelinePath){
-      const target = normalizeBuilderPipelineName(String(pipelinePath || "").trim());
-      if(!target) return false;
-      const all = Array.isArray(builderTreeFiles) ? builderTreeFiles : [];
-      for(const rawEntry of all){
-        let rel = "";
-        if(typeof rawEntry === "string"){
-          rel = normalizeBuilderPipelineName(String(rawEntry || ""));
-        } else if(rawEntry && typeof rawEntry === "object"){
-          rel = normalizeBuilderPipelineName(String(rawEntry.pipeline || rawEntry.relpath || rawEntry.path || ""));
-        }
-        if(rel && rel === target){
-          return true;
-        }
-      }
-      return false;
-    }
-    function renderBuilderCreateMode(){
-      const createBtn = document.getElementById("btn_builder_create");
-      const saveBtn = document.getElementById("btn_builder_save");
-      const runBtn = document.getElementById("btn_builder_run");
-      const validateBtn = document.getElementById("btn_builder_validate");
-      const pathInput = document.getElementById("b_pipeline_path");
-      if(createBtn){
-        createBtn.style.display = builderCreateMode ? "" : "none";
-      }
-      if(saveBtn){
-        saveBtn.disabled = !!builderCreateMode;
-      }
-      if(runBtn){
-        runBtn.disabled = !!builderCreateMode || !!builderPipelineRunning;
-      }
-      if(validateBtn){
-        validateBtn.disabled = !!builderCreateMode;
-      }
-      if(pathInput){
-        // Keep browser history suggestions off; enable only curated dir suggestions in create mode.
-        pathInput.setAttribute("autocomplete", "off");
-        if(builderCreateMode){
-          pathInput.setAttribute("list", "b_pipeline_path_suggestions");
-        } else {
-          pathInput.removeAttribute("list");
-        }
-      }
-      updateBuilderPipelinePathSuggestions();
-    }
-    function updateBuilderPipelinePathSuggestions(){
-      const dl = document.getElementById("b_pipeline_path_suggestions");
-      if(!dl) return;
-      if(!builderCreateMode){
-        dl.innerHTML = "";
-        return;
-      }
-      const sourceSel = document.getElementById("b_pipeline_source");
-      const selectedSource = String(sourceSel && sourceSel.value ? sourceSel.value : builderSelectedPipelineSource).trim();
-      const sources = Array.isArray(builderPipelineSources) ? builderPipelineSources.map(s => String(s || "").trim()).filter(Boolean) : [];
-      const dirs = Array.isArray(builderTreeDirs) ? builderTreeDirs.map(d => String(d || "").replaceAll("\\\\","/").trim()).filter(Boolean) : [];
-      const opts = new Set();
-      for(const raw of dirs){
-        const parts = raw.split("/").filter(Boolean);
-        if(!parts.length) continue;
-        if(sources.length > 1){
-          // External multi-source tree prefixes dirs with source label.
-          const label = parts[0];
-          if(selectedSource && label !== selectedSource) continue;
-          const rel = parts.slice(1).join("/");
-          if(rel) opts.add(rel.endsWith("/") ? rel : `${rel}/`);
-          continue;
-        }
-        opts.add(raw.endsWith("/") ? raw : `${raw}/`);
-      }
-      const sorted = Array.from(opts).sort((a, b) => a.localeCompare(b));
-      dl.innerHTML = sorted.map(v => `<option value="${esc(v)}"></option>`).join("");
-    }
-    function applyBuilderPathSuggestionFromPrefix(){
-      const input = document.getElementById("b_pipeline_path");
-      const dl = document.getElementById("b_pipeline_path_suggestions");
-      if(!input || !dl) return;
-      const raw = String(input.value || "");
-      const prefix = raw.trim().toLowerCase();
-      if(!prefix) return;
-      const options = Array.from(dl.querySelectorAll("option"))
-        .map(o => String(o.getAttribute("value") || "").trim())
-        .filter(Boolean);
-      const exact = options.find(v => v.toLowerCase() === prefix);
-      if(exact){
-        input.value = exact;
-        return;
-      }
-      const match = options.find(v => v.toLowerCase().startsWith(prefix));
-      if(match){
-        input.value = match;
-      }
-    }
-    function enterBuilderCreateMode(){
-      builderCreateMode = true;
-      const projectSel = document.getElementById("b_project_id");
-      const pathInput = document.getElementById("b_pipeline_path");
-      const selectedProjectId = String(projectSel && projectSel.value ? projectSel.value : "").trim();
-      const pathHint = String(pathInput && pathInput.value ? pathInput.value : "").trim();
-      builderModel = normalizeBuilderModelPlugins(
-        ensureBuilderCreateDefaults(
-          {
-            project_id: selectedProjectId,
-            vars: {},
-            var_types: {},
-            dirs: {},
-            requires_pipelines: [],
-            steps: [],
-          },
-          pathHint,
-        )
-      );
-      builderRunSeed = null;
-      saveBuilderSessionId("");
-      renderBuilderModel();
-      syncYamlPreview();
-      renderBuilderCreateMode();
-      const input = document.getElementById("b_pipeline_path");
-      if(input){
-        input.value = "";
-        input.focus();
-      }
-      builderTreeFileSelection = "";
-      builderLoaded = true;
-      document.getElementById("builder_msg").textContent = "New pipeline mode: enter pipeline path, then click Create.";
-      hideBuilderTreeDropdown();
-    }
-    function exitBuilderCreateMode(){
-      builderCreateMode = false;
-      renderBuilderCreateMode();
-      document.getElementById("builder_msg").textContent = "";
     }
     function applyBuilderTreeSelectionFromPipeline(pipeline){
       const p = normalizeBuilderPipelineName(String(pipeline || "").trim());
@@ -2771,8 +2568,6 @@
           const nb = this.get_node(b);
           const ta = na?.original?.type || "";
           const tb = nb?.original?.type || "";
-          if(ta === "new" && tb !== "new") return 1;
-          if(tb === "new" && ta !== "new") return -1;
           if(ta !== tb) return ta === "dir" ? -1 : 1;
           return String(na?.text || "").localeCompare(String(nb?.text || ""));
         },
@@ -2789,14 +2584,9 @@
           }
           return;
         }
-        if(ntype === "new"){
-          enterBuilderCreateMode();
-          return;
-        }
         if(ntype !== "file") return;
         const rel = String(node.original.relpath || "").trim();
         if(!rel) return;
-        exitBuilderCreateMode();
         builderSelectedPipelineSource = String(node.original.source || "").trim();
         setBuilderPipelineSourceValue(builderSelectedPipelineSource);
         builderTreeFileSelection = rel;
@@ -2825,7 +2615,6 @@
       builderTreeDirs = dirs;
       builderPipelineSources = sources.map(s => String(s || "").trim()).filter(Boolean);
       syncBuilderPipelineSourceSelect(sources, builderSelectedPipelineSource);
-      updateBuilderPipelinePathSuggestions();
       applyBuilderTreeSelectionFromPipeline(document.getElementById("b_pipeline_path").value.trim());
       renderBuilderJsTree(files, dirs);
     }
@@ -2856,31 +2645,10 @@
       const combo = document.getElementById("b_pipeline_combo");
       if(!input || !combo) return;
       input.addEventListener("focus", async () => {
-        if(builderCreateMode){
-          hideBuilderTreeDropdown();
-          return;
-        }
         if(!builderTreeFiles.length){
           await refreshBuilderTreeFiles();
         }
         showBuilderTreeDropdown();
-      });
-      input.addEventListener("input", async () => {
-        if(builderCreateMode){
-          hideBuilderTreeDropdown();
-          return;
-        }
-      });
-      input.addEventListener("keydown", async (ev) => {
-        if(!builderCreateMode) return;
-        if(ev.key === "Tab"){
-          applyBuilderPathSuggestionFromPrefix();
-          return;
-        }
-        if(ev.key === "Enter"){
-          ev.preventDefault();
-          await createBuilderPipeline();
-        }
       });
       document.addEventListener("mousedown", (ev) => {
         const t = ev.target;
@@ -2889,37 +2657,10 @@
         hideBuilderTreeDropdown();
       });
     }
-    function openBuilderFilePicker(){
-      const picker = document.getElementById("b_file_picker");
-      picker.value = "";
-      picker.click();
-    }
-    async function loadBuilderSourceFromFilePicker(){
-      const picker = document.getElementById("b_file_picker");
-      const file = (picker.files || [])[0];
-      if(!file) return;
-      let chosen = String(file.webkitRelativePath || file.name || "").replaceAll("\\\\","/");
-      const marker = "/pipelines/";
-      const markerIdx = chosen.toLowerCase().lastIndexOf(marker);
-      if(markerIdx >= 0){
-        chosen = chosen.slice(markerIdx + marker.length);
-      }
-      const v = normalizeBuilderPipelineName(chosen || document.getElementById("b_pipeline_path").value);
-      if(!v){
-        document.getElementById("builder_msg").textContent = "No pipeline selected.";
-        return;
-      }
-      document.getElementById("b_pipeline_path").value = v;
-      applyBuilderTreeSelectionFromPipeline(v);
-      renderBuilderJsTree(builderTreeFiles, builderTreeDirs);
-      builderLoaded = false;
-      await loadBuilderSource();
-    }
     async function loadBuilderSource(){
       if(!isBuilderView || builderLoaded) return;
       let pipeline = normalizeBuilderPipelineName(document.getElementById("b_pipeline_path").value.trim());
       if(!pipeline){
-        exitBuilderCreateMode();
         document.getElementById("b_pipeline_path").value = "";
         builderModel = normalizeBuilderModelPlugins(
           ensureBuilderDefaultDirs({ project_id: "", vars: {}, var_types: {}, dirs: {}, requires_pipelines: [], steps: [] })
@@ -2934,11 +2675,10 @@
         await refreshBuilderSessions();
         renderBuilderModel();
         syncYamlPreview();
-        document.getElementById("builder_msg").textContent = "Select a pipeline from the tree, or choose [new pipeline].";
+        document.getElementById("builder_msg").textContent = "Select a pipeline from the tree.";
         builderLoaded = true;
         return;
       }
-      exitBuilderCreateMode();
       document.getElementById("b_pipeline_path").value = pipeline;
       applyBuilderTreeSelectionFromPipeline(pipeline);
       renderBuilderJsTree(builderTreeFiles, builderTreeDirs);
@@ -2992,10 +2732,6 @@
       const msg = document.getElementById("builder_msg");
       const out = document.getElementById("builder_output");
       const payload = builderPayload();
-      if(builderCreateMode){
-        msg.textContent = "Use Create to create a new pipeline first.";
-        return;
-      }
       if (!payload.pipeline){
         msg.textContent = "pipeline path is required to save.";
         return;
@@ -3014,7 +2750,7 @@
         }),
       });
       if(update.status === 404){
-        msg.textContent = "Pipeline does not exist yet. Click Create first.";
+        msg.textContent = "Pipeline does not exist in the selected repo.";
         return;
       }
       if(!update.ok){
@@ -3025,76 +2761,14 @@
       msg.textContent = `Updated ${data.pipeline}`;
       out.textContent = JSON.stringify(data, null, 2);
     }
-    async function createBuilderPipeline(){
-      const msg = document.getElementById("builder_msg");
-      const out = document.getElementById("builder_output");
-      const pathEl = document.getElementById("b_pipeline_path");
-      const pipeline = normalizeBuilderPipelineName(pathEl ? pathEl.value : "");
-      if(!pipeline){
-        msg.textContent = "pipeline path is required to create.";
-        if(pathEl) pathEl.focus();
-        return;
-      }
-      const projectId = String(document.getElementById("b_project_id").value || "").trim();
-      if(!projectId){
-        msg.textContent = "project_id is required before creating a new pipeline.";
-        document.getElementById("b_project_id").focus();
-        return;
-      }
-      if(builderKnownPipelineExists(pipeline)){
-        if(pathEl){
-          pathEl.value = pipeline;
-        }
-        builderLoaded = false;
-        exitBuilderCreateMode();
-        await loadBuilderSource();
-        msg.textContent = `Pipeline already exists: ${pipeline}`;
-        return;
-      }
-      msg.textContent = "Creating pipeline...";
-      builderModel = normalizeBuilderModelPlugins(ensureBuilderCreateDefaults(builderModel, pipeline));
-      syncYamlPreview();
-      const payload = builderPayload();
-      const sourceSel = document.getElementById("b_pipeline_source");
-      const pipelineSource = String(sourceSel && sourceSel.value ? sourceSel.value : builderSelectedPipelineSource).trim();
-      const create = await fetch(`/api/pipelines`, {
-        method:"POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({
-          pipeline,
-          yaml_text: payload.yaml_text,
-          project_id: projectId,
-          pipeline_source: pipelineSource || "",
-        }),
-      });
-      if(!create.ok){
-        msg.textContent = await readMessage(create);
-        return;
-      }
-      const data = await create.json();
-      if(pathEl){
-        pathEl.value = normalizeBuilderPipelineName(data.pipeline || pipeline);
-      }
-      builderLoaded = false;
-      await refreshBuilderTreeFiles();
-      await loadBuilderSource();
-      exitBuilderCreateMode();
-      msg.textContent = `Created ${data.pipeline}`;
-      out.textContent = JSON.stringify(data, null, 2);
-    }
     async function runBuilderPipeline(){
       const msg = document.getElementById("builder_msg");
       const out = document.getElementById("builder_output");
       const payload = builderPayload();
-      if(builderCreateMode){
-        msg.textContent = "Use Create to create a new pipeline first.";
-        return;
-      }
       if (!payload.pipeline){
         msg.textContent = "pipeline path is required to run.";
         return;
       }
-      const runMode = (document.getElementById("b_run_mode").value || "draft").trim().toLowerCase();
       payload.pipeline = normalizeBuilderPipelineName(payload.pipeline);
       document.getElementById("b_pipeline_path").value = payload.pipeline;
       const pipelineRunId = `pipelines/${payload.pipeline}`;
@@ -3124,7 +2798,7 @@
         : "";
       const effectiveExecutor = hintedExecutor || envExecutor || "local";
       const remoteExecutor = effectiveExecutor === "slurm" || effectiveExecutor === "hpcc_direct";
-      const requiresMainCheck = remoteExecutor || runMode === "repro";
+      const requiresMainCheck = remoteExecutor;
       if(requiresMainCheck){
         msg.textContent = "Checking git repo is clean on main...";
         const qp = new URLSearchParams();
@@ -3169,9 +2843,6 @@
       if(remoteExecutor){
         runBody.execution_source = "git_remote";
         runBody.allow_workspace_source = false;
-      } else if(runMode === "repro"){
-        runBody.execution_source = "auto";
-        runBody.allow_workspace_source = false;
       } else {
         // Draft mode uses workspace source so iterative edits do not require
         // snapshot/bundle configuration.
@@ -3196,78 +2867,7 @@
       builderLastRunExecutor = String(data.executor || runBody.executor || "").trim().toLowerCase();
       builderPipelineRunning = false;
       renderBuilderPipelineStatus();
-      msg.textContent = `Run ${data.run_id} (${data.state || "submitted"}) [${runMode}]`;
-      out.textContent = JSON.stringify(data, null, 2);
-    }
-    async function publishBuilderPipeline(){
-      const msg = document.getElementById("builder_msg");
-      const out = document.getElementById("builder_output");
-      const payload = builderPayload();
-      if(builderCreateMode){
-        msg.textContent = "Use Create to create a new pipeline first.";
-        return;
-      }
-      if (!payload.pipeline){
-        msg.textContent = "pipeline path is required to publish.";
-        return;
-      }
-      payload.pipeline = normalizeBuilderPipelineName(payload.pipeline);
-      document.getElementById("b_pipeline_path").value = payload.pipeline;
-
-      msg.textContent = "Saving draft before publish...";
-      const encoded = encodeURIComponent(payload.pipeline);
-      const update = await fetch(`/api/pipelines/${encoded}`, {
-        method:"PUT",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({
-          yaml_text: payload.yaml_text,
-          project_id: payload.project_id || "",
-          pipeline_source: payload.pipeline_source || "",
-        }),
-      });
-      if(update.status === 404){
-        msg.textContent = "Pipeline does not exist yet. Click Create first.";
-        return;
-      }
-      if(!update.ok){
-        msg.textContent = await readMessage(update);
-        return;
-      }
-
-      msg.textContent = "Validating draft before publish...";
-      const validateRes = await fetch(`/api/builder/validate`, {
-        method:"POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(payload),
-      });
-      if(!validateRes.ok){
-        msg.textContent = await readMessage(validateRes);
-        return;
-      }
-
-      msg.textContent = "Publishing branch -> main...";
-      const syncRes = await fetch(`/api/builder/git-sync`, {
-        method:"POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({
-          pipeline: payload.pipeline,
-          branch: payload.git_branch,
-          push: true,
-          create_branch: true,
-          project_id: payload.project_id || "",
-          projects_config: payload.projects_config || "",
-          pipeline_source: payload.pipeline_source || "",
-          publish_to_main: true,
-          checkout_main_after_publish: true,
-        }),
-      });
-      if(!syncRes.ok){
-        msg.textContent = await readMessage(syncRes);
-        return;
-      }
-      const data = await syncRes.json();
-      await refreshBuilderGitStatus();
-      msg.textContent = `Published ${payload.pipeline} to main via ${data.branch || "builder branch"}.`;
+      msg.textContent = `Run ${data.run_id} (${data.state || "submitted"})`;
       out.textContent = JSON.stringify(data, null, 2);
     }
     async function terminateBuilderPipeline(){
@@ -3294,45 +2894,6 @@
       }
       const data = await res.json();
       msg.textContent = data.message || `Terminate requested for ${runId}`;
-      out.textContent = JSON.stringify(data, null, 2);
-    }
-    async function generateBuilderDraft(){
-      const msg = document.getElementById("builder_msg");
-      const out = document.getElementById("builder_output");
-      const payload = builderPayload();
-      if (!payload.intent){
-        msg.textContent = "intent is required to generate.";
-        return;
-      }
-      msg.textContent = "Generating draft...";
-      const res = await fetch(`/api/builder/generate`, {
-        method:"POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(payload),
-      });
-      if(!res.ok){
-        msg.textContent = await readMessage(res);
-        return;
-      }
-      const data = await res.json();
-      builderModel = normalizeBuilderModelPlugins(ensureBuilderDefaultDirs(data.model || builderModel));
-      const projectSel = document.getElementById("b_project_id");
-      if(projectSel){
-        const pid = String((builderModel && builderModel.project_id) || "").trim();
-        if(pid){
-          projectSel.value = pid;
-        } else {
-          builderModel.project_id = String(projectSel.value || "").trim();
-        }
-      }
-      builderRunSeed = null;
-      saveBuilderSessionId("");
-      renderBuilderModel();
-      syncYamlPreview();
-      builderValidationState = data.valid ? "valid" : "unknown";
-      renderBuilderModel();
-      renderBuilderPipelineStatus();
-      msg.textContent = data.valid ? `Generated valid draft (${data.step_count} steps)` : "Generated draft has validation issues";
       out.textContent = JSON.stringify(data, null, 2);
     }
     async function validateBuilderDraft(opts){
@@ -3461,15 +3022,11 @@
       const seed = ensureBuilderRunSeed();
       payload.run_id = seed.run_id;
       payload.run_started_at = seed.run_started_at;
-      if(!builderSessionId){
-        builderSessionId = loadBuilderSessionId();
-      }
       if(builderSessionId){
         payload.session_id = builderSessionId;
       }
       payload.step_index = idx;
-      const runMode = String((document.getElementById("b_run_mode") || {}).value || "draft").trim().toLowerCase();
-      payload.allow_dirty_git = runMode !== "repro";
+      payload.allow_dirty_git = true;
       const hintedExecutor = String(payload.executor || "").trim().toLowerCase();
       const envExecutor = payload.env && builderEnvExecutorMap[payload.env]
         ? String(builderEnvExecutorMap[payload.env] || "").trim().toLowerCase()
@@ -3477,7 +3034,7 @@
       const effectiveExecutor = hintedExecutor || envExecutor || "local";
       payload.executor = effectiveExecutor;
       const remoteExecutor = effectiveExecutor === "slurm" || effectiveExecutor === "hpcc_direct";
-      const shouldGitSync = !!payload.git_sync || remoteExecutor;
+      const shouldGitSync = remoteExecutor;
 
       if(shouldGitSync){
         if(!payload.pipeline){
@@ -3488,15 +3045,12 @@
           msg.textContent = "git_sync requires a pipeline path.";
           return;
         }
-        msg.textContent = payload.git_sync
-          ? `Syncing git branch before step ${idx + 1} test...`
-          : `Remote executor selected; syncing git branch before step ${idx + 1} test...`;
+        msg.textContent = `Remote executor selected; syncing git branch before step ${idx + 1} test...`;
         const syncRes = await fetch(`/api/builder/git-sync`, {
           method:"POST",
           headers: {"Content-Type":"application/json"},
           body: JSON.stringify({
             pipeline: payload.pipeline,
-            branch: payload.git_branch,
             push: true,
             create_branch: true,
             project_id: payload.project_id || "",
@@ -3513,10 +3067,6 @@
           msg.textContent = errText;
           return;
         }
-        await refreshBuilderGitStatus({
-          project_id: payload.project_id || "",
-          pipeline_source: payload.pipeline_source || "",
-        });
       }
       msg.textContent = `Testing step ${idx + 1} on executor '${effectiveExecutor}'...`;
       const startRes = await fetch(`/api/builder/test-step/start`, {

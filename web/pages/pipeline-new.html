@@ -40,7 +40,6 @@
         <button id="btn_nav_live">Live</button>
       </div>
     </nav>
-    <input id="b_file_picker" type="file" accept=".yml,.yaml" style="display:none;" />
     <div class="head">
       <h1 id="page_title">Research ETL Runs</h1>
       <div class="muted">Auto-refresh every 12s</div>
@@ -114,6 +113,9 @@
                 <span id="builder_pipeline_status" class="status-pill not-run">not run</span>
               </div>
               <div class="controls">
+                <select id="b_project_id">
+                  <option value="">project (optional)</option>
+                </select>
                 <select id="b_pipeline_source">
                   <option value="">repo (auto)</option>
                 </select>
@@ -124,45 +126,22 @@
                     <div id="b_pipeline_tree"></div>
                   </div>
                 </div>
-                <button id="btn_builder_create" style="display:none;">Create</button>
-                <button id="btn_builder_import_local">Import Local</button>
+                <select id="b_session_id">
+                  <option value="">session: new</option>
+                </select>
                 <button id="btn_builder_save">Save Draft</button>
-                <button id="btn_builder_generate">Generate</button>
                 <button id="btn_builder_validate">Validate Draft</button>
                 <button id="btn_builder_run" class="spin-btn"><span>Run Pipeline</span><span class="spin"></span></button>
-                <button id="btn_builder_publish">Publish to Main</button>
                 <button id="btn_builder_terminate">Terminate Run</button>
                 <span id="builder_msg" class="muted"></span>
               </div>
               <div class="controls">
-                <input id="b_intent" placeholder="intent for AI draft generation" />
-                <input id="b_constraints" placeholder="constraints (optional)" />
-              </div>
-              <div class="controls">
-                <select id="b_project_id">
-                  <option value="">project (optional)</option>
-                </select>
-                <select id="b_session_id">
-                  <option value="">session: new</option>
-                </select>
-                <button id="btn_builder_new_session" type="button">New Session</button>
-                <select id="b_run_mode">
-                  <option value="draft">Draft Mode (workspace)</option>
-                  <option value="repro">Repro Mode (auto/git-pinned)</option>
-                </select>
                 <label class="muted"><input type="checkbox" id="b_dry_run" /> dry_run</label>
                 <label class="muted"><input type="checkbox" id="b_verbose" checked /> verbose</label>
-                <label class="muted"><input type="checkbox" id="b_git_sync" /> git_sync</label>
-                <input id="b_git_branch" placeholder="git branch (auto-create if empty)" />
-                <span id="b_git_repo_status" class="muted"></span>
               </div>
               <div class="controls">
                 <input id="b_max_retries" placeholder="max_retries (default: 0)" />
                 <input id="b_retry_delay" placeholder="retry_delay_seconds (default: 0.0)" />
-              </div>
-              <div class="controls">
-                <input id="b_source_run_id" placeholder="seed session from run_id (optional)" />
-                <button id="btn_builder_import_run_state" type="button">Load Run State</button>
               </div>
               <div class="builder-head">
                 <h4>Requires Pipelines</h4>
@@ -248,52 +227,7 @@
             </div>
           </div>
         </div>
-        <div id="run_actions_panel">
-        <div class="controls">
-          <input id="a_pipeline" placeholder="pipeline path (e.g. pipelines/sample.yml)" />
-          <select id="a_executor">
-            <option value="local">local</option>
-            <option value="slurm">slurm</option>
-            <option value="hpcc_direct">hpcc_direct</option>
-          </select>
-          <button id="btn_validate">Validate</button>
-          <button id="btn_run">Run</button>
-          <span id="action_msg" class="muted"></span>
-        </div>
-        <div class="controls">
-          <input id="a_global_config" placeholder="global_config (optional)" />
-          <input id="a_environments_config" placeholder="environments_config (optional)" />
-          <input id="a_env" placeholder="env name (when environments_config set)" />
-        </div>
-        <div class="controls">
-          <input id="a_plugins_dir" placeholder="plugins_dir (default: plugins)" />
-          <input id="a_workdir" placeholder="workdir (default: .runs)" />
-          <input id="a_max_retries" placeholder="max_retries (optional)" />
-          <input id="a_retry_delay" placeholder="retry_delay_seconds (optional)" />
-          <label class="muted"><input type="checkbox" id="a_dry_run" /> dry_run</label>
-          <label class="muted"><input type="checkbox" id="a_verbose" /> verbose (slurm/hpcc_direct)</label>
-        </div>
-        <div class="controls">
-          <button id="btn_resume">Resume Selected</button>
-          <button id="btn_stop">Stop Selected</button>
-          <span id="resume_msg" class="muted"></span>
-        </div>
-        <div class="controls">
-          <input id="r_plugins_dir" placeholder="plugins_dir (default: plugins)" />
-          <input id="r_workdir" placeholder="workdir (default: .runs)" />
-        </div>
-        <div class="controls">
-          <input id="r_max_retries" placeholder="max_retries (default: 0)" />
-          <input id="r_retry_delay" placeholder="retry_delay_seconds (default: 0.0)" />
-          <select id="r_executor">
-            <option value="">executor override (default: original)</option>
-            <option value="local">local</option>
-            <option value="slurm">slurm</option>
-            <option value="hpcc_direct">hpcc_direct</option>
-          </select>
-        </div>
-        <div id="detail" class="muted">Select a run to view details.</div>
-        </div>
+        <div id="detail" class="muted" style="display:none;"></div>
       </section>
     </div>
   </div>

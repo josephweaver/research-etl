@@ -2792,6 +2792,7 @@ def _builder_handler_deps() -> dict[str, Any]:
         "tail_text_lines": _tail_text_lines,
         "last_non_empty_line": _last_non_empty_line,
         "upsert_run_context_snapshot": upsert_run_context_snapshot,
+        "load_builder_session": _load_builder_session,
         "builder_step_session_prepare": _builder_step_session_prepare,
         "builder_step_session_load_context": _builder_step_session_load_context,
         "builder_step_session_save_context": _builder_step_session_save_context,

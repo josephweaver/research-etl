@@ -3,7 +3,6 @@
 (function bindBuilder(){
   const bind = (id, fn) => { const el = document.getElementById(id); if(el) el.onclick = fn; };
 
-  bind("btn_builder_import_local", () => { openBuilderFilePicker(); });
   bind("btn_builder_toggle_preview", () => { builderPreviewCollapsed = !builderPreviewCollapsed; renderBuilderPreviewPanel(); });
   bind("btn_builder_toggle_yaml", () => {
     builderPreviewSectionCollapsed.yaml = !builderPreviewSectionCollapsed.yaml;
@@ -23,14 +22,9 @@
   bind("btn_builder_add_req", addBuilderRequire);
   bind("btn_builder_add_var", addBuilderVar);
   bind("btn_builder_add_step", addBuilderStep);
-  bind("btn_builder_create", createBuilderPipeline);
   bind("btn_builder_save", saveBuilderDraft);
-  bind("btn_builder_generate", generateBuilderDraft);
   bind("btn_builder_validate", validateBuilderDraft);
   bind("btn_builder_run", runBuilderPipeline);
-  bind("btn_builder_new_session", async () => { await createBuilderSessionFromUi(); });
-  bind("btn_builder_import_run_state", async () => { await importBuilderRunStateToSession(); });
-  bind("btn_builder_publish", publishBuilderPipeline);
   bind("btn_builder_terminate", terminateBuilderPipeline);
 
   const addDirBtn = document.getElementById("btn_builder_add_dir");
@@ -45,16 +39,7 @@
         builderSelectedPipelineSource,
         document.getElementById("b_project_id")?.value,
       );
-      updateBuilderPipelinePathSuggestions();
     };
-  }
-
-  const pipelinePath = document.getElementById("b_pipeline_path");
-  if(pipelinePath){
-    pipelinePath.addEventListener("input", () => {
-      if(!builderCreateMode) return;
-      renderBuilderCreateMode();
-    });
   }
 
   const projectSel = document.getElementById("b_project_id");
@@ -92,7 +77,6 @@
   const varEl = document.getElementById("b_vars");
   const dirsEl = document.getElementById("b_dirs");
   const stepsEl = document.getElementById("b_steps");
-  const filePickEl = document.getElementById("b_file_picker");
 
   if(reqEl){ reqEl.addEventListener("input", handleBuilderInput); reqEl.addEventListener("change", handleBuilderInput); reqEl.addEventListener("click", handleBuilderClicks); }
   if(varEl){ varEl.addEventListener("input", handleBuilderInput); varEl.addEventListener("change", handleBuilderInput); varEl.addEventListener("click", handleBuilderClicks); }
@@ -105,10 +89,6 @@
     stepsEl.addEventListener("click", handleBuilderClicks);
   }
   document.addEventListener("mousedown", handleBuilderStepPluginPickerOutsideMouseDown);
-  if(filePickEl){
-    filePickEl.addEventListener("change", async () => { await loadBuilderSourceFromFilePicker(); });
-  }
-
   renderBuilderPreviewPanel();
   renderBuilderPreviewSections();
   initBuilderTreeComboBehavior();
