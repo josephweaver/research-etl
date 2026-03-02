@@ -2900,6 +2900,17 @@
       renderBuilderPipelineStatus();
       msg.textContent = `Run ${data.run_id} (${data.state || "submitted"})`;
       out.textContent = JSON.stringify(data, null, 2);
+      // If user is on "session: new", materialize a concrete session id
+      // and hydrate it from the submitted run's frozen context snapshot.
+      if(builderLastRunId){
+        try {
+          if(!String(builderSessionId || "").trim()){
+            await importBuilderRunStateToSession(builderLastRunId);
+          } else {
+            await refreshBuilderSessions();
+          }
+        } catch {}
+      }
     }
     async function terminateBuilderPipeline(){
       const msg = document.getElementById("builder_msg");
