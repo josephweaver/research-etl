@@ -122,3 +122,34 @@ def test_resolve_pipeline_path_from_project_sources_handles_missing_absolute_loc
         repo_root=repo_root,
     )
     assert resolved == ext_pipeline.resolve()
+
+
+def test_resolve_pipeline_path_from_project_sources_honors_env_cache_root(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "workspace"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    ext_repo = tmp_path / "external"
+    ext_pipeline = ext_repo / "pipelines" / "sample.yml"
+    ext_pipeline.parent.mkdir(parents=True, exist_ok=True)
+    ext_pipeline.write_text("steps: []\n", encoding="utf-8")
+
+    seen_cache_roots: list[Path] = []
+
+    def _fake_sync(source, cache_root):
+        seen_cache_roots.append(Path(cache_root))
+        return ext_repo
+
+    monkeypatch.setenv("ETL_PIPELINE_ASSET_CACHE_ROOT", str(tmp_path / "shared-cache-root"))
+    monkeypatch.setattr("etl.pipeline_assets.sync_pipeline_asset_source", _fake_sync)
+
+    resolved = resolve_pipeline_path_from_project_sources(
+        Path("sample.yml"),
+        project_vars={
+            "pipeline_asset_sources": [
+                {"repo_url": "https://example.com/shared-etl-pipelines.git", "pipelines_dir": "pipelines"}
+            ]
+        },
+        repo_root=repo_root,
+    )
+    assert resolved == ext_pipeline.resolve()
+    assert seen_cache_roots
+    assert seen_cache_roots[0].resolve() == (tmp_path / "shared-cache-root").resolve()

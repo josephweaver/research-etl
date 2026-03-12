@@ -696,6 +696,8 @@ For HPCC/network-restricted DB access, execution environments also support:
 
 When using `db_tunnel_via_tmux`, prefer a non-forking command (for example `ssh -N ...` without `-f`) so lifecycle is controlled by tmux.
 
+Pipeline asset resolution can be pinned to a stable shared cache path by setting `ETL_PIPELINE_ASSET_CACHE_ROOT` (for example `/mnt/scratch/weave151/etl`). This avoids per-run cache churn under transient work directories.
+
 ### SLURM setup (quick notes)
 - Ensure `sbatch`/`sacct` available on the submission host (login node).
 - Repository and data paths must be visible on the cluster filesystem (no code shipping yet).

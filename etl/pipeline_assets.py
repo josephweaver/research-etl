@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -209,7 +210,13 @@ def resolve_pipeline_path_from_project_sources(
         seen.add(key)
         uniq_candidates.append(c)
     candidates = uniq_candidates
-    root = Path(cache_root or (Path(repo_root).resolve() / ".pipeline_assets_cache"))
+    env_cache_root = str(os.environ.get("ETL_PIPELINE_ASSET_CACHE_ROOT") or "").strip()
+    if cache_root is not None:
+        root = Path(cache_root)
+    elif env_cache_root:
+        root = Path(env_cache_root).expanduser()
+    else:
+        root = Path(repo_root).resolve() / ".pipeline_assets_cache"
     for src in sources:
         repo_dir = sync_pipeline_asset_source(src, cache_root=root)
         pipelines_root = (repo_dir / src.pipelines_dir).resolve()

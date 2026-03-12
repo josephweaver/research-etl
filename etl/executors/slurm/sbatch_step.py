@@ -115,6 +115,9 @@ def render_step_script(
     chunk_runtime_bootstrap.append(f"PYTHON={python_bin}")
     chunk_runtime_bootstrap.append(f"VENV={venv_path}")
     chunk_runtime_bootstrap.append(f"export ETL_REPO_ROOT={checkout_root}")
+    chunk_runtime_bootstrap.append(
+        "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \\\"$ETL_REPO_ROOT\\\")\"; fi"
+    )
     executor._append_db_tunnel_lines(chunk_runtime_bootstrap)
     if child_jobs_file:
         chunk_runtime_bootstrap.append(f"export ETL_CHILD_JOBS_FILE={child_jobs_file}")

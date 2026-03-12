@@ -265,6 +265,8 @@ class HpccDirectExecutor(Executor):
         lines: list[str] = [
             f"CHECKOUT_ROOT={shlex.quote(remote_repo_root)}",
             "cd \"$CHECKOUT_ROOT\"",
+            "export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"",
+            "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \\\"$ETL_REPO_ROOT\\\")\"; fi",
         ]
         for module_name in self.remote_modules:
             mod = str(module_name or "").strip()
@@ -878,6 +880,9 @@ class HpccDirectExecutor(Executor):
             run_lines.append(f"export ETL_DB_VERBOSE={'1' if _parse_bool(exec_env.get('db_verbose')) else '0'}")
         run_lines.append("export PYTHONUNBUFFERED=1")
         run_lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
+        run_lines.append(
+            "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \\\"$ETL_REPO_ROOT\\\")\"; fi"
+        )
         run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
         context_seed = context.get("seed_context")
         if context_file and isinstance(context_seed, dict):
