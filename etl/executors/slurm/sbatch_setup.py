@@ -195,6 +195,9 @@ def render_setup_script(
         chunk_source_checkout.append(f"echo \"Unsupported execution_source: {shlex.quote(mode)}\" >&2")
         chunk_source_checkout.append("exit 1")
     overlays = list(pipeline_asset_overlays or [])
+    if overlays:
+        chunk_asset_overlays.append("ASSET_PIPELINES_LINKED=0")
+        chunk_asset_overlays.append("ASSET_SCRIPTS_LINKED=0")
     for idx, overlay in enumerate(overlays):
         repo_url = str((overlay or {}).get("repo_url") or "").strip()
         if not repo_url:
@@ -202,21 +205,40 @@ def render_setup_script(
         ref = str((overlay or {}).get("ref") or "main").strip() or "main"
         pipelines_dir = str((overlay or {}).get("pipelines_dir") or "pipelines").strip() or "pipelines"
         scripts_dir = str((overlay or {}).get("scripts_dir") or "scripts").strip() or "scripts"
-        asset_dir = f"$CHECKOUT_ROOT/.pipeline_assets/src_{idx}"
+        # Keep external pipeline assets in a sibling cache root (shared across checkouts)
+        # instead of nesting clones under the ETL checkout directory.
+        asset_dir_var = f"ASSET_DIR_{idx}"
         if executor.verbose:
             chunk_asset_overlays.append(f"log_step {shlex.quote(f'syncing pipeline asset source {idx + 1}: {repo_url} ({ref})')}")
-        chunk_asset_overlays.append(f"ASSET_DIR_{idx}=\"{asset_dir}\"")
         chunk_asset_overlays.append(f"ASSET_URL_{idx}={shlex.quote(repo_url)}")
         chunk_asset_overlays.append(f"ASSET_REF_{idx}={shlex.quote(ref)}")
-        chunk_asset_overlays.append(f"mkdir -p \"$(dirname \\\"$ASSET_DIR_{idx}\\\")\"")
-        chunk_asset_overlays.append(f"if [ ! -d \"$ASSET_DIR_{idx}\" ]; then mkdir -p \"$ASSET_DIR_{idx}\"; fi")
-        chunk_asset_overlays.append(f"if [ -d \"$ASSET_DIR_{idx}\" ] && [ ! -d \"$ASSET_DIR_{idx}/.git\" ]; then rm -rf \"$ASSET_DIR_{idx}\"; fi")
-        chunk_asset_overlays.append(f"if [ ! -d \"$ASSET_DIR_{idx}/.git\" ]; then git clone \"$ASSET_URL_{idx}\" \"$ASSET_DIR_{idx}\" || {{ echo \"[etl][setup][source] pipeline asset clone failed: $ASSET_URL_{idx}\" >&2; exit 1; }}; fi")
-        chunk_asset_overlays.append(f"git -C \"$ASSET_DIR_{idx}\" fetch --tags --prune origin || {{ echo \"[etl][setup][source] pipeline asset fetch failed: $ASSET_URL_{idx}\" >&2; exit 1; }}")
-        chunk_asset_overlays.append(f"git -C \"$ASSET_DIR_{idx}\" checkout \"$ASSET_REF_{idx}\" || {{ echo \"[etl][setup][source] pipeline asset checkout failed: $ASSET_REF_{idx}\" >&2; exit 1; }}")
-        chunk_asset_overlays.append(f"git -C \"$ASSET_DIR_{idx}\" pull --ff-only origin \"$ASSET_REF_{idx}\" >/dev/null 2>&1 || true")
-        chunk_asset_overlays.append(f"if [ -d \"$ASSET_DIR_{idx}/{pipelines_dir}\" ]; then mkdir -p \"$CHECKOUT_ROOT/pipelines\"; cp -a \"$ASSET_DIR_{idx}/{pipelines_dir}/.\" \"$CHECKOUT_ROOT/pipelines/\"; fi")
-        chunk_asset_overlays.append(f"if [ -d \"$ASSET_DIR_{idx}/{scripts_dir}\" ]; then mkdir -p \"$CHECKOUT_ROOT/scripts\"; cp -a \"$ASSET_DIR_{idx}/{scripts_dir}/.\" \"$CHECKOUT_ROOT/scripts/\"; fi")
+        chunk_asset_overlays.append("ASSET_CACHE_ROOT=${ETL_PIPELINE_ASSET_CACHE_ROOT:-\"$(dirname \\\"$CHECKOUT_ROOT\\\")\"}")
+        chunk_asset_overlays.append("mkdir -p \"$ASSET_CACHE_ROOT\"")
+        chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"$(basename \"$ASSET_URL_{idx}\")\"")
+        chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"${{ASSET_REPO_NAME_{idx}%.git}}\"")
+        chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"$(printf '%s' \"$ASSET_REPO_NAME_{idx}\" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')\"")
+        chunk_asset_overlays.append(f"ASSET_REPO_HASH_{idx}=\"$(printf '%s' \"$ASSET_URL_{idx}\" | sha1sum | awk '{{print $1}}' | cut -c1-10)\"")
+        chunk_asset_overlays.append(f"{asset_dir_var}=\"$ASSET_CACHE_ROOT/${{ASSET_REPO_NAME_{idx}}}-${{ASSET_REPO_HASH_{idx}}}\"")
+        chunk_asset_overlays.append(f"if [ ! -d \"${asset_dir_var}\" ]; then mkdir -p \"${asset_dir_var}\"; fi")
+        chunk_asset_overlays.append(f"if [ -d \"${asset_dir_var}\" ] && [ ! -d \"${asset_dir_var}/.git\" ]; then rm -rf \"${asset_dir_var}\"; fi")
+        chunk_asset_overlays.append(f"if [ ! -d \"${asset_dir_var}/.git\" ]; then git clone \"$ASSET_URL_{idx}\" \"${asset_dir_var}\" || {{ echo \"[etl][setup][source] pipeline asset clone failed: $ASSET_URL_{idx}\" >&2; exit 1; }}; fi")
+        chunk_asset_overlays.append(f"git -C \"${asset_dir_var}\" fetch --tags --prune origin || {{ echo \"[etl][setup][source] pipeline asset fetch failed: $ASSET_URL_{idx}\" >&2; exit 1; }}")
+        chunk_asset_overlays.append(f"git -C \"${asset_dir_var}\" checkout \"$ASSET_REF_{idx}\" || {{ echo \"[etl][setup][source] pipeline asset checkout failed: $ASSET_REF_{idx}\" >&2; exit 1; }}")
+        chunk_asset_overlays.append(f"git -C \"${asset_dir_var}\" pull --ff-only origin \"$ASSET_REF_{idx}\" >/dev/null 2>&1 || true")
+        chunk_asset_overlays.append(
+            f"if [ \"$ASSET_PIPELINES_LINKED\" = \"0\" ] && [ -d \"${asset_dir_var}/{pipelines_dir}\" ]; then "
+            "rm -rf \"$CHECKOUT_ROOT/pipelines\"; "
+            f"ln -sfn \"${asset_dir_var}/{pipelines_dir}\" \"$CHECKOUT_ROOT/pipelines\"; "
+            "ASSET_PIPELINES_LINKED=1; "
+            "fi"
+        )
+        chunk_asset_overlays.append(
+            f"if [ \"$ASSET_SCRIPTS_LINKED\" = \"0\" ] && [ -d \"${asset_dir_var}/{scripts_dir}\" ]; then "
+            "rm -rf \"$CHECKOUT_ROOT/scripts\"; "
+            f"ln -sfn \"${asset_dir_var}/{scripts_dir}\" \"$CHECKOUT_ROOT/scripts\"; "
+            "ASSET_SCRIPTS_LINKED=1; "
+            "fi"
+        )
     if executor.verbose:
         chunk_venv_bootstrap.append("log_step 'bootstrapping venv'")
     chunk_venv_bootstrap.append(f"PYTHON={python_bin}")
