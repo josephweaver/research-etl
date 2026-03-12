@@ -214,6 +214,19 @@ def _parse_step_indices(value: Any, step_count: int) -> list[int]:
     return out
 
 
+def _rewrite_asset_cache_pipeline_rel(pipeline_rel: Path) -> Optional[Path]:
+    parts = list(pipeline_rel.parts)
+    for idx, part in enumerate(parts):
+        if part in {".pipeline_assets_cache", ".pipeline_assets"}:
+            try:
+                pipe_idx = parts.index("pipelines", idx + 1)
+            except ValueError:
+                return None
+            tail = parts[pipe_idx + 1 :]
+            return Path("pipelines", *tail) if tail else Path("pipelines")
+    return None
+
+
 def _git_current_branch(repo_path: Path) -> Optional[str]:
     try:
         proc = subprocess.run(
@@ -897,6 +910,9 @@ class SlurmExecutor(Executor):
         if use_repo_relative_paths:
             try:
                 pipeline_rel = repo_relative_path(pipeline_input, source_repo_root, "pipeline")
+                rewritten_rel = _rewrite_asset_cache_pipeline_rel(pipeline_rel)
+                if rewritten_rel is not None:
+                    pipeline_rel = rewritten_rel
                 pipeline_remote = (Path(checkout_root) / pipeline_rel).as_posix()
             except SourceControlError as exc:
                 if pipeline_remote_hint:

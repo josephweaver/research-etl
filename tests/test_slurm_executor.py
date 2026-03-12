@@ -952,6 +952,43 @@ def test_slurm_asset_overlays_clone_to_sibling_cache_root(monkeypatch, tmp_path:
     assert "cp -a" not in setup_script
 
 
+def test_slurm_rewrites_pipeline_path_from_asset_cache_to_checkout_pipelines(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    pipeline = Pipeline(steps=[Step(name="s1", script="echo.py")])
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/work", "logdir": "/tmp/logs"},
+        repo_root=repo_root,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+        enforce_git_checkout=True,
+    )
+    asset_pipeline = repo_root / ".pipeline_assets_cache" / "shared-etl-pipelines-46263747e4" / "pipelines" / "testdb.yml"
+    ex.submit(str(asset_pipeline), {"run_id": "runabc1234", "repo_root": repo_root})
+
+    batch_script = calls[1]["script_text"]
+    assert "/.pipeline_assets_cache/" not in batch_script
+    assert "/pipelines/testdb.yml" in batch_script
+
+
 def test_slurm_prefers_database_url_from_env_config(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ETL_DATABASE_URL", "postgresql://env_user:env_pass@env_host:5432/env_db")
     ex = SlurmExecutor(
