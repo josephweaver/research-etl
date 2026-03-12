@@ -40,3 +40,30 @@ def test_build_duckdb_query_plan_rejects_unsafe_derive_expr() -> None:
     assert exc.value.error_code == "planner_error"
     assert str(exc.value.detail.get("field")) == "derive[0].expr"
 
+
+def test_build_duckdb_query_plan_with_table_joins() -> None:
+    spec = validate_query_spec(
+        {
+            "tables": [
+                {"name": "a", "source": "data/a.csv", "columns": [{"name": "id", "type": "INTEGER"}]},
+                {"name": "b", "source": "data/b.csv"},
+            ],
+            "from_table": "a",
+            "joins": [
+                {
+                    "left_table": "a",
+                    "right_table": "b",
+                    "type": "left",
+                    "on": [{"left": "a.id", "right": "b.id", "op": "eq"}],
+                }
+            ],
+            "select": ["a.id", "b.name"],
+            "limit": 10,
+            "offset": 0,
+        }
+    )
+    plan = build_duckdb_query_plan(spec)
+    assert "WITH " in plan["sql"]
+    assert 'LEFT JOIN "b" ON "a"."id" = "b"."id"' in plan["sql"]
+    assert 'SELECT "a"."id", "b"."name"' in plan["sql"]
+    assert "LIMIT 10 OFFSET 0" in plan["sql"]

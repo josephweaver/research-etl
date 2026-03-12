@@ -110,3 +110,70 @@ def api_query_preview(request: Request, payload: Optional[dict[str, Any]], deps:
             detail=_query_error_payload("execution_error", f"Query preview failed: {exc}"),
         ) from exc
 
+
+def api_query_schema(request: Request, payload: Optional[dict[str, Any]], deps: dict[str, Any]) -> dict:
+    scope = deps["resolve_user_scope"](request)
+    data = dict(payload or {})
+    source = data.get("source")
+    if not isinstance(source, (str, dict)):
+        raise HTTPException(
+            status_code=400,
+            detail=_query_error_payload("planner_error", "`source` is required and must be string or object."),
+        )
+
+    requested_project_id = deps["normalize_project_id"](str(data.get("project_id") or "").strip() or None)
+    deps["require_project_access"](scope, requested_project_id)
+
+    executor_name, environments_config_path, env_name = _resolve_query_executor(data, deps)
+    global_config_raw = str(data.get("global_config") or "").strip()
+    global_config_path = Path(global_config_raw).expanduser() if global_config_raw else None
+    global_vars = deps["resolve_global_vars"](global_config_path)
+    execution_env, _resolved_env_cfg, _selected_env_name = deps["resolve_execution_env"](
+        environments_config_path,
+        env_name,
+        executor=executor_name,
+        global_vars=global_vars,
+    )
+
+    ex = _query_executor_instance(executor_name=executor_name, execution_env=execution_env, deps=deps)
+    caps = dict(getattr(ex, "capabilities", lambda: {})() or {})
+    if not bool(caps.get("query_data")):
+        raise HTTPException(
+            status_code=400,
+            detail=_query_error_payload(
+                "transport_error",
+                f"Executor '{executor_name}' does not support query_data.",
+                detail={"executor": executor_name},
+            ),
+        )
+
+    query_context = dict(data.get("query_context") or {})
+    query_context.setdefault("project_id", requested_project_id)
+    query_context.setdefault("executor", executor_name)
+    query_context.setdefault("env", env_name)
+    query_context.setdefault("repo_root", str(Path(".").resolve()))
+
+    query_spec = {
+        "source": source,
+        "select": ["*"],
+        "limit": int(data.get("sample_limit") or 20),
+        "offset": 0,
+    }
+    try:
+        result = ex.query_data(query_spec, context=query_context)
+        return {
+            "columns": list(result.get("columns") or []),
+            "rows": list(result.get("rows") or []),
+            "row_count_estimate": result.get("row_count_estimate"),
+            "executor": result.get("executor") or executor_name,
+            "engine": result.get("engine") or "duckdb",
+            "source": source,
+        }
+    except deps["QueryError"] as exc:
+        detail_payload = exc.to_payload() if hasattr(exc, "to_payload") else _query_error_payload("execution_error", str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "http_status", 500) or 500), detail=detail_payload) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=_query_error_payload("execution_error", f"Query schema failed: {exc}"),
+        ) from exc

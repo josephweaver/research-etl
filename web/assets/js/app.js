@@ -67,6 +67,7 @@
     let builderEnvExecutorMap = {};
     let queryCapsLoaded = false;
     let queryExecutorCaps = {};
+    let queryModel = { tables: [], joins: [] };
     const USER_STORAGE_KEY = "etl_ui_user";
     const PROJECT_STORAGE_KEY = "etl_ui_project";
     const ENV_STORAGE_KEY = "etl_ui_env";
@@ -1715,12 +1716,304 @@
       }
       return { column, op, value: parseQueryScalar(rawValue) };
     }
-    function buildQuerySpecFromForm(){
-      const source = String((document.getElementById("q_source") || {}).value || "").trim();
-      if(!source){
-        return { error: "Source path is required." };
+    function normalizeQueryTableName(text){
+      const raw = String(text || "").trim();
+      if(!raw) return "";
+      const out = raw.replace(/[^A-Za-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+      return out;
+    }
+    function nextQueryTableName(){
+      const taken = new Set((queryModel.tables || []).map(t => String(t.name || "").toLowerCase()));
+      let i = 1;
+      while(true){
+        const name = `t${i}`;
+        if(!taken.has(name.toLowerCase())) return name;
+        i += 1;
       }
-      const spec = { source };
+    }
+    function queryCurrentConfig(){
+      return {
+        executor: String((document.getElementById("q_executor") || {}).value || "local").trim() || "local",
+        global_config: String((document.getElementById("q_global_config") || {}).value || "").trim(),
+        environments_config: String((document.getElementById("q_env_config") || {}).value || "").trim(),
+        env: String((document.getElementById("q_env") || {}).value || "").trim() || currentEnvName(),
+      };
+    }
+    function renderQueryTableCards(){
+      const el = document.getElementById("q_tables");
+      if(!el) return;
+      const tables = Array.isArray(queryModel.tables) ? queryModel.tables : [];
+      if(!tables.length){
+        el.innerHTML = `<div class="muted">No tables loaded yet. Use "Add Table" then "Load Columns".</div>`;
+        return;
+      }
+      el.innerHTML = tables.map((t, idx) => {
+        const cols = Array.isArray(t.columns) ? t.columns : [];
+        const colsHtml = cols.length
+          ? `<table><thead><tr><th>Column</th><th>Detected Type</th><th>Override Type</th></tr></thead><tbody>${
+              cols.map((c, cidx) => `
+                <tr>
+                  <td>${esc(c.name)}</td>
+                  <td>${esc(c.type || "")}</td>
+                  <td><input data-qcol-idx="${idx}" data-qcol-col="${cidx}" value="${esc(c.override_type || "")}" placeholder="e.g. INTEGER" /></td>
+                </tr>
+              `).join("")
+            }</tbody></table>`
+          : `<div class="muted">No columns loaded.</div>`;
+        return `
+          <div class="builder-subsection">
+            <div class="builder-subsection-head">
+              <h4>Table ${esc(t.name)}</h4>
+              <div class="controls">
+                <button data-qtable-op="schema" data-qtable-idx="${idx}" type="button">Load Columns</button>
+                <button data-qtable-op="remove" data-qtable-idx="${idx}" type="button">Remove</button>
+              </div>
+            </div>
+            <div class="builder-subsection-body">
+              <div class="controls">
+                <input data-qtable-name="${idx}" value="${esc(t.name)}" placeholder="table name" />
+                <input data-qtable-path="${idx}" value="${esc(t.path)}" placeholder="file path (csv/parquet)" />
+              </div>
+              ${colsHtml}
+            </div>
+          </div>
+        `;
+      }).join("");
+      [...el.querySelectorAll("button[data-qtable-op='schema']")].forEach(btn => {
+        btn.onclick = () => loadQueryTableSchema(Number(btn.dataset.qtableIdx));
+      });
+      [...el.querySelectorAll("button[data-qtable-op='remove']")].forEach(btn => {
+        btn.onclick = () => {
+          const i = Number(btn.dataset.qtableIdx);
+          if(Number.isInteger(i) && i >= 0){
+            queryModel.tables.splice(i, 1);
+            queryModel.joins = (queryModel.joins || []).filter(j => j.left_table !== `idx:${i}` && j.right_table !== `idx:${i}`);
+            renderQueryDesigner();
+          }
+        };
+      });
+      [...el.querySelectorAll("input[data-qtable-name]")].forEach(inp => {
+        inp.onchange = () => {
+          const i = Number(inp.dataset.qtableName);
+          if(!Number.isInteger(i) || !queryModel.tables[i]) return;
+          const name = normalizeQueryTableName(inp.value);
+          if(name) queryModel.tables[i].name = name;
+          renderQueryDesigner();
+        };
+      });
+      [...el.querySelectorAll("input[data-qtable-path]")].forEach(inp => {
+        inp.onchange = () => {
+          const i = Number(inp.dataset.qtablePath);
+          if(!Number.isInteger(i) || !queryModel.tables[i]) return;
+          queryModel.tables[i].path = String(inp.value || "").trim();
+        };
+      });
+      [...el.querySelectorAll("input[data-qcol-idx]")].forEach(inp => {
+        inp.onchange = () => {
+          const ti = Number(inp.dataset.qcolIdx);
+          const ci = Number(inp.dataset.qcolCol);
+          if(!Number.isInteger(ti) || !Number.isInteger(ci)) return;
+          const table = queryModel.tables[ti];
+          if(!table || !Array.isArray(table.columns) || !table.columns[ci]) return;
+          table.columns[ci].override_type = String(inp.value || "").trim();
+        };
+      });
+    }
+    function tableColumnOptions(tableName){
+      const t = (queryModel.tables || []).find(x => String(x.name || "") === String(tableName || ""));
+      const cols = Array.isArray(t && t.columns) ? t.columns : [];
+      return cols.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
+    }
+    function renderQueryJoinCards(){
+      const el = document.getElementById("q_joins");
+      if(!el) return;
+      const tables = Array.isArray(queryModel.tables) ? queryModel.tables : [];
+      const joins = Array.isArray(queryModel.joins) ? queryModel.joins : [];
+      if(tables.length < 2){
+        el.innerHTML = `<div class="muted">Add at least two tables to define relationships.</div>`;
+        return;
+      }
+      const tableOpts = tables.map(t => `<option value="${esc(t.name)}">${esc(t.name)}</option>`).join("");
+      el.innerHTML = joins.map((j, idx) => `
+        <div class="controls">
+          <select data-qjoin-left-table="${idx}">${tableOpts}</select>
+          <select data-qjoin-type="${idx}">
+            <option value="inner">inner</option>
+            <option value="left">left</option>
+            <option value="right">right</option>
+            <option value="full">full</option>
+          </select>
+          <select data-qjoin-right-table="${idx}">${tableOpts}</select>
+          <select data-qjoin-left-col="${idx}">${tableColumnOptions(j.left_table)}</select>
+          <span>=</span>
+          <select data-qjoin-right-col="${idx}">${tableColumnOptions(j.right_table)}</select>
+          <button data-qjoin-remove="${idx}" type="button">Remove</button>
+        </div>
+      `).join("") || `<div class="muted">No joins yet.</div>`;
+      joins.forEach((j, idx) => {
+        const leftTable = el.querySelector(`select[data-qjoin-left-table="${idx}"]`);
+        const rightTable = el.querySelector(`select[data-qjoin-right-table="${idx}"]`);
+        const joinType = el.querySelector(`select[data-qjoin-type="${idx}"]`);
+        const leftCol = el.querySelector(`select[data-qjoin-left-col="${idx}"]`);
+        const rightCol = el.querySelector(`select[data-qjoin-right-col="${idx}"]`);
+        if(leftTable) leftTable.value = String(j.left_table || "");
+        if(rightTable) rightTable.value = String(j.right_table || "");
+        if(joinType) joinType.value = String(j.type || "inner");
+        if(leftCol) leftCol.value = String(j.left_column || "");
+        if(rightCol) rightCol.value = String(j.right_column || "");
+      });
+      [...el.querySelectorAll("button[data-qjoin-remove]")].forEach(btn => {
+        btn.onclick = () => {
+          const i = Number(btn.dataset.qjoinRemove);
+          if(Number.isInteger(i) && i >= 0){
+            queryModel.joins.splice(i, 1);
+            renderQueryDesigner();
+          }
+        };
+      });
+      [...el.querySelectorAll("select[data-qjoin-left-table]")].forEach(sel => {
+        sel.onchange = () => {
+          const i = Number(sel.dataset.qjoinLeftTable);
+          if(!Number.isInteger(i) || !queryModel.joins[i]) return;
+          queryModel.joins[i].left_table = String(sel.value || "");
+          queryModel.joins[i].left_column = "";
+          renderQueryDesigner();
+        };
+      });
+      [...el.querySelectorAll("select[data-qjoin-right-table]")].forEach(sel => {
+        sel.onchange = () => {
+          const i = Number(sel.dataset.qjoinRightTable);
+          if(!Number.isInteger(i) || !queryModel.joins[i]) return;
+          queryModel.joins[i].right_table = String(sel.value || "");
+          queryModel.joins[i].right_column = "";
+          renderQueryDesigner();
+        };
+      });
+      [...el.querySelectorAll("select[data-qjoin-type]")].forEach(sel => {
+        sel.onchange = () => {
+          const i = Number(sel.dataset.qjoinType);
+          if(!Number.isInteger(i) || !queryModel.joins[i]) return;
+          queryModel.joins[i].type = String(sel.value || "inner");
+        };
+      });
+      [...el.querySelectorAll("select[data-qjoin-left-col]")].forEach(sel => {
+        sel.onchange = () => {
+          const i = Number(sel.dataset.qjoinLeftCol);
+          if(!Number.isInteger(i) || !queryModel.joins[i]) return;
+          queryModel.joins[i].left_column = String(sel.value || "");
+        };
+      });
+      [...el.querySelectorAll("select[data-qjoin-right-col]")].forEach(sel => {
+        sel.onchange = () => {
+          const i = Number(sel.dataset.qjoinRightCol);
+          if(!Number.isInteger(i) || !queryModel.joins[i]) return;
+          queryModel.joins[i].right_column = String(sel.value || "");
+        };
+      });
+    }
+    function renderQueryDesigner(){
+      renderQueryTableCards();
+      renderQueryJoinCards();
+    }
+    function addQueryTable(){
+      queryModel.tables = queryModel.tables || [];
+      queryModel.tables.push({ name: nextQueryTableName(), path: "", columns: [] });
+      renderQueryDesigner();
+    }
+    function addQueryJoin(){
+      const tables = Array.isArray(queryModel.tables) ? queryModel.tables : [];
+      if(tables.length < 2) return;
+      queryModel.joins = queryModel.joins || [];
+      queryModel.joins.push({
+        left_table: tables[0].name,
+        right_table: tables[1].name,
+        type: "inner",
+        left_column: "",
+        right_column: "",
+      });
+      renderQueryDesigner();
+    }
+    async function loadQueryTableSchema(index){
+      const table = (queryModel.tables || [])[index];
+      const msgEl = document.getElementById("query_msg");
+      if(!table) return;
+      const path = String(table.path || "").trim();
+      if(!path){
+        if(msgEl){ msgEl.className = "bad"; msgEl.textContent = "Table source path is required before loading columns."; }
+        return;
+      }
+      const cfg = queryCurrentConfig();
+      const body = {
+        executor: cfg.executor,
+        source: path,
+      };
+      if(cfg.global_config) body.global_config = cfg.global_config;
+      if(cfg.environments_config) body.environments_config = cfg.environments_config;
+      if(cfg.env) body.env = cfg.env;
+      if(msgEl){ msgEl.className = "muted"; msgEl.textContent = `Inferring schema for ${table.name}...`; }
+      const res = await fetch("/api/query/schema", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(body),
+      });
+      if(!res.ok){
+        if(msgEl){ msgEl.className = "bad"; msgEl.textContent = await readMessage(res); }
+        return;
+      }
+      const payload = await res.json();
+      table.columns = (Array.isArray(payload.columns) ? payload.columns : []).map(c => ({
+        name: String((c || {}).name || "").trim(),
+        type: String((c || {}).type || "").trim(),
+        override_type: "",
+      })).filter(c => c.name);
+      if(msgEl){ msgEl.className = "ok"; msgEl.textContent = `Loaded ${table.columns.length} columns for ${table.name}.`; }
+      renderQueryDesigner();
+    }
+    function buildQuerySpecFromForm(){
+      const tables = Array.isArray(queryModel.tables) ? queryModel.tables.filter(t => String(t.path || "").trim()) : [];
+      let spec = {};
+      if(tables.length){
+        const normTables = [];
+        for(const t of tables){
+          const name = normalizeQueryTableName(t.name);
+          if(!name) return { error: "Each table requires a valid name." };
+          const sourcePath = String(t.path || "").trim();
+          if(!sourcePath) return { error: `Table '${name}' is missing source path.` };
+          const tableObj = { name, source: sourcePath };
+          const cols = Array.isArray(t.columns) ? t.columns : [];
+          const overrides = cols
+            .filter(c => String(c.override_type || "").trim() && String(c.name || "").trim())
+            .map(c => ({ name: String(c.name || "").trim(), type: String(c.override_type || "").trim() }));
+          if(overrides.length) tableObj.columns = overrides;
+          normTables.push(tableObj);
+        }
+        spec.tables = normTables;
+        spec.from_table = normTables[0].name;
+        const joins = (Array.isArray(queryModel.joins) ? queryModel.joins : [])
+          .filter(j =>
+            String(j.left_table || "").trim() &&
+            String(j.right_table || "").trim() &&
+            String(j.left_column || "").trim() &&
+            String(j.right_column || "").trim()
+          )
+          .map(j => ({
+            left_table: String(j.left_table || "").trim(),
+            right_table: String(j.right_table || "").trim(),
+            type: String(j.type || "inner").trim().toLowerCase() || "inner",
+            on: [{
+              left: `${String(j.left_table || "").trim()}.${String(j.left_column || "").trim()}`,
+              right: `${String(j.right_table || "").trim()}.${String(j.right_column || "").trim()}`,
+              op: "eq",
+            }],
+          }));
+        if(joins.length) spec.joins = joins;
+      } else {
+        const source = String((document.getElementById("q_source") || {}).value || "").trim();
+        if(!source){
+          return { error: "Source path is required." };
+        }
+        spec = { source };
+      }
       const selectRaw = String((document.getElementById("q_select") || {}).value || "").trim();
       if(selectRaw){
         const cols = selectRaw.split(",").map(x => String(x || "").trim()).filter(Boolean);
@@ -1779,6 +2072,32 @@
         </table>
       `;
     }
+    function normalizeExecutorCapsPayload(raw){
+      const out = {};
+      if(Array.isArray(raw)){
+        for(const item of raw){
+          const ex = String((item || {}).executor || "").trim();
+          if(!ex) continue;
+          const caps = (item && typeof item.capabilities === "object" && item.capabilities) ? item.capabilities : {};
+          out[ex] = caps;
+        }
+        return out;
+      }
+      if(raw && typeof raw === "object"){
+        for(const [k, v] of Object.entries(raw)){
+          const ex = String(k || "").trim();
+          if(!ex) continue;
+          if(v && typeof v === "object" && v.capabilities && typeof v.capabilities === "object"){
+            out[ex] = v.capabilities;
+          } else if(v && typeof v === "object"){
+            out[ex] = v;
+          } else {
+            out[ex] = {};
+          }
+        }
+      }
+      return out;
+    }
     async function loadQueryPage(){
       if(!isQueryView) return;
       const detailEl = document.getElementById("detail");
@@ -1794,8 +2113,8 @@
                   <option value="hpcc_direct">hpcc_direct</option>
                   <option value="slurm">slurm</option>
                 </select>
-                <input id="q_source" placeholder="source path, e.g. data/demo.csv" />
-                <input id="q_select" placeholder="select columns (comma-separated), e.g. id,name" />
+                <input id="q_source" placeholder="single-source fallback path (optional when tables are loaded)" />
+                <input id="q_select" placeholder="select columns, e.g. t1.id,t2.name" />
               </div>
               <div class="controls">
                 <input id="q_limit" value="100" placeholder="limit" />
@@ -1811,6 +2130,24 @@
               <div class="controls">
                 <textarea id="q_context" style="min-height:64px;flex:1 1 460px;" placeholder="query_context JSON (optional)"></textarea>
               </div>
+              <div class="builder-subsection">
+                <div class="builder-subsection-head">
+                  <h4>Tables</h4>
+                  <div class="controls">
+                    <button id="btn_query_add_table" type="button">Add Table</button>
+                    <button id="btn_query_add_join" type="button">Add Relationship</button>
+                  </div>
+                </div>
+                <div class="builder-subsection-body">
+                  <div id="q_tables"></div>
+                </div>
+              </div>
+              <div class="builder-subsection">
+                <div class="builder-subsection-head"><h4>Relationships (Access-style)</h4></div>
+                <div class="builder-subsection-body">
+                  <div id="q_joins"></div>
+                </div>
+              </div>
               <div class="controls">
                 <button id="btn_query_preview">Preview Query</button>
                 <span id="query_msg" class="muted">Loading executor capabilities...</span>
@@ -1823,6 +2160,11 @@
         `;
         const runBtn = document.getElementById("btn_query_preview");
         if(runBtn) runBtn.onclick = runQueryPreview;
+        const addTableBtn = document.getElementById("btn_query_add_table");
+        if(addTableBtn) addTableBtn.onclick = addQueryTable;
+        const addJoinBtn = document.getElementById("btn_query_add_join");
+        if(addJoinBtn) addJoinBtn.onclick = addQueryJoin;
+        renderQueryDesigner();
       }
       const capRes = await fetch("/api/executors/capabilities");
       if(!capRes.ok){
@@ -1832,7 +2174,7 @@
       }
       const capPayload = await capRes.json();
       queryCapsLoaded = true;
-      queryExecutorCaps = capPayload || {};
+      queryExecutorCaps = normalizeExecutorCapsPayload(capPayload);
       const exSel = document.getElementById("q_executor");
       if(exSel){
         const options = Array.from(exSel.options || []);

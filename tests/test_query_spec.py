@@ -59,3 +59,27 @@ def test_validate_query_spec_rejects_limit_out_of_bounds() -> None:
         validate_query_spec({"source": "data/demo.csv", "limit": 0})
     assert exc.value.detail["field"] == "limit"
 
+
+def test_validate_query_spec_normalizes_tables_and_joins() -> None:
+    out = validate_query_spec(
+        {
+            "tables": [
+                {"name": "a", "source": "data/a.csv", "columns": [{"name": "id", "type": "INTEGER"}]},
+                {"name": "b", "source": "data/b.csv"},
+            ],
+            "from_table": "a",
+            "joins": [
+                {
+                    "left_table": "a",
+                    "right_table": "b",
+                    "type": "left",
+                    "on": [{"left": "a.id", "right": "b.id", "op": "eq"}],
+                }
+            ],
+            "select": ["a.id", "b.id"],
+        }
+    )
+    assert out["source"] is None
+    assert len(out["tables"]) == 2
+    assert out["joins"][0]["type"] == "left"
+    assert out["joins"][0]["on"][0]["left"] == "a.id"

@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 from .errors import QueryPlannerError
 
-_QUERY_SPEC_ALLOWED_KEYS = {"source", "select", "derive", "filter", "order_by", "limit", "offset"}
+_QUERY_SPEC_ALLOWED_KEYS = {"source", "tables", "from_table", "joins", "select", "derive", "filter", "order_by", "limit", "offset"}
 _FILTER_ALLOWED_OPS = {
     "eq",
     "ne",
@@ -29,6 +29,8 @@ _FILTER_ALLOWED_OPS = {
     "not_null",
 }
 _ORDER_ALLOWED = {"asc", "desc"}
+_JOIN_ALLOWED = {"inner", "left", "right", "full", "cross"}
+_JOIN_OP_ALLOWED = {"eq", "ne", "gt", "gte", "lt", "lte"}
 
 
 def _planner_error(message: str, *, field: str, value: Any = None) -> QueryPlannerError:
@@ -83,6 +85,108 @@ def _normalize_select(value: Any) -> List[str]:
     out: List[str] = []
     for idx, item in enumerate(value):
         out.append(_require_non_empty_str(item, field=f"select[{idx}]"))
+    return out
+
+
+def _normalize_table_column(value: Any, *, field: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise _planner_error("Each table column override must be an object.", field=field, value=value)
+    unknown = [k for k in value.keys() if k not in {"name", "type"}]
+    if unknown:
+        raise _planner_error("Unsupported table column field.", field=f"{field}.{unknown[0]}", value=value.get(unknown[0]))
+    out: Dict[str, Any] = {"name": _require_non_empty_str(value.get("name"), field=f"{field}.name")}
+    if value.get("type") is not None:
+        out["type"] = _require_non_empty_str(value.get("type"), field=f"{field}.type")
+    return out
+
+
+def _normalize_tables(value: Any) -> List[Dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise _planner_error("`tables` must be a list.", field="tables", value=value)
+    out: List[Dict[str, Any]] = []
+    seen_names = set()
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise _planner_error("Each table entry must be an object.", field=f"tables[{idx}]", value=item)
+        unknown = [k for k in item.keys() if k not in {"name", "source", "columns"}]
+        if unknown:
+            raise _planner_error("Unsupported table field.", field=f"tables[{idx}].{unknown[0]}", value=item.get(unknown[0]))
+        name = _require_non_empty_str(item.get("name"), field=f"tables[{idx}].name")
+        key = name.lower()
+        if key in seen_names:
+            raise _planner_error("Duplicate table name.", field=f"tables[{idx}].name", value=name)
+        seen_names.add(key)
+        if "source" not in item:
+            raise _planner_error("Table is missing required `source`.", field=f"tables[{idx}].source")
+        table_obj: Dict[str, Any] = {
+            "name": name,
+            "source": _normalize_source(item.get("source")),
+        }
+        cols = item.get("columns")
+        if cols is not None:
+            if not isinstance(cols, list):
+                raise _planner_error("`tables[].columns` must be a list.", field=f"tables[{idx}].columns", value=cols)
+            table_obj["columns"] = [
+                _normalize_table_column(c, field=f"tables[{idx}].columns[{cidx}]")
+                for cidx, c in enumerate(cols)
+            ]
+        out.append(table_obj)
+    return out
+
+
+def _normalize_joins(value: Any) -> List[Dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise _planner_error("`joins` must be a list.", field="joins", value=value)
+    out: List[Dict[str, Any]] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise _planner_error("Each join entry must be an object.", field=f"joins[{idx}]", value=item)
+        unknown = [k for k in item.keys() if k not in {"left_table", "right_table", "type", "on"}]
+        if unknown:
+            raise _planner_error("Unsupported join field.", field=f"joins[{idx}].{unknown[0]}", value=item.get(unknown[0]))
+        join_type = str(item.get("type") or "inner").strip().lower()
+        if join_type not in _JOIN_ALLOWED:
+            raise _planner_error("Unsupported join type.", field=f"joins[{idx}].type", value=join_type)
+        join_obj: Dict[str, Any] = {
+            "left_table": _require_non_empty_str(item.get("left_table"), field=f"joins[{idx}].left_table"),
+            "right_table": _require_non_empty_str(item.get("right_table"), field=f"joins[{idx}].right_table"),
+            "type": join_type,
+        }
+        on_raw = item.get("on")
+        if join_type != "cross":
+            if not isinstance(on_raw, list) or not on_raw:
+                raise _planner_error("Join `on` must be a non-empty list.", field=f"joins[{idx}].on", value=on_raw)
+            on_out = []
+            for cidx, cond in enumerate(on_raw):
+                if not isinstance(cond, dict):
+                    raise _planner_error(
+                        "Each join condition must be an object.",
+                        field=f"joins[{idx}].on[{cidx}]",
+                        value=cond,
+                    )
+                extra = [k for k in cond.keys() if k not in {"left", "right", "op"}]
+                if extra:
+                    raise _planner_error(
+                        "Unsupported join condition field.",
+                        field=f"joins[{idx}].on[{cidx}].{extra[0]}",
+                        value=cond.get(extra[0]),
+                    )
+                op = str(cond.get("op") or "eq").strip().lower()
+                if op not in _JOIN_OP_ALLOWED:
+                    raise _planner_error("Unsupported join operation.", field=f"joins[{idx}].on[{cidx}].op", value=op)
+                on_out.append(
+                    {
+                        "left": _require_non_empty_str(cond.get("left"), field=f"joins[{idx}].on[{cidx}].left"),
+                        "right": _require_non_empty_str(cond.get("right"), field=f"joins[{idx}].on[{cidx}].right"),
+                        "op": op,
+                    }
+                )
+            join_obj["on"] = on_out
+        out.append(join_obj)
     return out
 
 
@@ -223,11 +327,18 @@ def validate_query_spec(query_spec: Dict[str, Any]) -> Dict[str, Any]:
     unknown = [k for k in query_spec.keys() if k not in _QUERY_SPEC_ALLOWED_KEYS]
     if unknown:
         raise _planner_error("Unsupported query_spec field.", field=unknown[0], value=query_spec.get(unknown[0]))
-    if "source" not in query_spec:
-        raise _planner_error("Missing required field: source.", field="source")
+    has_source = "source" in query_spec
+    has_tables = "tables" in query_spec
+    if not has_source and not has_tables:
+        raise _planner_error("Missing required field: source or tables.", field="source")
 
     normalized = {
-        "source": _normalize_source(query_spec.get("source")),
+        "source": _normalize_source(query_spec.get("source")) if has_source else None,
+        "tables": _normalize_tables(query_spec.get("tables")),
+        "from_table": _require_non_empty_str(query_spec.get("from_table"), field="from_table")
+        if query_spec.get("from_table") is not None
+        else "",
+        "joins": _normalize_joins(query_spec.get("joins")),
         "select": _normalize_select(query_spec.get("select")),
         "derive": _normalize_derive(query_spec.get("derive")),
         "filter": _normalize_filter(query_spec.get("filter")),
@@ -235,9 +346,25 @@ def validate_query_spec(query_spec: Dict[str, Any]) -> Dict[str, Any]:
         "limit": _normalize_limit(query_spec.get("limit")),
         "offset": _normalize_offset(query_spec.get("offset")),
     }
+    if normalized["tables"] and normalized["source"] is not None:
+        raise _planner_error("Use either source or tables, not both.", field="source")
+    if normalized["joins"] and not normalized["tables"]:
+        raise _planner_error("`joins` requires `tables`.", field="joins")
+    if normalized["from_table"] and not normalized["tables"]:
+        raise _planner_error("`from_table` requires `tables`.", field="from_table")
+    if normalized["tables"] and not normalized["from_table"]:
+        normalized["from_table"] = str(normalized["tables"][0]["name"])
+    if normalized["tables"]:
+        table_names = {str(t.get("name") or "").lower() for t in normalized["tables"]}
+        if str(normalized["from_table"]).lower() not in table_names:
+            raise _planner_error("`from_table` must reference a table name in `tables`.", field="from_table")
+        for idx, j in enumerate(normalized["joins"]):
+            if str(j.get("left_table") or "").lower() not in table_names:
+                raise _planner_error("Join references unknown left_table.", field=f"joins[{idx}].left_table")
+            if str(j.get("right_table") or "").lower() not in table_names:
+                raise _planner_error("Join references unknown right_table.", field=f"joins[{idx}].right_table")
 
     # Avoid accidental full-table scans in preview mode when no projection/filter is set.
     if not normalized["select"] and not normalized["derive"]:
         normalized["select"] = ["*"]
     return normalized
-

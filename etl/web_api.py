@@ -913,6 +913,7 @@ app.include_router(
 app.include_router(
     build_api_query_router(
         query_preview=lambda request, payload: api_query_preview(request, payload),
+        query_schema=lambda request, payload: api_query_schema(request, payload),
     )
 )
 app.include_router(
@@ -3126,6 +3127,10 @@ def api_run_live_log(run_id: str, request: Request, limit: int = Query(default=2
 
 def api_query_preview(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     return web_query_handlers.api_query_preview(request, payload, _query_handler_deps())
+
+
+def api_query_schema(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    return web_query_handlers.api_query_schema(request, payload, _query_handler_deps())
 
 
 def api_stop_run(run_id: str, request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:

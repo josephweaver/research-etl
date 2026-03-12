@@ -14,6 +14,7 @@ from fastapi import APIRouter, Body, Request
 def build_api_query_router(
     *,
     query_preview: Callable[[Request, Optional[dict[str, Any]]], dict[str, Any]],
+    query_schema: Callable[[Request, Optional[dict[str, Any]]], dict[str, Any]],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -21,5 +22,8 @@ def build_api_query_router(
     def api_query_preview(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
         return query_preview(request, payload)
 
-    return router
+    @router.post("/api/query/schema")
+    def api_query_schema(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+        return query_schema(request, payload)
 
+    return router

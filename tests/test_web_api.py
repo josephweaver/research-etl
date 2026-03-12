@@ -169,6 +169,36 @@ def test_web_api_query_preview_success(monkeypatch):
     assert payload["row_count_estimate"] == 2
 
 
+def test_web_api_query_schema_success(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    class _FakeLocalExecutor:
+        name = "local"
+
+        def capabilities(self):
+            return {"query_data": True}
+
+        def query_data(self, query_spec, context=None):
+            return {
+                "columns": [{"name": "id", "type": "INTEGER"}, {"name": "name", "type": "VARCHAR"}],
+                "rows": [[1, "A"]],
+                "row_count_estimate": 1,
+                "elapsed_ms": 1,
+                "engine": "duckdb",
+                "executor": "local",
+            }
+
+    monkeypatch.setattr(web_api, "LocalExecutor", _FakeLocalExecutor)
+    client = TestClient(web_api.app)
+    r = client.post("/api/query/schema", json={"executor": "local", "source": "data/demo.csv"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["columns"][0]["name"] == "id"
+    assert payload["rows"] == [[1, "A"]]
+
+
 def test_web_api_query_preview_hpcc_direct_success(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api
