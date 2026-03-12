@@ -325,6 +325,13 @@ def run(args, ctx):
   - `foreach_kind` (optional filter for `foreach_glob`: `any`, `files`, `dirs`)
   - `parallel_with` (optional string; consecutive steps with the same value run in parallel)
 
+### Pipeline design guideline (recommended)
+
+- Prefer one dataset per pipeline YAML where practical.
+- Treat each dataset pipeline as a composable unit that can be reused by downstream merge/model pipelines.
+- Use `requires_pipelines` to compose multi-dataset workflows instead of tightly coupling multiple dataset ingests in one pipeline.
+- This is a recommendation (not a strict rule), and can be relaxed when coupling is operationally necessary.
+
 ### Hierarchical variable resolution
 
 Templating is iterative (resolved repeatedly until values stop changing). Resolution context precedence is:
