@@ -53,9 +53,12 @@ environments:
     # database_url: "postgresql://USER:TOKEN@localhost:6543/DB?sslmode=require&options=endpoint%3Dep-sweet-sunset-ai8t67lb"
     db_tunnel_via_tmux: true
     db_tunnel_session_prefix: "etl-db-tunnel"
-    db_tunnel_command: "ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -L 6543:ep-sweet-sunset-ai8t67lb-pooler.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
+    db_tunnel_command: "ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_hpc -L 6543:ep-sweet-sunset-ai8t67lb-pooler.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
+    #db_tunnel_command: "ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -L 6543:ep-sweet-sunset-ai8t67lb-pooler.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
     sync: true
     #db_mode: offline
+    db_tunnel_host: 127.0.0.1
+    db_tunnel_port: 6543
 
   hpcc_msu_direct:
     executor: hpcc_direct
