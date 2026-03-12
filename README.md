@@ -628,6 +628,7 @@ Query workspace layering:
   - `projects.<id>.vars.duckdb_workspace_config_path` (if set)
   - `<pipeline_assets_local_repo_path>/db/duckdb/workspace.yml` (if set; legacy fallback: `query/duckdb.workspace.yml`)
   - `config/query_workspaces/<project_id>.yml`
+- Query UI workspace catalog also discovers tables from every local `pipeline_asset_sources[].local_repo_path` workspace file, so one project can pull tables from multiple sibling pipeline repos.
 - Mutable overrides are stored in DB table `etl_query_workspaces`:
   - project scope (`scope=project`) for shared customer/project defaults
   - user scope (`scope=user`) for personal query workspace customization

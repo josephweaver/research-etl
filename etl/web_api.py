@@ -1448,6 +1448,7 @@ def _query_handler_deps() -> dict[str, Any]:
         "resolve_projects_config_path": resolve_projects_config_path,
         "load_project_vars": load_project_vars,
         "ProjectConfigError": ProjectConfigError,
+        "pipeline_asset_sources_from_project_vars": pipeline_asset_sources_from_project_vars,
         "resolve_global_vars": _resolve_global_vars,
         "resolve_execution_env": _resolve_execution_env,
         "resolve_execution_config_path": resolve_execution_config_path,

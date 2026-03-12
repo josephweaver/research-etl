@@ -18,6 +18,7 @@ from ..query.workspaces import (
     resolve_repo_workspace_config_path,
     upsert_workspace_override,
 )
+from ..pipeline_assets import PipelineAssetError
 
 
 def _query_error_payload(error_code: str, message: str, detail: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -217,6 +218,68 @@ def api_query_workspace(request: Request, payload: Optional[dict[str, Any]], dep
     except QueryWorkspaceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    workspace_sources: list[dict[str, Any]] = []
+    source_cfgs: list[dict[str, Any]] = []
+    primary_source_id = "project_default"
+    workspace_sources.append(
+        {
+            "source_id": primary_source_id,
+            "label": "project_default",
+            "repo_root": str(repo_path.parent.parent.parent) if repo_path.parts else "",
+            "workspace_path": repo_path.as_posix(),
+            "exists": bool(repo_path.exists()),
+        }
+    )
+    source_cfgs.append({"source_id": primary_source_id, "config": repo_cfg})
+
+    try:
+        asset_sources = deps["pipeline_asset_sources_from_project_vars"](dict(project_vars or {}))
+    except (PipelineAssetError, Exception):
+        asset_sources = []
+    for idx, src in enumerate(list(asset_sources or [])):
+        local_repo_raw = str(getattr(src, "local_repo_path", "") or "").strip()
+        if not local_repo_raw:
+            continue
+        local_repo = Path(local_repo_raw).expanduser()
+        if not local_repo.is_absolute():
+            local_repo = (repo_root / local_repo).resolve()
+        candidate = (local_repo / "db" / "duckdb" / "workspace.yml").resolve()
+        legacy = (local_repo / "query" / "duckdb.workspace.yml").resolve()
+        if not candidate.exists() and legacy.exists():
+            candidate = legacy
+        source_id = f"asset_{idx+1}"
+        source_label = str(getattr(src, "repo_url", "") or "").strip() or source_id
+        workspace_sources.append(
+            {
+                "source_id": source_id,
+                "label": source_label,
+                "repo_root": local_repo.as_posix(),
+                "workspace_path": candidate.as_posix(),
+                "exists": bool(candidate.exists()),
+            }
+        )
+        if candidate.exists():
+            try:
+                cfg = load_workspace_config_file(candidate)
+                source_cfgs.append({"source_id": source_id, "config": cfg})
+            except QueryWorkspaceError:
+                pass
+
+    catalog_tables: list[dict[str, Any]] = []
+    for src_cfg in source_cfgs:
+        source_id = str(src_cfg.get("source_id") or "").strip() or "workspace"
+        cfg = dict(src_cfg.get("config") or {})
+        for t in list(cfg.get("tables") or []):
+            if not isinstance(t, dict):
+                continue
+            name = str(t.get("name") or "").strip()
+            source = str(t.get("source") or t.get("path") or "").strip()
+            if not name or not source:
+                continue
+            row = dict(t)
+            row["workspace_source"] = source_id
+            catalog_tables.append(row)
+
     project_override: dict[str, Any] = {}
     user_override: dict[str, Any] = {}
     db_warning = ""
@@ -240,6 +303,8 @@ def api_query_workspace(request: Request, payload: Optional[dict[str, Any]], dep
             "project": project_override,
             "user": user_override,
         },
+        "workspace_sources": workspace_sources,
+        "catalog_tables": catalog_tables,
         "effective": effective,
         "warning": db_warning or None,
     }

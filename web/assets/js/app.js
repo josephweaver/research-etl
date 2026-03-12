@@ -69,6 +69,7 @@
     let queryExecutorCaps = {};
     let queryModel = { tables: [], joins: [] };
     let queryWorkspaceLoaded = false;
+    let queryWorkspaceCatalog = [];
     const USER_STORAGE_KEY = "etl_ui_user";
     const PROJECT_STORAGE_KEY = "etl_ui_project";
     const ENV_STORAGE_KEY = "etl_ui_env";
@@ -1781,6 +1782,57 @@
       const envEl = document.getElementById("q_env");
       if(envEl && String(cfg.env || "").trim()) envEl.value = String(cfg.env).trim();
       renderQueryDesigner();
+      renderQueryWorkspaceCatalog();
+    }
+    function renderQueryWorkspaceCatalog(){
+      const el = document.getElementById("q_workspace_catalog");
+      if(!el) return;
+      const rows = Array.isArray(queryWorkspaceCatalog) ? queryWorkspaceCatalog : [];
+      if(!rows.length){
+        el.innerHTML = `<div class="muted">No workspace tables discovered.</div>`;
+        return;
+      }
+      el.innerHTML = `
+        <table>
+          <thead><tr><th>Table</th><th>Source</th><th>Path</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map((r, idx) => `
+              <tr>
+                <td>${esc(String(r.name || ""))}</td>
+                <td>${esc(String(r.workspace_source || ""))}</td>
+                <td>${esc(String(r.source || r.path || ""))}</td>
+                <td><button type="button" data-qcat-add="${idx}">Add</button></td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+      [...el.querySelectorAll("button[data-qcat-add]")].forEach(btn => {
+        btn.onclick = () => {
+          const idx = Number(btn.dataset.qcatAdd);
+          const item = rows[idx];
+          if(!item) return;
+          queryModel.tables = queryModel.tables || [];
+          const baseName = normalizeQueryTableName(String(item.name || "")) || nextQueryTableName();
+          let name = baseName;
+          const taken = new Set((queryModel.tables || []).map(t => String(t.name || "").toLowerCase()));
+          let n = 2;
+          while(taken.has(String(name || "").toLowerCase())){
+            name = `${baseName}_${n}`;
+            n += 1;
+          }
+          queryModel.tables.push({
+            name,
+            path: String(item.source || item.path || "").trim(),
+            columns: Array.isArray(item.columns) ? item.columns.map(c => ({
+              name: String((c || {}).name || "").trim(),
+              type: String((c || {}).type || "").trim(),
+              override_type: "",
+            })) : [],
+          });
+          renderQueryDesigner();
+        };
+      });
     }
     async function loadQueryWorkspaceConfig(){
       if(!isQueryView) return;
@@ -1795,6 +1847,8 @@
       }
       const payload = await res.json();
       applyQueryWorkspaceConfig(payload.effective || {});
+      queryWorkspaceCatalog = Array.isArray(payload.catalog_tables) ? payload.catalog_tables : [];
+      renderQueryWorkspaceCatalog();
       if(msgEl){
         msgEl.className = "ok";
         const src = payload.repo_config_exists ? "repo+db" : "db/defaults";
@@ -2227,6 +2281,12 @@
                 </div>
                 <div class="builder-subsection-body">
                   <div id="q_tables"></div>
+                </div>
+              </div>
+              <div class="builder-subsection">
+                <div class="builder-subsection-head"><h4>Workspace Tables</h4></div>
+                <div class="builder-subsection-body">
+                  <div id="q_workspace_catalog"></div>
                 </div>
               </div>
               <div class="builder-subsection">
