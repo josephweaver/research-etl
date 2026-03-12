@@ -266,7 +266,7 @@ class HpccDirectExecutor(Executor):
             f"CHECKOUT_ROOT={shlex.quote(remote_repo_root)}",
             "cd \"$CHECKOUT_ROOT\"",
             "export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"",
-            "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \\\"$ETL_REPO_ROOT\\\")\"; fi",
+            "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \"$ETL_REPO_ROOT\")\"; fi",
             "export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only",
         ]
         for module_name in self.remote_modules:
@@ -882,7 +882,7 @@ class HpccDirectExecutor(Executor):
         run_lines.append("export PYTHONUNBUFFERED=1")
         run_lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
         run_lines.append(
-            "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \\\"$ETL_REPO_ROOT\\\")\"; fi"
+            "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \"$ETL_REPO_ROOT\")\"; fi"
         )
         run_lines.append("export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only")
         run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")

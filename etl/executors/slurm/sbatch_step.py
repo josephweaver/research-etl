@@ -116,7 +116,7 @@ def render_step_script(
     chunk_runtime_bootstrap.append(f"VENV={venv_path}")
     chunk_runtime_bootstrap.append(f"export ETL_REPO_ROOT={checkout_root}")
     chunk_runtime_bootstrap.append(
-        "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \\\"$ETL_REPO_ROOT\\\")\"; fi"
+        "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \"$ETL_REPO_ROOT\")\"; fi"
     )
     chunk_runtime_bootstrap.append("export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only")
     executor._append_db_tunnel_lines(chunk_runtime_bootstrap)

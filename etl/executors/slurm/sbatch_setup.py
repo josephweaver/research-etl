@@ -212,7 +212,7 @@ def render_setup_script(
             chunk_asset_overlays.append(f"log_step {shlex.quote(f'syncing pipeline asset source {idx + 1}: {repo_url} ({ref})')}")
         chunk_asset_overlays.append(f"ASSET_URL_{idx}={shlex.quote(repo_url)}")
         chunk_asset_overlays.append(f"ASSET_REF_{idx}={shlex.quote(ref)}")
-        chunk_asset_overlays.append("ASSET_CACHE_ROOT=${ETL_PIPELINE_ASSET_CACHE_ROOT:-\"$(dirname \\\"$CHECKOUT_ROOT\\\")\"}")
+        chunk_asset_overlays.append("ASSET_CACHE_ROOT=${ETL_PIPELINE_ASSET_CACHE_ROOT:-$(dirname \"$CHECKOUT_ROOT\")}")
         chunk_asset_overlays.append("mkdir -p \"$ASSET_CACHE_ROOT\"")
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"$(basename \"$ASSET_URL_{idx}\")\"")
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"${{ASSET_REPO_NAME_{idx}%.git}}\"")

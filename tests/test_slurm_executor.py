@@ -944,7 +944,7 @@ def test_slurm_asset_overlays_clone_to_sibling_cache_root(monkeypatch, tmp_path:
     )
 
     setup_script = calls[0]["script_text"]
-    assert "ASSET_CACHE_ROOT=${ETL_PIPELINE_ASSET_CACHE_ROOT:-\"$(dirname \\\"$CHECKOUT_ROOT\\\")\"}" in setup_script
+    assert "ASSET_CACHE_ROOT=${ETL_PIPELINE_ASSET_CACHE_ROOT:-$(dirname \"$CHECKOUT_ROOT\")}" in setup_script
     assert "$CHECKOUT_ROOT/.pipeline_assets/src_0" not in setup_script
     assert "ln -sfn" in setup_script
     assert "$CHECKOUT_ROOT/pipelines" in setup_script
