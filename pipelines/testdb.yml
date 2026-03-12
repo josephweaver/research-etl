@@ -1,0 +1,10 @@
+project_id: default
+vars:
+  name: testdb
+  workdir: "{env.workdir}/{name}/{sys.now.yymmdd}/{sys.now.hhmmss}-{sys.run.short_id}"
+  logdir: "{workdir}/logs"
+steps:
+  - name: 01_test_postgres_connection
+    plugin: exec_script.py
+    args:
+      script: scripts/testdb/check_psql_connection.py

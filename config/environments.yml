@@ -27,7 +27,7 @@ environments:
     cpus_per_task: 2
     mem: "8G"
 
-    modules: [ "Python/3.11.3-GCCcore-12.3.0", "rclone/1.63.1-amd64"]
+    modules: [ "Python/3.11.3-GCCcore-12.3.0", "rclone/1.63.1-amd64", "PostgreSQL/16.1-GCCcore-12.3.0" ]
     job_limit: 1000
     array_task_limit: 1000
     max_parallel: 50
@@ -51,7 +51,9 @@ environments:
     # Optional tunneled DB connectivity (set db_mode accordingly):
     db_mode: online
     # database_url: "postgresql://USER:TOKEN@localhost:6543/DB?sslmode=require&options=endpoint%3Dep-sweet-sunset-ai8t67lb"
-    db_tunnel_command: "ssh -f -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -L 6543:ep-sweet-sunset-ai8t67lb.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
+    db_tunnel_via_tmux: true
+    db_tunnel_session_prefix: "etl-db-tunnel"
+    db_tunnel_command: "ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -L 6543:ep-sweet-sunset-ai8t67lb-pooler.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
     sync: true
     #db_mode: offline
 
@@ -62,7 +64,7 @@ environments:
     path_style: unix
     git_remote_url: "git@github.com:josephweaver/research-etl.git"
     rclone_bin: "rclone"
-    modules: [ "Python/3.11.3-GCCcore-12.3.0", "rclone/1.63.1-amd64"]
+    modules: [ "Python/3.11.3-GCCcore-12.3.0", "rclone/1.63.1-amd64", "PostgreSQL/16.1-GCCcore-12.3.0" ]
     ssh_timeout: 1800
     ssh_connect_timeout: 1800
     ssh_host: dev-amd24.passwordless
@@ -75,4 +77,6 @@ environments:
     # Optional tunneled DB connectivity:
     # db_mode: online
     # database_url: "postgresql://USER:TOKEN@localhost:6543/DB?sslmode=require&options=endpoint%3Dep-sweet-sunset-ai8t67lb"
-    # db_tunnel_command: "ssh -f -N -L 6543:ep-sweet-sunset-ai8t67lb.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
+    # db_tunnel_via_tmux: true
+    # db_tunnel_session_prefix: "etl-db-tunnel"
+    # db_tunnel_command: "ssh -N -L 6543:ep-sweet-sunset-ai8t67lb-pooler.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"

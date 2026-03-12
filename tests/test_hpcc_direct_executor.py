@@ -485,6 +485,51 @@ def test_hpcc_direct_includes_db_tunnel_command_in_run_stage(monkeypatch, tmp_pa
     assert tunnel_cmd in remote_script
 
 
+def test_hpcc_direct_wraps_db_tunnel_with_tmux_and_cleanup_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "pipelines").mkdir(parents=True, exist_ok=True)
+    pipeline_path = repo / "pipelines" / "sample.yml"
+    pipeline_path.write_text("steps: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        hpcc_mod,
+        "parse_pipeline",
+        lambda *_a, **_k: Pipeline(steps=[Step(name="s1", script="echo.py")]),
+    )
+    monkeypatch.setattr(
+        hpcc_mod,
+        "resolve_execution_spec",
+        lambda **_k: GitExecutionSpec(
+            commit_sha="32adb6b10db9aaaa111122223333444455556666",
+            origin_url="git@github.com:org/research-etl.git",
+            repo_name="research-etl",
+            git_is_dirty=False,
+        ),
+    )
+
+    seen_scripts: list[str] = []
+    monkeypatch.setattr(HpccDirectExecutor, "_run_ssh_script", _fake_ssh_runner(seen_scripts))
+
+    tunnel_cmd = "ssh -N -L 6543:db.host:5432 weave151@hpcc.msu.edu"
+    ex = HpccDirectExecutor(
+        env_config={
+            "ssh_host": "dev.hpcc.local",
+            "remote_repo": "/scratch/alice/research-etl",
+            "propagate_secrets": False,
+            "db_tunnel_command": tunnel_cmd,
+            "db_tunnel_via_tmux": True,
+            "db_tunnel_session_prefix": "etl-db-test",
+        },
+        repo_root=repo,
+        dry_run=False,
+    )
+    _ = ex.submit(str(pipeline_path), {"run_id": "tunnel_tmux"})
+    remote_script = str(seen_scripts[-1])
+    assert "tmux new-session -d -s \"$ETL_DB_TUNNEL_SESSION\"" in remote_script
+    assert "trap _etl_db_tunnel_cleanup EXIT INT TERM" in remote_script
+    assert tunnel_cmd in remote_script
+
+
 def test_hpcc_direct_query_capability_enabled() -> None:
     ex = HpccDirectExecutor(env_config={"ssh_host": "dev.hpcc.local", "remote_query_repo": "/tmp/repo"}, repo_root=Path("."))
     caps = ex.capabilities()

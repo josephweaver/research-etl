@@ -691,6 +691,10 @@ On remote submissions, the SLURM executor ensures `~/.secrets/etl` exists on the
 For HPCC/network-restricted DB access, execution environments also support:
 - `database_url`: optional explicit DB URL override (used instead of local `ETL_DATABASE_URL`).
 - `db_tunnel_command`: optional shell command executed before run stages (for example SSH local-port forwarding to Neon).
+- `db_tunnel_via_tmux`: when `true`, starts `db_tunnel_command` in a tmux session and auto-kills that session when the stage exits.
+- `db_tunnel_session_prefix`: optional tmux session-name prefix (default: `etl-db-tunnel`).
+
+When using `db_tunnel_via_tmux`, prefer a non-forking command (for example `ssh -N ...` without `-f`) so lifecycle is controlled by tmux.
 
 ### SLURM setup (quick notes)
 - Ensure `sbatch`/`sacct` available on the submission host (login node).

@@ -206,6 +206,10 @@ class HpccDirectExecutor(Executor):
         self.load_secrets_file = bool(self.env_config.get("load_secrets_file", True))
         self.database_url = str(self.env_config.get("database_url") or "").strip() or None
         self.db_tunnel_command = str(self.env_config.get("db_tunnel_command") or "").strip()
+        self.db_tunnel_via_tmux = _parse_bool(self.env_config.get("db_tunnel_via_tmux"), default=False)
+        self.db_tunnel_session_prefix = (
+            str(self.env_config.get("db_tunnel_session_prefix") or "").strip() or "etl-db-tunnel"
+        )
         self.secret_env_keys = _parse_str_list(self.env_config.get("secret_env_keys")) or list(DEFAULT_SECRET_ENV_KEYS)
         self.required_secret_keys = _parse_str_list(self.env_config.get("required_secret_keys"))
         self._statuses: Dict[str, RunStatus] = {}
@@ -217,6 +221,26 @@ class HpccDirectExecutor(Executor):
             "artifact_file": False,
             "query_data": True,
         }
+
+    def _append_db_tunnel_lines(self, lines: list[str]) -> None:
+        if not self.db_tunnel_command:
+            return
+        if self.db_tunnel_via_tmux:
+            lines.extend(
+                [
+                    "if ! command -v tmux >/dev/null 2>&1; then echo '[hpcc_direct][db_tunnel] tmux is required when db_tunnel_via_tmux=true' >&2; exit 1; fi",
+                    f"ETL_DB_TUNNEL_SESSION_PREFIX={shlex.quote(self.db_tunnel_session_prefix)}",
+                    "ETL_DB_TUNNEL_SESSION=\"${ETL_DB_TUNNEL_SESSION_PREFIX}-$$\"",
+                    "tmux has-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 && tmux kill-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 || true",
+                    f"tmux new-session -d -s \"$ETL_DB_TUNNEL_SESSION\" \"bash -lc {shlex.quote(self.db_tunnel_command)}\"",
+                    "sleep 1",
+                    "if ! tmux has-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1; then echo '[hpcc_direct][db_tunnel] tmux tunnel session failed to start' >&2; exit 1; fi",
+                    "_etl_db_tunnel_cleanup(){ tmux has-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 && tmux kill-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 || true; }",
+                    "trap _etl_db_tunnel_cleanup EXIT INT TERM",
+                ]
+            )
+            return
+        lines.append(self.db_tunnel_command)
 
     def query_data(self, query_spec: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         ctx = dict(context or {})
@@ -262,8 +286,7 @@ class HpccDirectExecutor(Executor):
                 f"if [ ! -f \"$VENV/bin/activate\" ]; then {shlex.quote(self.remote_python)} -m venv \"$VENV\"; fi; "
                 "source \"$VENV/bin/activate\""
             )
-        if self.db_tunnel_command:
-            lines.append(self.db_tunnel_command)
+        self._append_db_tunnel_lines(lines)
         if self.load_secrets_file:
             lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
         lines.extend(
@@ -845,8 +868,7 @@ class HpccDirectExecutor(Executor):
             run_lines.append(f"source {shlex.quote(self.remote_venv)}/bin/activate")
         else:
             run_lines.append("source \"$CHECKOUT_ROOT/.venv/bin/activate\"")
-        if self.db_tunnel_command:
-            run_lines.append(self.db_tunnel_command)
+        self._append_db_tunnel_lines(run_lines)
         if self.load_secrets_file:
             run_lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
         db_mode = str(exec_env.get("db_mode") or "").strip()

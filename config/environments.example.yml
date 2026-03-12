@@ -33,6 +33,9 @@ environments:
     # database_url: "postgresql://USER:TOKEN@localhost:6543/DB?sslmode=require&options=endpoint%3Dep-xxxx"
     # Optional tunnel command executed in setup/batch scripts before loading secrets.
     # db_tunnel_command: "ssh -f -N -L 6543:ep-xxxx.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
+    # Optional: manage tunnel lifecycle with tmux (recommended when command should be cleaned up automatically).
+    # db_tunnel_via_tmux: true
+    # db_tunnel_session_prefix: "etl-db-tunnel"
   hpcc_beta:
     executor: slurm
     name: beta

@@ -307,6 +307,8 @@ class SlurmEnv:
     load_secrets_file: Optional[bool] = True
     database_url: Optional[str] = None
     db_tunnel_command: Optional[str] = None
+    db_tunnel_via_tmux: Optional[bool] = False
+    db_tunnel_session_prefix: Optional[str] = None
     ssh_retries: Optional[int] = None
     scp_retries: Optional[int] = None
     remote_retry_delay_seconds: Optional[float] = None
@@ -346,7 +348,7 @@ class SlurmExecutor(Executor):
             "max_time", "max_cpus_per_task", "max_mem", "setup_time",
             "execution_source", "source_bundle", "source_snapshot", "allow_workspace_source",
             "git_remote_url", "propagate_db_secret", "load_secrets_file",
-            "database_url", "db_tunnel_command",
+            "database_url", "db_tunnel_command", "db_tunnel_via_tmux", "db_tunnel_session_prefix",
             "ssh_retries", "scp_retries", "remote_retry_delay_seconds",
             "ssh_connect_timeout", "ssh_strict_host_key_checking",
         }}
@@ -397,6 +399,10 @@ class SlurmExecutor(Executor):
         config_database_url = str(env_config.get("database_url") or "").strip()
         self.database_url = config_database_url or self._load_database_url()
         self.db_tunnel_command = str(env_config.get("db_tunnel_command") or "").strip()
+        self.db_tunnel_via_tmux = _parse_bool(env_config.get("db_tunnel_via_tmux"), default=False)
+        self.db_tunnel_session_prefix = (
+            str(env_config.get("db_tunnel_session_prefix") or "").strip() or "etl-db-tunnel"
+        )
         self._statuses: Dict[str, RunStatus] = {}
 
     def capabilities(self) -> Dict[str, bool]:
@@ -409,6 +415,23 @@ class SlurmExecutor(Executor):
 
     def _append_db_tunnel_lines(self, lines: list[str]) -> None:
         if not self.db_tunnel_command:
+            return
+        if self.db_tunnel_via_tmux:
+            if self.verbose:
+                lines.append("log_step 'starting DB SSH tunnel via tmux'")
+            lines.extend(
+                [
+                    "if ! command -v tmux >/dev/null 2>&1; then echo '[etl][db_tunnel] tmux is required when db_tunnel_via_tmux=true' >&2; exit 1; fi",
+                    f"ETL_DB_TUNNEL_SESSION_PREFIX={shlex.quote(self.db_tunnel_session_prefix)}",
+                    "ETL_DB_TUNNEL_SESSION=\"${ETL_DB_TUNNEL_SESSION_PREFIX}-${SLURM_JOB_ID:-$$}\"",
+                    "tmux has-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 && tmux kill-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 || true",
+                    f"tmux new-session -d -s \"$ETL_DB_TUNNEL_SESSION\" \"bash -lc {shlex.quote(self.db_tunnel_command)}\"",
+                    "sleep 1",
+                    "if ! tmux has-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1; then echo '[etl][db_tunnel] tmux tunnel session failed to start' >&2; exit 1; fi",
+                    "_etl_db_tunnel_cleanup(){ tmux has-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 && tmux kill-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 || true; }",
+                    "trap _etl_db_tunnel_cleanup EXIT INT TERM",
+                ]
+            )
             return
         if self.verbose:
             lines.append("log_step 'starting DB SSH tunnel'")
