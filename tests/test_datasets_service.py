@@ -242,6 +242,52 @@ def test_store_data_resolves_location_alias(monkeypatch, tmp_path):
     assert captured["options"]["shared_drive_id"] == "team123"
 
 
+def test_store_data_auto_registers_workspace_entry(monkeypatch, tmp_path):
+    conn = _FakeConn()
+    src = tmp_path / "payload.csv"
+    src.write_text("id,name\n1,a\n", encoding="utf-8")
+    ws = tmp_path / "db" / "duckdb" / "workspace.yml"
+
+    def _fake_transfer(**kwargs):
+        return {
+            "transport": kwargs["transport"],
+            "target_uri": str(tmp_path / "datasets" / "raw.demo_v1"),
+            "dry_run": False,
+        }
+
+    monkeypatch.setattr(ds, "_connect", lambda: conn)
+    monkeypatch.setattr(ds, "_load_policy_or_none", lambda: None)
+    monkeypatch.setattr(ds, "transfer_via_transport", _fake_transfer)
+    monkeypatch.setattr(
+        ds,
+        "_infer_dataset_profile",
+        lambda _src: {
+            "format": "delimited",
+            "sample_file": str(src),
+            "columns": [{"name": "id", "type": "BIGINT"}, {"name": "name", "type": "VARCHAR"}],
+            "row_count": 1,
+            "schema_hash": "sch-demo",
+        },
+    )
+
+    out = ds.store_data(
+        dataset_id="raw.demo_v1",
+        source_path=str(src),
+        stage="staging",
+        runtime_context="local",
+        version_label="v1",
+        project_id="crop_insurance",
+        workspace_auto_register=True,
+        workspace_config_path=str(ws),
+    )
+
+    assert out["profile"]["workspace_auto_register"]["updated"] is True
+    assert ws.exists()
+    text = ws.read_text(encoding="utf-8")
+    assert "raw_demo_v1" in text
+    assert "dataset_store_auto" in text
+
+
 def test_store_data_policy_violation_raises(monkeypatch, tmp_path):
     src = tmp_path / "payload.txt"
     src.write_text("hello", encoding="utf-8")

@@ -16,9 +16,10 @@ def _ctx(tmp_path: Path) -> PluginContext:
 
 
 class _FakeResponse:
-    def __init__(self, payload: bytes):
+    def __init__(self, payload: bytes, headers: dict | None = None):
         self._payload = payload
         self._offset = 0
+        self.headers = dict(headers or {})
 
     def __enter__(self):
         return self
@@ -120,3 +121,75 @@ def test_web_download_list_resolves_repo_relative_urls_file_with_env_root(tmp_pa
     assert outputs["downloaded_count"] == 1
     assert outputs["failed_count"] == 0
     assert (out_dir / "state.zip").exists()
+
+
+def test_web_download_list_conditional_get_skips_not_modified(tmp_path: Path, monkeypatch) -> None:
+    plugin = load_plugin(Path("plugins/web_download_list.py"))
+    assert plugin.module is not None
+    out_dir = tmp_path / "out_cond"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    existing = out_dir / "state.zip"
+    existing.write_bytes(b"OLD")
+    (out_dir / "download_state.json").write_text(
+        '{"https://example.com/state.zip":{"etag":"\\"abc\\"","last_modified":"Wed, 01 Jan 2025 00:00:00 GMT"}}\n',
+        encoding="utf-8",
+    )
+
+    def _fake_urlopen(req, timeout=0):  # noqa: ANN001
+        method = str(getattr(req, "method", "GET") or "GET").upper()
+        if method == "HEAD":
+            raise plugin.module.HTTPError(
+                req.full_url,
+                304,
+                "Not Modified",
+                {"ETag": '"abc"', "Last-Modified": "Wed, 01 Jan 2025 00:00:00 GMT"},
+                None,
+            )
+        raise AssertionError("GET should not run when not modified")
+
+    monkeypatch.setattr(plugin.module.request, "urlopen", _fake_urlopen)
+    outputs = plugin.run(
+        {
+            "urls": "https://example.com/state.zip",
+            "out": str(out_dir),
+            "overwrite": False,
+            "conditional_get": True,
+        },
+        _ctx(tmp_path),
+    )
+    assert outputs["downloaded_count"] == 0
+    assert outputs["skipped_count"] == 1
+    assert existing.read_bytes() == b"OLD"
+
+
+def test_web_download_list_conditional_get_downloads_when_changed(tmp_path: Path, monkeypatch) -> None:
+    plugin = load_plugin(Path("plugins/web_download_list.py"))
+    assert plugin.module is not None
+    out_dir = tmp_path / "out_cond_changed"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    existing = out_dir / "state.zip"
+    existing.write_bytes(b"OLD")
+    calls = {"head": 0, "get": 0}
+
+    def _fake_urlopen(req, timeout=0):  # noqa: ANN001
+        method = str(getattr(req, "method", "GET") or "GET").upper()
+        if method == "HEAD":
+            calls["head"] += 1
+            return _FakeResponse(b"", headers={"ETag": '"new"', "Last-Modified": "Thu, 02 Jan 2025 00:00:00 GMT"})
+        calls["get"] += 1
+        return _FakeResponse(b"NEW", headers={"ETag": '"new"', "Last-Modified": "Thu, 02 Jan 2025 00:00:00 GMT"})
+
+    monkeypatch.setattr(plugin.module.request, "urlopen", _fake_urlopen)
+    outputs = plugin.run(
+        {
+            "urls": "https://example.com/state.zip",
+            "out": str(out_dir),
+            "overwrite": False,
+            "conditional_get": True,
+        },
+        _ctx(tmp_path),
+    )
+    assert calls["head"] >= 1
+    assert calls["get"] == 1
+    assert outputs["downloaded_count"] == 1
+    assert existing.read_bytes() == b"NEW"

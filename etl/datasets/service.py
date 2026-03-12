@@ -26,6 +26,8 @@ from etl.datasets.routing import (
 from etl.datasets.locations import DataLocationConfigError, resolve_data_location_alias
 from etl.datasets.transports import DatasetTransportError, transfer_via_transport
 from etl.datasets.transports.base import fetch_via_transport
+from etl.projects import ProjectConfigError, load_project_vars, normalize_project_id, resolve_projects_config_path
+from etl.query.workspaces import resolve_repo_workspace_config_path
 
 
 class DatasetServiceError(RuntimeError):
@@ -229,6 +231,141 @@ def _infer_dataset_profile(source_path: Path) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         profile["inference_errors"] = [str(exc)]
     return profile
+
+
+def _normalize_table_name(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    out = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in raw)
+    out = out.strip("_").lower()
+    while "__" in out:
+        out = out.replace("__", "_")
+    if not out:
+        return ""
+    if out[0].isdigit():
+        out = f"t_{out}"
+    return out
+
+
+def _choose_workspace_source(profile: Dict[str, Any], persisted_uri: str) -> str:
+    base = str(persisted_uri or "").strip()
+    if not base:
+        return base
+    cols = list(profile.get("columns") or [])
+    fmt = str(profile.get("format") or "").strip().lower()
+    sample = str(profile.get("sample_file") or "").strip().lower()
+    p = Path(base)
+    if p.suffix:
+        return base
+    if fmt == "parquet" or sample.endswith(".parquet"):
+        return (p / "*.parquet").as_posix()
+    if sample.endswith(".tsv"):
+        return (p / "*.tsv").as_posix()
+    if sample.endswith(".psv"):
+        return (p / "*.psv").as_posix()
+    if sample.endswith(".txt"):
+        return (p / "*.txt").as_posix()
+    if cols:
+        return (p / "*.csv").as_posix()
+    return base
+
+
+def _upsert_duckdb_workspace_entry(
+    *,
+    project_id: str,
+    projects_config_path: Optional[str],
+    dataset_id: str,
+    persisted_uri: str,
+    profile: Dict[str, Any],
+    explicit_workspace_config_path: Optional[str],
+    explicit_table_name: Optional[str],
+) -> Dict[str, Any]:
+    pid = normalize_project_id(project_id)
+    if not pid:
+        return {"updated": False, "reason": "missing_project_id"}
+    repo_root = Path(".").resolve()
+    if str(explicit_workspace_config_path or "").strip():
+        workspace_path = Path(str(explicit_workspace_config_path).strip()).expanduser()
+        if not workspace_path.is_absolute():
+            workspace_path = (repo_root / workspace_path).resolve()
+    else:
+        cfg_path = Path(str(projects_config_path or "").strip()).expanduser() if str(projects_config_path or "").strip() else None
+        try:
+            resolved_projects_cfg = resolve_projects_config_path(cfg_path)
+            project_vars = load_project_vars(project_id=pid, projects_config_path=resolved_projects_cfg)
+        except ProjectConfigError as exc:
+            return {"updated": False, "reason": f"projects_config_error: {exc}"}
+        workspace_path = resolve_repo_workspace_config_path(
+            project_id=pid,
+            project_vars=dict(project_vars or {}),
+            repo_root=repo_root,
+        )
+    workspace_path.parent.mkdir(parents=True, exist_ok=True)
+
+    current: Dict[str, Any] = {}
+    if workspace_path.exists():
+        try:
+            import yaml
+
+            parsed = yaml.safe_load(workspace_path.read_text(encoding="utf-8")) or {}
+            if isinstance(parsed, dict):
+                current = dict(parsed)
+        except Exception:
+            current = {}
+
+    tables = list(current.get("tables") or [])
+    table_name = _normalize_table_name(str(explicit_table_name or "").strip() or dataset_id.replace(".", "_"))
+    source = _choose_workspace_source(profile, persisted_uri)
+    cols = []
+    for c in list(profile.get("columns") or []):
+        name = str((c or {}).get("name") or "").strip()
+        dtype = str((c or {}).get("type") or "").strip()
+        if not name:
+            continue
+        cols.append({"name": name, "type": dtype})
+    table_obj: Dict[str, Any] = {
+        "name": table_name,
+        "source": source,
+        "columns": cols,
+        "dataset_id": dataset_id,
+        "dataset_version_label": str(profile.get("version_label") or ""),
+        "workspace_source": "dataset_store_auto",
+    }
+    replaced = False
+    for i, t in enumerate(tables):
+        if not isinstance(t, dict):
+            continue
+        if str(t.get("name") or "").strip().lower() == table_name.lower():
+            tables[i] = table_obj
+            replaced = True
+            break
+    if not replaced:
+        tables.append(table_obj)
+    current["tables"] = tables
+    if "joins" not in current:
+        current["joins"] = []
+    if "engine" not in current:
+        current["engine"] = "duckdb"
+    if "version" not in current:
+        current["version"] = 1
+    if "workspace_id" not in current:
+        current["workspace_id"] = f"{pid}.default"
+
+    try:
+        import yaml
+
+        text = yaml.safe_dump(current, sort_keys=False, allow_unicode=False)
+        workspace_path.write_text(text, encoding="utf-8")
+    except Exception as exc:
+        return {"updated": False, "reason": f"workspace_write_error: {exc}", "workspace_path": workspace_path.as_posix()}
+    return {
+        "updated": True,
+        "workspace_path": workspace_path.as_posix(),
+        "table_name": table_name,
+        "source": source,
+        "replaced": replaced,
+    }
 
 
 def _infer_fetch_transport(*, location_type: str, policy: Optional[Dict[str, Any]], explicit: Optional[str] = None) -> str:
@@ -528,6 +665,11 @@ def store_data(
     transport_options: Optional[Dict[str, Any]] = None,
     location_alias: Optional[str] = None,
     locations_config_path: Optional[str] = None,
+    project_id: Optional[str] = None,
+    projects_config_path: Optional[str] = None,
+    workspace_auto_register: bool = True,
+    workspace_config_path: Optional[str] = None,
+    workspace_table_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     trace: List[str] = []
     ds_id = str(dataset_id or "").strip()
@@ -706,6 +848,7 @@ def store_data(
                     ),
                 )
                 profile_payload = _infer_dataset_profile(src)
+                profile_payload["version_label"] = ver
                 schema_hash = str(profile_payload.get("schema_hash") or "").strip() or None
                 cur.execute(
                     """
@@ -735,6 +878,21 @@ def store_data(
                     + " sample="
                     + str(profile_payload.get("sample_file") or "-"),
                 )
+                if bool(workspace_auto_register):
+                    ws = _upsert_duckdb_workspace_entry(
+                        project_id=str(project_id or "").strip(),
+                        projects_config_path=str(projects_config_path or "").strip() or None,
+                        dataset_id=ds_id,
+                        persisted_uri=persisted_uri,
+                        profile=profile_payload,
+                        explicit_workspace_config_path=str(workspace_config_path or "").strip() or None,
+                        explicit_table_name=str(workspace_table_name or "").strip() or None,
+                    )
+                    profile_payload["workspace_auto_register"] = ws
+                    if ws.get("updated"):
+                        _log_step(trace, f"store_data:workspace_upsert table={ws.get('table_name')} path={ws.get('workspace_path')}")
+                    else:
+                        _log_step(trace, f"store_data:workspace_skip reason={ws.get('reason')}")
             conn.commit()
             _log_step(trace, "store_data:db_commit_complete")
     except DatasetServiceError:
