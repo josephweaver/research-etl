@@ -529,6 +529,7 @@ def test_hpcc_direct_wraps_db_tunnel_with_tmux_and_cleanup_when_enabled(monkeypa
     _ = ex.submit(str(pipeline_path), {"run_id": "tunnel_tmux"})
     remote_script = str(seen_scripts[-1])
     assert "tmux new-session -d -s \"$ETL_DB_TUNNEL_SESSION\"" in remote_script
+    assert "ETL_DB_TUNNEL_READY=0" in remote_script
     assert "trap _etl_db_tunnel_cleanup EXIT INT TERM" in remote_script
     assert tunnel_cmd in remote_script
     assert "export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only" in remote_script
