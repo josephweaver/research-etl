@@ -67,7 +67,7 @@ def _split_urls(raw: str) -> List[str]:
         return []
     out: List[str] = []
     for line in text.replace(",", "\n").splitlines():
-        item = line.strip()
+        item = line.strip().lstrip("\ufeff")
         if not item or item.startswith("#"):
             continue
         out.append(item)
