@@ -163,6 +163,17 @@ def test_store_data_persists_records(monkeypatch, tmp_path):
     monkeypatch.setattr(ds, "_connect", lambda: conn)
     monkeypatch.setattr(ds, "_load_policy_or_none", lambda: None)
     monkeypatch.setattr(ds, "transfer_via_transport", _fake_transfer)
+    monkeypatch.setattr(
+        ds,
+        "_infer_dataset_profile",
+        lambda _src: {
+            "format": "delimited",
+            "sample_file": str(src),
+            "columns": [{"name": "id", "type": "BIGINT"}],
+            "row_count": 1,
+            "schema_hash": "abc123",
+        },
+    )
 
     out = ds.store_data(
         dataset_id="serve.demo",
@@ -179,6 +190,9 @@ def test_store_data_persists_records(monkeypatch, tmp_path):
     assert any("INSERT INTO etl_dataset_versions" in sql for sql, _ in conn.executed)
     assert any("INSERT INTO etl_dataset_locations" in sql for sql, _ in conn.executed)
     assert any("INSERT INTO etl_dataset_events" in sql for sql, _ in conn.executed)
+    assert any("INSERT INTO etl_dataset_profiles" in sql for sql, _ in conn.executed)
+    assert any("UPDATE etl_dataset_versions" in sql and "schema_hash" in sql for sql, _ in conn.executed)
+    assert out["schema_hash"] == "abc123"
 
 
 def test_store_data_resolves_location_alias(monkeypatch, tmp_path):
@@ -197,6 +211,7 @@ def test_store_data_resolves_location_alias(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ds, "_connect", lambda: conn)
     monkeypatch.setattr(ds, "_load_policy_or_none", lambda: None)
+    monkeypatch.setattr(ds, "_infer_dataset_profile", lambda _src: {"columns": [], "schema_hash": None})
     monkeypatch.setattr(
         ds,
         "resolve_data_location_alias",

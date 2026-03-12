@@ -13,6 +13,7 @@
     vars:
       basedir: "/data/land_core"
       duckdb_path: "{basedir}/data/relations/land_core.duckdb"
+      duckdb_workspace_config_path: "../landcore-etl-pipelines/db/duckdb/workspace.yml"
       owner: "land-core"
       data_dictionary_repo_url: "https://github.com/land-core/landcore-data-catalog.git"
       states_of_interest: [ 'IL', 'MN', 'WI', 'OH', 'SD', 'IA', 'IN', 'MI', 'MO' ]
@@ -39,6 +40,7 @@
   crop_insurance:
     vars:
       basedir: "/data/crop_insurance"
+      duckdb_workspace_config_path: "../crop-insurance-etl-pipelines/db/duckdb/workspace.yml"
       owner: "crop-insurance"
       pipeline_assets_repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
       pipeline_assets_local_repo_path: "../shared-etl-pipelines"

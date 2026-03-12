@@ -15,6 +15,8 @@ def build_api_query_router(
     *,
     query_preview: Callable[[Request, Optional[dict[str, Any]]], dict[str, Any]],
     query_schema: Callable[[Request, Optional[dict[str, Any]]], dict[str, Any]],
+    query_workspace: Callable[[Request, Optional[dict[str, Any]]], dict[str, Any]],
+    query_workspace_save: Callable[[Request, Optional[dict[str, Any]]], dict[str, Any]],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -25,5 +27,22 @@ def build_api_query_router(
     @router.post("/api/query/schema")
     def api_query_schema(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
         return query_schema(request, payload)
+
+    @router.get("/api/query/workspace")
+    def api_query_workspace(
+        request: Request,
+        project_id: Optional[str] = None,
+        projects_config: Optional[str] = None,
+    ) -> dict:
+        payload: dict[str, Any] = {}
+        if project_id is not None:
+            payload["project_id"] = project_id
+        if projects_config is not None:
+            payload["projects_config"] = projects_config
+        return query_workspace(request, payload)
+
+    @router.post("/api/query/workspace")
+    def api_query_workspace_save(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+        return query_workspace_save(request, payload)
 
     return router

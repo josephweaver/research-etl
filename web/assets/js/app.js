@@ -68,6 +68,7 @@
     let queryCapsLoaded = false;
     let queryExecutorCaps = {};
     let queryModel = { tables: [], joins: [] };
+    let queryWorkspaceLoaded = false;
     const USER_STORAGE_KEY = "etl_ui_user";
     const PROJECT_STORAGE_KEY = "etl_ui_project";
     const ENV_STORAGE_KEY = "etl_ui_env";
@@ -1739,6 +1740,92 @@
         env: String((document.getElementById("q_env") || {}).value || "").trim() || currentEnvName(),
       };
     }
+    function buildQueryWorkspaceConfig(){
+      return {
+        tables: Array.isArray(queryModel.tables) ? queryModel.tables : [],
+        joins: Array.isArray(queryModel.joins) ? queryModel.joins : [],
+        source: String((document.getElementById("q_source") || {}).value || "").trim(),
+        select: String((document.getElementById("q_select") || {}).value || "").trim(),
+        filter: String((document.getElementById("q_filter") || {}).value || "").trim(),
+        order: String((document.getElementById("q_order") || {}).value || "").trim(),
+        limit: String((document.getElementById("q_limit") || {}).value || "").trim(),
+        offset: String((document.getElementById("q_offset") || {}).value || "").trim(),
+        query_context: String((document.getElementById("q_context") || {}).value || "").trim(),
+        ...queryCurrentConfig(),
+      };
+    }
+    function applyQueryWorkspaceConfig(rawCfg){
+      const cfg = (rawCfg && typeof rawCfg === "object") ? rawCfg : {};
+      queryModel.tables = Array.isArray(cfg.tables) ? cfg.tables : [];
+      queryModel.joins = Array.isArray(cfg.joins) ? cfg.joins : [];
+      const sourceEl = document.getElementById("q_source");
+      if(sourceEl) sourceEl.value = String(cfg.source || sourceEl.value || "").trim();
+      const selectEl = document.getElementById("q_select");
+      if(selectEl) selectEl.value = String(cfg.select || selectEl.value || "").trim();
+      const filterEl = document.getElementById("q_filter");
+      if(filterEl) filterEl.value = String(cfg.filter || filterEl.value || "").trim();
+      const orderEl = document.getElementById("q_order");
+      if(orderEl) orderEl.value = String(cfg.order || orderEl.value || "").trim();
+      const limitEl = document.getElementById("q_limit");
+      if(limitEl) limitEl.value = String(cfg.limit || limitEl.value || "").trim();
+      const offsetEl = document.getElementById("q_offset");
+      if(offsetEl) offsetEl.value = String(cfg.offset || offsetEl.value || "").trim();
+      const contextEl = document.getElementById("q_context");
+      if(contextEl) contextEl.value = String(cfg.query_context || contextEl.value || "").trim();
+      const exEl = document.getElementById("q_executor");
+      if(exEl && String(cfg.executor || "").trim()) exEl.value = String(cfg.executor).trim();
+      const gcEl = document.getElementById("q_global_config");
+      if(gcEl && String(cfg.global_config || "").trim()) gcEl.value = String(cfg.global_config).trim();
+      const ecEl = document.getElementById("q_env_config");
+      if(ecEl && String(cfg.environments_config || "").trim()) ecEl.value = String(cfg.environments_config).trim();
+      const envEl = document.getElementById("q_env");
+      if(envEl && String(cfg.env || "").trim()) envEl.value = String(cfg.env).trim();
+      renderQueryDesigner();
+    }
+    async function loadQueryWorkspaceConfig(){
+      if(!isQueryView) return;
+      const msgEl = document.getElementById("query_msg");
+      const pid = String(currentProjectId() || "").trim();
+      const qp = new URLSearchParams();
+      if(pid) qp.set("project_id", pid);
+      const res = await fetch(`/api/query/workspace?${qp.toString()}`);
+      if(!res.ok){
+        if(msgEl){ msgEl.className = "bad"; msgEl.textContent = await readMessage(res); }
+        return;
+      }
+      const payload = await res.json();
+      applyQueryWorkspaceConfig(payload.effective || {});
+      if(msgEl){
+        msgEl.className = "ok";
+        const src = payload.repo_config_exists ? "repo+db" : "db/defaults";
+        msgEl.textContent = `Workspace loaded (${src}) for ${payload.project_id || "default"}.`;
+      }
+    }
+    async function saveQueryWorkspaceConfig(scope){
+      if(!isQueryView) return;
+      const msgEl = document.getElementById("query_msg");
+      const pid = String(currentProjectId() || "").trim();
+      const body = {
+        project_id: pid || "default",
+        scope: String(scope || "user").trim().toLowerCase(),
+        config: buildQueryWorkspaceConfig(),
+      };
+      if(msgEl){ msgEl.className = "muted"; msgEl.textContent = "Saving workspace..."; }
+      const res = await fetch("/api/query/workspace", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(body),
+      });
+      if(!res.ok){
+        if(msgEl){ msgEl.className = "bad"; msgEl.textContent = await readMessage(res); }
+        return;
+      }
+      const payload = await res.json();
+      if(msgEl){
+        msgEl.className = "ok";
+        msgEl.textContent = `Workspace saved (${(payload.workspace || {}).scope_type || body.scope}) for ${body.project_id}.`;
+      }
+    }
     function renderQueryTableCards(){
       const el = document.getElementById("q_tables");
       if(!el) return;
@@ -2150,6 +2237,9 @@
               </div>
               <div class="controls">
                 <button id="btn_query_preview">Preview Query</button>
+                <button id="btn_query_load_workspace" type="button">Load Workspace</button>
+                <button id="btn_query_save_project_workspace" type="button">Save Project Workspace</button>
+                <button id="btn_query_save_user_workspace" type="button">Save My Workspace</button>
                 <span id="query_msg" class="muted">Loading executor capabilities...</span>
               </div>
               <div id="query_table_wrap" class="viewer">No query run yet.</div>
@@ -2164,6 +2254,12 @@
         if(addTableBtn) addTableBtn.onclick = addQueryTable;
         const addJoinBtn = document.getElementById("btn_query_add_join");
         if(addJoinBtn) addJoinBtn.onclick = addQueryJoin;
+        const loadWorkspaceBtn = document.getElementById("btn_query_load_workspace");
+        if(loadWorkspaceBtn) loadWorkspaceBtn.onclick = loadQueryWorkspaceConfig;
+        const saveProjectWorkspaceBtn = document.getElementById("btn_query_save_project_workspace");
+        if(saveProjectWorkspaceBtn) saveProjectWorkspaceBtn.onclick = () => saveQueryWorkspaceConfig("project");
+        const saveUserWorkspaceBtn = document.getElementById("btn_query_save_user_workspace");
+        if(saveUserWorkspaceBtn) saveUserWorkspaceBtn.onclick = () => saveQueryWorkspaceConfig("user");
         renderQueryDesigner();
       }
       const capRes = await fetch("/api/executors/capabilities");
@@ -2207,6 +2303,10 @@
         msgEl.textContent = supported.length
           ? `Query enabled on: ${supported.join(", ")}`
           : "No executor currently reports query_data support.";
+      }
+      if(!queryWorkspaceLoaded){
+        queryWorkspaceLoaded = true;
+        await loadQueryWorkspaceConfig();
       }
     }
     async function runQueryPreview(){

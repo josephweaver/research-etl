@@ -24,6 +24,8 @@ meta = {
         "transport",
         "checksum",
         "size_bytes",
+        "schema_hash",
+        "profile",
         "dry_run",
     ],
     "params": {

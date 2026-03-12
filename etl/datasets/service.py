@@ -102,6 +102,135 @@ def _default_version_label() -> str:
     return now.strftime("v%Y%m%dT%H%M%SZ")
 
 
+def _stable_schema_hash(columns: List[Dict[str, Any]]) -> Optional[str]:
+    cols = []
+    for c in list(columns or []):
+        name = str((c or {}).get("name") or "").strip()
+        dtype = str((c or {}).get("type") or "").strip()
+        if not name:
+            continue
+        cols.append({"name": name, "type": dtype})
+    if not cols:
+        return None
+    payload = json.dumps(cols, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _candidate_files_for_profile(path: Path) -> List[Path]:
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        return []
+    out: List[Path] = []
+    exts = {".csv", ".tsv", ".txt", ".psv", ".parquet"}
+    for child in path.rglob("*"):
+        if not child.is_file():
+            continue
+        if child.suffix.lower() in exts:
+            out.append(child)
+    out.sort(key=lambda p: p.stat().st_size if p.exists() else 0, reverse=True)
+    return out[:50]
+
+
+def _guess_csv_delimiter(path: Path) -> str:
+    if path.suffix.lower() == ".tsv":
+        return "\t"
+    if path.suffix.lower() == ".psv":
+        return "|"
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            first = f.readline(4096)
+    except Exception:
+        first = ""
+    candidates = [("|", first.count("|")), (",", first.count(",")), ("\t", first.count("\t")), (";", first.count(";"))]
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    best = candidates[0][0] if candidates and candidates[0][1] > 0 else ","
+    return best
+
+
+def _infer_profile_with_duckdb(path: Path) -> Dict[str, Any]:
+    try:
+        import duckdb  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        raise DatasetServiceError(f"DuckDB not available for schema inference: {exc}") from exc
+
+    suffix = path.suffix.lower()
+    source = path.as_posix()
+    columns: List[Dict[str, Any]] = []
+    row_count: Optional[int] = None
+    sql_from = ""
+    if suffix == ".parquet":
+        sql_from = f"read_parquet({json.dumps(source)})"
+    else:
+        delim = _guess_csv_delimiter(path)
+        sql_from = f"read_csv_auto({json.dumps(source)}, delim={json.dumps(delim)}, sample_size=8192)"
+
+    try:
+        con = duckdb.connect(":memory:")
+        try:
+            desc_rows = con.execute(f"DESCRIBE SELECT * FROM {sql_from}").fetchall() or []
+            for row in desc_rows:
+                name = str(row[0] or "").strip()
+                dtype = str(row[1] or "").strip()
+                if name:
+                    columns.append({"name": name, "type": dtype})
+            rc = con.execute(f"SELECT COUNT(*) FROM {sql_from}").fetchone()
+            row_count = int(rc[0]) if rc and rc[0] is not None else None
+        finally:
+            con.close()
+    except Exception as exc:  # noqa: BLE001
+        raise DatasetServiceError(f"DuckDB schema inference failed for {source}: {exc}") from exc
+
+    return {
+        "format": "parquet" if suffix == ".parquet" else "delimited",
+        "source_file": source,
+        "columns": columns,
+        "row_count": row_count,
+    }
+
+
+def _infer_dataset_profile(source_path: Path) -> Dict[str, Any]:
+    files = _candidate_files_for_profile(source_path)
+    profile: Dict[str, Any] = {
+        "source_path": source_path.as_posix(),
+        "source_kind": "dir" if source_path.is_dir() else "file",
+        "file_count": len(files),
+        "total_size_bytes": None,
+        "sample_file": None,
+        "format": None,
+        "columns": [],
+        "row_count": None,
+        "schema_hash": None,
+        "inference_engine": "duckdb",
+        "inference_errors": [],
+    }
+    try:
+        total = 0
+        if source_path.is_dir():
+            for child in source_path.rglob("*"):
+                if child.is_file():
+                    total += child.stat().st_size
+        elif source_path.is_file():
+            total = source_path.stat().st_size
+        profile["total_size_bytes"] = int(total)
+    except Exception:
+        profile["total_size_bytes"] = None
+
+    if not files:
+        return profile
+    sample = files[0]
+    profile["sample_file"] = sample.as_posix()
+    try:
+        inferred = _infer_profile_with_duckdb(sample)
+        profile["format"] = inferred.get("format")
+        profile["columns"] = list(inferred.get("columns") or [])
+        profile["row_count"] = inferred.get("row_count")
+        profile["schema_hash"] = _stable_schema_hash(profile["columns"])
+    except Exception as exc:  # noqa: BLE001
+        profile["inference_errors"] = [str(exc)]
+    return profile
+
+
 def _infer_fetch_transport(*, location_type: str, policy: Optional[Dict[str, Any]], explicit: Optional[str] = None) -> str:
     if explicit:
         return str(explicit).strip().lower()
@@ -250,21 +379,50 @@ def get_dataset(dataset_id: str) -> Optional[Dict[str, Any]]:
                     (dataset_id,),
                 )
                 location_rows = cur.fetchall()
+                cur.execute(
+                    """
+                    SELECT
+                        p.dataset_version_id,
+                        p.profile_json,
+                        p.inferred_at,
+                        p.updated_at
+                    FROM etl_dataset_profiles p
+                    JOIN etl_dataset_versions v
+                      ON v.dataset_version_id = p.dataset_version_id
+                    WHERE v.dataset_id = %s
+                    ORDER BY p.dataset_version_id DESC
+                    """,
+                    (dataset_id,),
+                )
+                profile_rows = cur.fetchall()
     except DatasetServiceError:
         raise
     except Exception as exc:  # noqa: BLE001
         raise DatasetServiceError(f"Failed to load dataset '{dataset_id}': {exc}") from exc
 
+    profiles_by_version: Dict[int, Dict[str, Any]] = {}
+    for prof in profile_rows:
+        vid = int(prof[0])
+        profiles_by_version[vid] = {
+            "profile": prof[1] if isinstance(prof[1], dict) else {},
+            "inferred_at": prof[2].isoformat() if prof[2] is not None else None,
+            "updated_at": prof[3].isoformat() if prof[3] is not None else None,
+        }
+
     versions: List[Dict[str, Any]] = []
     for version in version_rows:
+        vid = int(version[0])
         versions.append(
             {
-                "dataset_version_id": int(version[0]),
+                "dataset_version_id": vid,
                 "version_label": version[1],
                 "is_immutable": bool(version[2]),
                 "schema_hash": version[3],
                 "created_by_run_id": version[4],
                 "created_at": version[5].isoformat() if version[5] is not None else None,
+                "profile": profiles_by_version.get(vid, {}).get("profile"),
+                "profile_inferred_at": profiles_by_version.get(vid, {}).get("inferred_at"),
+                "profile_updated_at": profiles_by_version.get(vid, {}).get("updated_at"),
             }
         )
 
@@ -469,6 +627,7 @@ def store_data(
     canonical = stage_text == "published"
     data_class_text = str(data_class or "").strip() or None
     owner_user_text = str(owner_user or "").strip() or None
+    profile_payload: Dict[str, Any] = {}
 
     try:
         with _connect() as conn:
@@ -546,6 +705,36 @@ def store_data(
                         ),
                     ),
                 )
+                profile_payload = _infer_dataset_profile(src)
+                schema_hash = str(profile_payload.get("schema_hash") or "").strip() or None
+                cur.execute(
+                    """
+                    INSERT INTO etl_dataset_profiles (dataset_version_id, profile_json, inferred_at, updated_at)
+                    VALUES (%s, %s::jsonb, NOW(), NOW())
+                    ON CONFLICT (dataset_version_id)
+                    DO UPDATE SET
+                        profile_json = EXCLUDED.profile_json,
+                        inferred_at = EXCLUDED.inferred_at,
+                        updated_at = NOW()
+                    """,
+                    (dataset_version_id, json.dumps(profile_payload)),
+                )
+                if schema_hash:
+                    cur.execute(
+                        """
+                        UPDATE etl_dataset_versions
+                        SET schema_hash = %s
+                        WHERE dataset_version_id = %s
+                        """,
+                        (schema_hash, dataset_version_id),
+                    )
+                _log_step(
+                    trace,
+                    "store_data:profile_inferred columns="
+                    + str(len(list(profile_payload.get("columns") or [])))
+                    + " sample="
+                    + str(profile_payload.get("sample_file") or "-"),
+                )
             conn.commit()
             _log_step(trace, "store_data:db_commit_complete")
     except DatasetServiceError:
@@ -569,6 +758,8 @@ def store_data(
         "size_bytes": size_bytes,
         "dry_run": bool(dry_run),
         "location_alias": alias_name or None,
+        "schema_hash": profile_payload.get("schema_hash"),
+        "profile": profile_payload,
         "operation_log": trace,
     }
 

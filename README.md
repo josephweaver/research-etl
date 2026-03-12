@@ -608,6 +608,8 @@ API endpoints:
 - `POST /api/builder/validate`
 - `POST /api/builder/test-step`
 - `POST /api/builder/generate`
+- `GET /api/query/workspace?project_id=crop_insurance`
+- `POST /api/query/workspace`
 
 Access scoping notes:
 - API user scope can be provided with `X-ETL-User` header or `as_user` query parameter.
@@ -620,6 +622,15 @@ Access scoping notes:
   - `crop-insurance` -> `crop_insurance`
   - `admin` -> `land_core`, `default` (shared), `crop_insurance`
 - Most list/detail endpoints accept optional `project_id` filtering; access is validated against user scope.
+
+Query workspace layering:
+- Repo baseline config path resolves in this order:
+  - `projects.<id>.vars.duckdb_workspace_config_path` (if set)
+  - `<pipeline_assets_local_repo_path>/db/duckdb/workspace.yml` (if set; legacy fallback: `query/duckdb.workspace.yml`)
+  - `config/query_workspaces/<project_id>.yml`
+- Mutable overrides are stored in DB table `etl_query_workspaces`:
+  - project scope (`scope=project`) for shared customer/project defaults
+  - user scope (`scope=user`) for personal query workspace customization
 
 Artifact browsing uses executor-specific retrieval methods. `local` reads local filesystem artifacts directly. `slurm` currently supports local-visible artifact paths and returns a clear message when only remote cluster paths are available.
 

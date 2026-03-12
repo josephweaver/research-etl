@@ -914,6 +914,8 @@ app.include_router(
     build_api_query_router(
         query_preview=lambda request, payload: api_query_preview(request, payload),
         query_schema=lambda request, payload: api_query_schema(request, payload),
+        query_workspace=lambda request, payload: api_query_workspace(request, payload),
+        query_workspace_save=lambda request, payload: api_query_workspace_save(request, payload),
     )
 )
 app.include_router(
@@ -1443,6 +1445,9 @@ def _query_handler_deps() -> dict[str, Any]:
         "normalize_project_id": normalize_project_id,
         "resolve_user_scope": _resolve_user_scope,
         "require_project_access": _require_project_access,
+        "resolve_projects_config_path": resolve_projects_config_path,
+        "load_project_vars": load_project_vars,
+        "ProjectConfigError": ProjectConfigError,
         "resolve_global_vars": _resolve_global_vars,
         "resolve_execution_env": _resolve_execution_env,
         "resolve_execution_config_path": resolve_execution_config_path,
@@ -3131,6 +3136,14 @@ def api_query_preview(request: Request, payload: Optional[dict[str, Any]] = Body
 
 def api_query_schema(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     return web_query_handlers.api_query_schema(request, payload, _query_handler_deps())
+
+
+def api_query_workspace(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    return web_query_handlers.api_query_workspace(request, payload, _query_handler_deps())
+
+
+def api_query_workspace_save(request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
+    return web_query_handlers.api_query_workspace_save(request, payload, _query_handler_deps())
 
 
 def api_stop_run(run_id: str, request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:

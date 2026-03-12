@@ -293,6 +293,57 @@ def test_web_api_query_preview_rejects_unsupported_executor():
     assert "does not support query_data" in detail["message"]
 
 
+def test_web_api_query_workspace_get(monkeypatch, tmp_path: Path):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    import etl.web.query_handlers as qh
+
+    monkeypatch.setattr(qh, "resolve_repo_workspace_config_path", lambda **_: tmp_path / "duckdb.workspace.yml")
+    monkeypatch.setattr(qh, "load_workspace_config_file", lambda _p: {"tables": [{"name": "repo_t"}], "joins": []})
+    monkeypatch.setattr(qh, "load_workspace_overrides", lambda **_: ({"executor": "hpcc_direct"}, {"limit": "25"}))
+
+    client = TestClient(web_api.app)
+    r = client.get("/api/query/workspace", params={"project_id": "crop_insurance"})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["project_id"] == "crop_insurance"
+    assert payload["effective"]["tables"][0]["name"] == "repo_t"
+    assert payload["effective"]["executor"] == "hpcc_direct"
+    assert payload["effective"]["limit"] == "25"
+
+
+def test_web_api_query_workspace_save(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    import etl.web.query_handlers as qh
+
+    monkeypatch.setattr(
+        qh,
+        "upsert_workspace_override",
+        lambda **_: {
+            "workspace_id": 1,
+            "project_id": "crop_insurance",
+            "scope_type": "project",
+            "scope_key": "",
+            "config": {"tables": []},
+        },
+    )
+
+    client = TestClient(web_api.app)
+    r = client.post(
+        "/api/query/workspace",
+        json={"project_id": "crop_insurance", "scope": "project", "config": {"tables": [], "joins": []}},
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["saved"] is True
+    assert payload["workspace"]["scope_type"] == "project"
+
+
 def test_web_api_project_filters(monkeypatch):
     pytest.importorskip("fastapi", exc_type=ImportError)
     import etl.web_api as web_api

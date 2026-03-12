@@ -504,6 +504,22 @@ def fetch_dataset_detail(dataset_id: str) -> Optional[Dict[str, Any]]:
                     (dataset_id,),
                 )
                 version_rows = cur.fetchall()
+                cur.execute(
+                    """
+                    SELECT
+                        p.dataset_version_id,
+                        p.profile_json,
+                        p.inferred_at,
+                        p.updated_at
+                    FROM etl_dataset_profiles p
+                    JOIN etl_dataset_versions v
+                      ON v.dataset_version_id = p.dataset_version_id
+                    WHERE v.dataset_id = %s
+                    ORDER BY p.dataset_version_id DESC
+                    """,
+                    (dataset_id,),
+                )
+                profile_rows = cur.fetchall()
 
                 cur.execute(
                     """
@@ -557,16 +573,29 @@ def fetch_dataset_detail(dataset_id: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001
         raise WebQueryError(f"Failed to fetch dataset detail: {exc}") from exc
 
+    profiles_by_version: dict[int, dict[str, Any]] = {}
+    for row in profile_rows:
+        vid = int(row[0])
+        profiles_by_version[vid] = {
+            "profile": row[1] if isinstance(row[1], dict) else {},
+            "inferred_at": row[2].isoformat() if row[2] is not None else None,
+            "updated_at": row[3].isoformat() if row[3] is not None else None,
+        }
+
     versions: list[dict[str, Any]] = []
     for row in version_rows:
+        vid = int(row[0])
         versions.append(
             {
-                "dataset_version_id": int(row[0]),
+                "dataset_version_id": vid,
                 "version_label": row[1],
                 "is_immutable": bool(row[2]),
                 "schema_hash": row[3],
                 "created_by_run_id": row[4],
                 "created_at": row[5].isoformat() if row[5] is not None else None,
+                "profile": profiles_by_version.get(vid, {}).get("profile"),
+                "profile_inferred_at": profiles_by_version.get(vid, {}).get("inferred_at"),
+                "profile_updated_at": profiles_by_version.get(vid, {}).get("updated_at"),
             }
         )
 

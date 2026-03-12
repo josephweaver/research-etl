@@ -10,6 +10,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request
+from ..query.workspaces import (
+    QueryWorkspaceError,
+    deep_merge_config,
+    load_workspace_config_file,
+    load_workspace_overrides,
+    resolve_repo_workspace_config_path,
+    upsert_workspace_override,
+)
 
 
 def _query_error_payload(error_code: str, message: str, detail: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -177,3 +185,98 @@ def api_query_schema(request: Request, payload: Optional[dict[str, Any]], deps: 
             status_code=500,
             detail=_query_error_payload("execution_error", f"Query schema failed: {exc}"),
         ) from exc
+
+
+def api_query_workspace(request: Request, payload: Optional[dict[str, Any]], deps: dict[str, Any]) -> dict:
+    scope = deps["resolve_user_scope"](request)
+    data = dict(payload or {})
+    requested_project_id = deps["normalize_project_id"](str(data.get("project_id") or "").strip() or None)
+    deps["require_project_access"](scope, requested_project_id)
+    project_id = requested_project_id or "default"
+
+    projects_config_raw = str(data.get("projects_config") or "").strip()
+    projects_config_path = Path(projects_config_raw).expanduser() if projects_config_raw else None
+    try:
+        resolved_projects_cfg = deps["resolve_projects_config_path"](projects_config_path)
+        project_vars = deps["load_project_vars"](
+            project_id=project_id,
+            projects_config_path=resolved_projects_cfg,
+        )
+    except deps["ProjectConfigError"] as exc:
+        raise HTTPException(status_code=400, detail=f"Projects config error: {exc}") from exc
+
+    repo_root = Path(".").resolve()
+    repo_path = resolve_repo_workspace_config_path(
+        project_id=project_id,
+        project_vars=dict(project_vars or {}),
+        repo_root=repo_root,
+    )
+
+    try:
+        repo_cfg = load_workspace_config_file(repo_path)
+    except QueryWorkspaceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    project_override: dict[str, Any] = {}
+    user_override: dict[str, Any] = {}
+    db_warning = ""
+    try:
+        project_override, user_override = load_workspace_overrides(
+            project_id=project_id,
+            user_id=str(scope.user_id or "").strip() or None,
+        )
+    except QueryWorkspaceError as exc:
+        db_warning = str(exc)
+
+    effective = deep_merge_config(repo_cfg, project_override)
+    effective = deep_merge_config(effective, user_override)
+    return {
+        "project_id": project_id,
+        "user_id": str(scope.user_id or ""),
+        "repo_config_path": repo_path.as_posix(),
+        "repo_config_exists": repo_path.exists(),
+        "layers": {
+            "repo": repo_cfg,
+            "project": project_override,
+            "user": user_override,
+        },
+        "effective": effective,
+        "warning": db_warning or None,
+    }
+
+
+def api_query_workspace_save(request: Request, payload: Optional[dict[str, Any]], deps: dict[str, Any]) -> dict:
+    scope = deps["resolve_user_scope"](request)
+    data = dict(payload or {})
+    requested_project_id = deps["normalize_project_id"](str(data.get("project_id") or "").strip() or None)
+    deps["require_project_access"](scope, requested_project_id)
+    project_id = requested_project_id or "default"
+
+    cfg = data.get("config")
+    if not isinstance(cfg, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=_query_error_payload("planner_error", "`config` is required and must be an object."),
+        )
+    scope_type = str(data.get("scope") or "user").strip().lower()
+    if scope_type not in {"project", "user"}:
+        raise HTTPException(
+            status_code=400,
+            detail=_query_error_payload("planner_error", "`scope` must be one of: project, user."),
+        )
+
+    try:
+        saved = upsert_workspace_override(
+            project_id=project_id,
+            user_id=str(scope.user_id or "").strip() or None,
+            scope_type=scope_type,
+            config=dict(cfg),
+            updated_by=str(scope.user_id or "").strip() or None,
+            source="ui",
+        )
+    except QueryWorkspaceError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=_query_error_payload("execution_error", str(exc)),
+        ) from exc
+    return {"saved": True, "workspace": saved}
