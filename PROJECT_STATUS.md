@@ -246,6 +246,9 @@
 
 Suggested next steps and future features are tracked in `future.todo.md`.
 
+Additional platform TODO:
+- Add a configuration management UI/API for project/environment/config maintenance (for example `projects.yml`, environment mappings, and project registry sync) so new projects can be added without manual DB inserts or direct file edits.
+
 ## Quick commands
 - Install/editable dev env: `python -m pip install -e ".[dev]"`
 - Validate pipeline: `etl validate pipelines/sample.yml`
