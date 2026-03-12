@@ -322,6 +322,9 @@ class SlurmEnv:
     db_tunnel_command: Optional[str] = None
     db_tunnel_via_tmux: Optional[bool] = False
     db_tunnel_session_prefix: Optional[str] = None
+    db_tunnel_host: Optional[str] = None
+    db_tunnel_port: Optional[int] = None
+    db_tunnel_rewrite_database_url: Optional[bool] = None
     ssh_retries: Optional[int] = None
     scp_retries: Optional[int] = None
     remote_retry_delay_seconds: Optional[float] = None
@@ -362,6 +365,7 @@ class SlurmExecutor(Executor):
             "execution_source", "source_bundle", "source_snapshot", "allow_workspace_source",
             "git_remote_url", "propagate_db_secret", "load_secrets_file",
             "database_url", "db_tunnel_command", "db_tunnel_via_tmux", "db_tunnel_session_prefix",
+            "db_tunnel_host", "db_tunnel_port", "db_tunnel_rewrite_database_url",
             "ssh_retries", "scp_retries", "remote_retry_delay_seconds",
             "ssh_connect_timeout", "ssh_strict_host_key_checking",
         }}
@@ -416,6 +420,15 @@ class SlurmExecutor(Executor):
         self.db_tunnel_session_prefix = (
             str(env_config.get("db_tunnel_session_prefix") or "").strip() or "etl-db-tunnel"
         )
+        self.db_tunnel_host = str(env_config.get("db_tunnel_host") or "127.0.0.1").strip() or "127.0.0.1"
+        try:
+            self.db_tunnel_port = int(env_config.get("db_tunnel_port", 6543) or 6543)
+        except (TypeError, ValueError):
+            self.db_tunnel_port = 6543
+        self.db_tunnel_rewrite_database_url = _parse_bool(
+            env_config.get("db_tunnel_rewrite_database_url"),
+            default=bool(self.db_tunnel_command),
+        )
         self._statuses: Dict[str, RunStatus] = {}
 
     def capabilities(self) -> Dict[str, bool]:
@@ -449,6 +462,39 @@ class SlurmExecutor(Executor):
         if self.verbose:
             lines.append("log_step 'starting DB SSH tunnel'")
         lines.append(f"{self.db_tunnel_command}")
+
+    def _append_db_tunnel_database_url_rewrite_lines(self, lines: list[str], *, python_expr: str) -> None:
+        if not self.db_tunnel_rewrite_database_url:
+            return
+        lines.extend(
+            [
+                f"export ETL_DB_TUNNEL_HOST={shlex.quote(str(self.db_tunnel_host or '127.0.0.1'))}",
+                f"export ETL_DB_TUNNEL_PORT={int(self.db_tunnel_port or 6543)}",
+                "if [ -n \"${ETL_DATABASE_URL:-}\" ]; then",
+                f"  ETL_DATABASE_URL=\"$({python_expr} - <<'PY'\n"
+                "import os\n"
+                "from urllib.parse import urlparse, urlunparse\n"
+                "raw = str(os.environ.get('ETL_DATABASE_URL') or '').strip()\n"
+                "if not raw:\n"
+                "    print('')\n"
+                "    raise SystemExit(0)\n"
+                "p = urlparse(raw)\n"
+                "host = str(os.environ.get('ETL_DB_TUNNEL_HOST') or '127.0.0.1').strip() or '127.0.0.1'\n"
+                "port = str(os.environ.get('ETL_DB_TUNNEL_PORT') or '6543').strip() or '6543'\n"
+                "userinfo = ''\n"
+                "if p.username is not None:\n"
+                "    userinfo = p.username\n"
+                "    if p.password is not None:\n"
+                "        userinfo += ':' + p.password\n"
+                "    userinfo += '@'\n"
+                "netloc = f'{userinfo}{host}:{port}'\n"
+                "print(urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment)))\n"
+                "PY\n"
+                "  )\"",
+                "  export ETL_DATABASE_URL",
+                "fi",
+            ]
+        )
 
     def _run_cmd_with_retries(
         self,

@@ -210,6 +210,15 @@ class HpccDirectExecutor(Executor):
         self.db_tunnel_session_prefix = (
             str(self.env_config.get("db_tunnel_session_prefix") or "").strip() or "etl-db-tunnel"
         )
+        self.db_tunnel_host = str(self.env_config.get("db_tunnel_host") or "127.0.0.1").strip() or "127.0.0.1"
+        try:
+            self.db_tunnel_port = int(self.env_config.get("db_tunnel_port", 6543) or 6543)
+        except (TypeError, ValueError):
+            self.db_tunnel_port = 6543
+        self.db_tunnel_rewrite_database_url = _parse_bool(
+            self.env_config.get("db_tunnel_rewrite_database_url"),
+            default=bool(self.db_tunnel_command),
+        )
         self.secret_env_keys = _parse_str_list(self.env_config.get("secret_env_keys")) or list(DEFAULT_SECRET_ENV_KEYS)
         self.required_secret_keys = _parse_str_list(self.env_config.get("required_secret_keys"))
         self._statuses: Dict[str, RunStatus] = {}
@@ -241,6 +250,39 @@ class HpccDirectExecutor(Executor):
             )
             return
         lines.append(self.db_tunnel_command)
+
+    def _append_db_tunnel_database_url_rewrite_lines(self, lines: list[str], *, python_expr: str) -> None:
+        if not self.db_tunnel_rewrite_database_url:
+            return
+        lines.extend(
+            [
+                f"export ETL_DB_TUNNEL_HOST={shlex.quote(str(self.db_tunnel_host or '127.0.0.1'))}",
+                f"export ETL_DB_TUNNEL_PORT={int(self.db_tunnel_port or 6543)}",
+                "if [ -n \"${ETL_DATABASE_URL:-}\" ]; then",
+                f"  ETL_DATABASE_URL=\"$({python_expr} - <<'PY'\n"
+                "import os\n"
+                "from urllib.parse import urlparse, urlunparse\n"
+                "raw = str(os.environ.get('ETL_DATABASE_URL') or '').strip()\n"
+                "if not raw:\n"
+                "    print('')\n"
+                "    raise SystemExit(0)\n"
+                "p = urlparse(raw)\n"
+                "host = str(os.environ.get('ETL_DB_TUNNEL_HOST') or '127.0.0.1').strip() or '127.0.0.1'\n"
+                "port = str(os.environ.get('ETL_DB_TUNNEL_PORT') or '6543').strip() or '6543'\n"
+                "userinfo = ''\n"
+                "if p.username is not None:\n"
+                "    userinfo = p.username\n"
+                "    if p.password is not None:\n"
+                "        userinfo += ':' + p.password\n"
+                "    userinfo += '@'\n"
+                "netloc = f'{userinfo}{host}:{port}'\n"
+                "print(urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment)))\n"
+                "PY\n"
+                "  )\"",
+                "  export ETL_DATABASE_URL",
+                "fi",
+            ]
+        )
 
     def query_data(self, query_spec: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         ctx = dict(context or {})
@@ -292,6 +334,7 @@ class HpccDirectExecutor(Executor):
         self._append_db_tunnel_lines(lines)
         if self.load_secrets_file:
             lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
+        self._append_db_tunnel_database_url_rewrite_lines(lines, python_expr="python")
         lines.extend(
             [
                 "if ! python -c 'import etl.query.remote_entry' >/dev/null 2>&1; then "
@@ -874,6 +917,7 @@ class HpccDirectExecutor(Executor):
         self._append_db_tunnel_lines(run_lines)
         if self.load_secrets_file:
             run_lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
+        self._append_db_tunnel_database_url_rewrite_lines(run_lines, python_expr="python")
         db_mode = str(exec_env.get("db_mode") or "").strip()
         if db_mode:
             run_lines.append(f"export ETL_DB_MODE={shlex.quote(db_mode)}")

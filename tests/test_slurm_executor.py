@@ -852,6 +852,9 @@ def test_slurm_includes_db_tunnel_command_in_setup_and_batch_scripts(monkeypatch
     batch_script = calls[1]["script_text"]
     assert tunnel_cmd in setup_script
     assert tunnel_cmd in batch_script
+    assert "ETL_DB_TUNNEL_HOST" in batch_script
+    assert "ETL_DB_TUNNEL_PORT" in batch_script
+    assert "ETL_DATABASE_URL=\"$(" in batch_script
 
 
 def test_slurm_wraps_db_tunnel_with_tmux_and_cleanup_when_enabled(monkeypatch, tmp_path: Path) -> None:

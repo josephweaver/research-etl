@@ -127,6 +127,7 @@ def render_step_script(
             chunk_runtime_bootstrap.append("log_step 'loading optional secrets file (values hidden)'")
         chunk_runtime_bootstrap.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
     chunk_runtime_bootstrap.append("source \"$VENV/bin/activate\"")
+    executor._append_db_tunnel_database_url_rewrite_lines(chunk_runtime_bootstrap, python_expr="\"$VENV/bin/python\"")
     chunk_runtime_bootstrap.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
     chunk_runtime_bootstrap.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
     chunk_runtime_bootstrap.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")

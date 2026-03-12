@@ -483,6 +483,9 @@ def test_hpcc_direct_includes_db_tunnel_command_in_run_stage(monkeypatch, tmp_pa
     _ = ex.submit(str(pipeline_path), {"run_id": "tunnel1"})
     remote_script = str(seen_scripts[-1])
     assert tunnel_cmd in remote_script
+    assert "ETL_DB_TUNNEL_HOST" in remote_script
+    assert "ETL_DB_TUNNEL_PORT" in remote_script
+    assert "ETL_DATABASE_URL=\"$(" in remote_script
 
 
 def test_hpcc_direct_wraps_db_tunnel_with_tmux_and_cleanup_when_enabled(monkeypatch, tmp_path: Path) -> None:
