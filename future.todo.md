@@ -13,6 +13,37 @@ Last updated: 2026-02-21
   - Allow associating users to the new project.
   - Auto-add the creating user to project membership by default.
 
+## First-Run Installer / Preflight (Reduce Manual Setup)
+- [ ] Add `etl install` (or `etl doctor --fix`) to auto-bootstrap first-run environment for local/HPCC workflows.
+- [ ] Detect execution context (`local`, `slurm/hpcc_msu`, `hpcc_direct`) and apply environment-specific setup.
+- [ ] SSH setup automation:
+  - verify gateway connectivity in batch mode (`ssh -o BatchMode=yes ...`),
+  - detect missing/invalid key config and offer guided key generation/install,
+  - write/update `~/.ssh/config` host alias entries (`IdentityFile`, `IdentitiesOnly`, timeouts).
+- [ ] Secrets bootstrap automation:
+  - create `~/.secrets` + `~/.secrets/etl` with secure permissions,
+  - validate `ETL_DATABASE_URL` format,
+  - validate Neon endpoint options exist (`options=endpoint%3D...`),
+  - avoid secret clobbering (preview + confirm before overwrite).
+- [ ] DB tunnel preflight:
+  - validate tunnel command reaches configured gateway,
+  - verify local forwarded port opens (`127.0.0.1:6543` by default),
+  - validate rewritten DB URL can run a smoke query (`select 1` / `select now()`).
+- [ ] Environment config bootstrap/validation:
+  - validate required keys in `config/environments.yml` for selected env,
+  - provide safe defaults for tunnel rewrite options (`db_tunnel_rewrite_database_url`, host/port),
+  - warn on conflicting settings (`propagate_db_secret` vs manual secret management expectations).
+- [ ] Pipeline asset setup validation:
+  - verify sibling asset cache root and access permissions,
+  - verify expected pipeline asset repo/ref exists and is reachable,
+  - confirm step-stage cache-only mode is active for remote jobs.
+- [ ] One-command diagnostics bundle:
+  - emit a redacted report (checks passed/failed + fixes applied),
+  - include exact follow-up commands for any unresolved checks.
+- [ ] Optional interactive wizard mode:
+  - ask minimal questions once,
+  - persist answers to env/project config and mark install state.
+
 ## Incremental Reuse / Skip Reexecution Plan
 Goal: avoid re-running prerequisite pipelines unless relevant inputs/logic changed, with explicit force overrides.
 

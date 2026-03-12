@@ -252,6 +252,7 @@ Suggested next steps and future features are tracked in `future.todo.md`.
 
 Additional platform TODO:
 - Add a configuration management UI/API for project/environment/config maintenance (for example `projects.yml`, environment mappings, and project registry sync) so new projects can be added without manual DB inserts or direct file edits.
+- Add a first-run installer/preflight command (`etl install` / `etl doctor --fix`) to automate SSH key validation, secrets bootstrap, DB tunnel checks, and HPCC environment readiness (tracked in `future.todo.md`).
 
 ## Quick commands
 - Install/editable dev env: `python -m pip install -e ".[dev]"`
