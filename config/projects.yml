@@ -55,12 +55,12 @@ projects:
       pipeline_assets_project_key: "land_core"
       pipeline_assets_pipelines_dir: "pipelines"
       pipeline_assets_scripts_dir: "scripts"
-  gee_lee:
+  crop_insurance:
     vars:
-      basedir: "{env.basedir}/gee_lee"
-      owner: "gee-lee"
-      pipeline_assets_repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
-      pipeline_assets_local_repo_path: "../shared-etl-pipelines"
-      pipeline_assets_project_key: "shared"
+      basedir: "{env.basedir}/crop-insurance"
+      owner: "crop-insurance"
+      pipeline_assets_repo_url: "https://github.com/josephweaver/crop-insurance-etl-pipelines.git"
+      pipeline_assets_local_repo_path: "../crop-insurance-etl-pipelines"
+      pipeline_assets_project_key: "crop-insurance"
       pipeline_assets_pipelines_dir: "pipelines"
       pipeline_assets_scripts_dir: "scripts"

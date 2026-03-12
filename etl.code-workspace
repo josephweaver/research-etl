@@ -26,6 +26,9 @@
 		},
 		{
 			"path": "../verify_yanroy"
+		},
+		{
+			"path": "../crop-insurance-etl-pipelines"
 		}
 	],
 	"settings": {

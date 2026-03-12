@@ -33,6 +33,7 @@ from ..git_checkout import (
     infer_repo_name,
 )
 from ..pipeline import parse_pipeline, PipelineError
+from ..query.errors import QueryExecutionError, QueryPlannerError, QueryTransportError
 from ..source_control import SourceControlError, SourceExecutionSpec, make_git_source_provider
 from ..subprocess_logging import run_logged_subprocess
 
@@ -150,6 +151,18 @@ def _last_non_empty_text(value: Any) -> str:
     return ""
 
 
+def _extract_marked_payload(text: str, *, begin: str, end: str) -> str:
+    raw = str(text or "")
+    start = raw.rfind(begin)
+    if start < 0:
+        return ""
+    start += len(begin)
+    finish = raw.find(end, start)
+    if finish < 0:
+        return ""
+    return raw[start:finish].strip()
+
+
 class HpccDirectExecutor(Executor):
     name = "hpcc_direct"
 
@@ -202,8 +215,128 @@ class HpccDirectExecutor(Executor):
             "cancel": False,
             "artifact_tree": False,
             "artifact_file": False,
-            "query_data": False,
+            "query_data": True,
         }
+
+    def query_data(self, query_spec: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        ctx = dict(context or {})
+        target = self._ssh_target()
+        run_id = uuid.uuid4().hex
+        remote_repo_root = (
+            str(ctx.get("remote_query_repo") or "").strip()
+            or str(self.env_config.get("remote_query_repo") or "").strip()
+            or str(self.remote_repo or "").strip()
+        )
+        if not remote_repo_root:
+            raise QueryTransportError(
+                "hpcc_direct query_data requires `remote_query_repo` or `remote_repo` to be configured."
+            )
+
+        query_payload = json.dumps({"query_spec": query_spec, "context": ctx}, separators=(",", ":"), ensure_ascii=True)
+        input_file = f"/tmp/hpcc_direct_query_{run_id}.request.json"
+        output_file = f"/tmp/hpcc_direct_query_{run_id}.response.json"
+        begin_marker = "__ETL_QUERY_RESULT_BEGIN__"
+        end_marker = "__ETL_QUERY_RESULT_END__"
+
+        lines: list[str] = [
+            f"CHECKOUT_ROOT={shlex.quote(remote_repo_root)}",
+            "cd \"$CHECKOUT_ROOT\"",
+        ]
+        for module_name in self.remote_modules:
+            mod = str(module_name or "").strip()
+            if mod:
+                lines.append(
+                    "if command -v module >/dev/null 2>&1; then "
+                    f"module load {shlex.quote(mod)}; "
+                    "else "
+                    f"echo '[hpcc_direct][WARN] module command not available; skipping {shlex.quote(mod)}' >&2; "
+                    "fi"
+                )
+        if self.remote_conda_env:
+            lines.append(f"source activate {shlex.quote(self.remote_conda_env)}")
+        if self.remote_venv:
+            lines.append(f"source {shlex.quote(self.remote_venv)}/bin/activate")
+        else:
+            lines.append(
+                "VENV=\"$CHECKOUT_ROOT/.venv\"; "
+                f"if [ ! -f \"$VENV/bin/activate\" ]; then {shlex.quote(self.remote_python)} -m venv \"$VENV\"; fi; "
+                "source \"$VENV/bin/activate\""
+            )
+        if self.db_tunnel_command:
+            lines.append(self.db_tunnel_command)
+        if self.load_secrets_file:
+            lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
+        lines.extend(
+            [
+                "if ! python -c 'import etl.query.remote_entry' >/dev/null 2>&1; then "
+                "python -m pip install --no-deps -e \"$CHECKOUT_ROOT\"; "
+                "fi",
+                f"INPUT_FILE={shlex.quote(input_file)}",
+                f"OUTPUT_FILE={shlex.quote(output_file)}",
+                "cat > \"$INPUT_FILE\" <<'ETL_QUERY_PAYLOAD'",
+                query_payload,
+                "ETL_QUERY_PAYLOAD",
+                "python -u -m etl.query.remote_entry --input \"$INPUT_FILE\" --output \"$OUTPUT_FILE\"",
+                "RC=$?",
+                f"echo {shlex.quote(begin_marker)}",
+                "cat \"$OUTPUT_FILE\"",
+                f"echo {shlex.quote(end_marker)}",
+                "rm -f -- \"$INPUT_FILE\" \"$OUTPUT_FILE\"",
+                "exit $RC",
+            ]
+        )
+        script = self._build_remote_script(lines)
+        try:
+            proc = self._run_ssh_script(target, script, stream_output=False)
+        except Exception as exc:  # noqa: BLE001
+            raise QueryTransportError("Remote query invocation failed.", detail={"executor": self.name, "error": str(exc)}) from exc
+
+        if int(proc.returncode) != 0:
+            raise QueryTransportError(
+                f"Remote query invocation failed with rc={proc.returncode}.",
+                detail={
+                    "executor": self.name,
+                    "returncode": int(proc.returncode),
+                    "stderr": str(proc.stderr or "")[-4000:],
+                    "stdout": str(proc.stdout or "")[-4000:],
+                },
+            )
+
+        payload_text = _extract_marked_payload(str(proc.stdout or ""), begin=begin_marker, end=end_marker)
+        if not payload_text:
+            raise QueryTransportError(
+                "Remote query response did not contain a structured payload.",
+                detail={"executor": self.name, "stdout": str(proc.stdout or "")[-4000:]},
+            )
+        try:
+            payload_obj = json.loads(payload_text)
+        except Exception as exc:  # noqa: BLE001
+            raise QueryTransportError(
+                "Remote query response was not valid JSON.",
+                detail={"executor": self.name, "error": str(exc), "payload_text": payload_text[-4000:]},
+            ) from exc
+
+        if not isinstance(payload_obj, dict):
+            raise QueryTransportError(
+                "Remote query response payload must be an object.",
+                detail={"executor": self.name, "payload_type": type(payload_obj).__name__},
+            )
+
+        if bool(payload_obj.get("ok")):
+            result = dict(payload_obj.get("result") or {})
+            result["executor"] = self.name
+            return result
+
+        error_obj = dict(payload_obj.get("error") or {})
+        error_code = str(error_obj.get("error_code") or "execution_error").strip().lower()
+        message = str(error_obj.get("message") or "Remote query failed.")
+        detail = dict(error_obj.get("detail") or {})
+        detail.setdefault("executor", self.name)
+        if error_code == "planner_error":
+            raise QueryPlannerError(message, detail=detail)
+        if error_code == "transport_error":
+            raise QueryTransportError(message, detail=detail)
+        raise QueryExecutionError(message, detail=detail)
 
     def _ssh_target(self) -> str:
         if not self.ssh_host:

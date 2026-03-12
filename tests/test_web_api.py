@@ -89,6 +89,9 @@ def test_web_api_endpoints(monkeypatch):
     r4c = client.get("/plugins")
     assert r4c.status_code == 200
 
+    r4q = client.get("/query")
+    assert r4q.status_code == 200
+
     r4e = client.get("/project-dag")
     assert r4e.status_code == 200
 
@@ -164,6 +167,39 @@ def test_web_api_query_preview_success(monkeypatch):
     assert payload["engine"] == "duckdb"
     assert payload["executor"] == "local"
     assert payload["row_count_estimate"] == 2
+
+
+def test_web_api_query_preview_hpcc_direct_success(monkeypatch):
+    pytest.importorskip("fastapi", exc_type=ImportError)
+    import etl.web_api as web_api
+    from fastapi.testclient import TestClient
+
+    class _FakeHpccExecutor:
+        name = "hpcc_direct"
+
+        def __init__(self, *a, **k):
+            pass
+
+        def capabilities(self):
+            return {"query_data": True}
+
+        def query_data(self, query_spec, context=None):
+            return {
+                "columns": [{"name": "id", "type": "INTEGER"}],
+                "rows": [[7]],
+                "row_count_estimate": 1,
+                "elapsed_ms": 2,
+                "engine": "duckdb",
+                "executor": "hpcc_direct",
+            }
+
+    monkeypatch.setattr(web_api, "HpccDirectExecutor", _FakeHpccExecutor)
+    client = TestClient(web_api.app)
+    r = client.post("/api/query/preview", json={"executor": "hpcc_direct", "query_spec": {"source": "data/demo.csv"}})
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["executor"] == "hpcc_direct"
+    assert payload["rows"] == [[7]]
 
 
 def test_web_api_query_preview_maps_planner_error(monkeypatch):

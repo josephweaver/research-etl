@@ -4,6 +4,7 @@
     const isPipelinesView = window.location.pathname.startsWith("/pipelines");
     const isDatasetsView = window.location.pathname.startsWith("/datasets");
     const isPluginsView = window.location.pathname === "/plugins";
+    const isQueryView = window.location.pathname === "/query";
     const isProjectDagBaseView = window.location.pathname === "/project-dag";
     const projectDagMatch = window.location.pathname.match(/^\/projects\/(.+)\/dag$/);
     const isProjectDagView = isProjectDagBaseView || !!projectDagMatch;
@@ -64,6 +65,8 @@
     let builderLastRunExecutor = "";
     let builderEnvironmentsConfig = "";
     let builderEnvExecutorMap = {};
+    let queryCapsLoaded = false;
+    let queryExecutorCaps = {};
     const USER_STORAGE_KEY = "etl_ui_user";
     const PROJECT_STORAGE_KEY = "etl_ui_project";
     const ENV_STORAGE_KEY = "etl_ui_env";
@@ -558,15 +561,20 @@
       const pipes = document.getElementById("nav_pipelines");
       const datasets = document.getElementById("nav_datasets");
       const plugins = document.getElementById("nav_plugins");
+      const query = document.getElementById("nav_query");
       const dag = document.getElementById("nav_project_dag");
       const newp = document.getElementById("nav_new_pipeline");
       const back = document.getElementById("nav_context_back");
-      [ops, pipes, datasets, plugins, dag, newp].forEach(el => el.classList.remove("active"));
+      [ops, pipes, datasets, plugins, query, dag, newp].forEach(el => {
+        if(el) el.classList.remove("active");
+      });
       back.style.display = "none";
       if (path === "/") {
         ops.classList.add("active");
       } else if (path === "/plugins") {
         plugins.classList.add("active");
+      } else if (path === "/query") {
+        if(query) query.classList.add("active");
       } else if (path === "/project-dag" || path.startsWith("/projects/")) {
         dag.classList.add("active");
       } else if (path.startsWith("/datasets")) {
@@ -604,6 +612,26 @@
         document.getElementById("pipeline_validations").style.display = "none";
         document.getElementById("plugins_controls").style.display = "flex";
         document.getElementById("detail").textContent = "Loading plugin stats...";
+      }
+      if(isQueryView){
+        document.body.classList.add("query-mode");
+        document.getElementById("page_title").textContent = "Research ETL Query Preview";
+        document.getElementById("left_title").textContent = "Query";
+        document.getElementById("right_title").textContent = "Interactive Data Preview";
+        document.getElementById("ops_panel").style.display = "none";
+        document.getElementById("pipelines_panel").style.display = "none";
+        document.getElementById("pipeline_summary").style.display = "none";
+        document.getElementById("pipeline_validations").style.display = "none";
+        document.getElementById("plugins_controls").style.display = "none";
+        document.getElementById("builder_panel").style.display = "none";
+        const runActionsPanel = document.getElementById("run_actions_panel");
+        if(runActionsPanel){
+          runActionsPanel.style.display = "block";
+          [...runActionsPanel.querySelectorAll(".controls")].forEach(el => {
+            el.style.display = "none";
+          });
+        }
+        document.getElementById("detail").textContent = "Loading query workspace...";
       }
       if(isPipelinesView){
         document.getElementById("page_title").textContent = "Research ETL Pipelines";
@@ -1647,6 +1675,255 @@
       if(current && envs.includes(current)){
         sel.value = current;
       }
+    }
+    function parseQueryScalar(raw){
+      const t = String(raw ?? "").trim();
+      if(!t.length) return "";
+      const lo = t.toLowerCase();
+      if(lo === "null") return null;
+      if(lo === "true") return true;
+      if(lo === "false") return false;
+      if(/^-?\\d+$/.test(t)) return Number.parseInt(t, 10);
+      if(/^-?\\d+\\.\\d+$/.test(t)) return Number.parseFloat(t);
+      return t;
+    }
+    function parseQueryFilterLine(line){
+      const text = String(line || "").trim();
+      if(!text) return null;
+      const parts = text.split(/\s+/);
+      if(parts.length < 2) return { error: `Invalid filter format: ${text}` };
+      const column = String(parts[0] || "").trim();
+      const op = String(parts[1] || "").trim().toLowerCase();
+      if(!column || !op) return { error: `Invalid filter format: ${text}` };
+      if(op === "is_null" || op === "not_null"){
+        return { column, op };
+      }
+      const rawValue = text.slice((column + " " + op).length).trim();
+      if(!rawValue.length) return { error: `Filter is missing value: ${text}` };
+      if(op === "in" || op === "not_in"){
+        if(rawValue.startsWith("[") && rawValue.endsWith("]")){
+          try {
+            const arr = JSON.parse(rawValue);
+            if(Array.isArray(arr) && arr.length){
+              return { column, op, value: arr };
+            }
+          } catch {}
+        }
+        const arr = rawValue.split(",").map(x => parseQueryScalar(x)).filter(x => x !== "");
+        if(!arr.length) return { error: `Filter list is empty: ${text}` };
+        return { column, op, value: arr };
+      }
+      return { column, op, value: parseQueryScalar(rawValue) };
+    }
+    function buildQuerySpecFromForm(){
+      const source = String((document.getElementById("q_source") || {}).value || "").trim();
+      if(!source){
+        return { error: "Source path is required." };
+      }
+      const spec = { source };
+      const selectRaw = String((document.getElementById("q_select") || {}).value || "").trim();
+      if(selectRaw){
+        const cols = selectRaw.split(",").map(x => String(x || "").trim()).filter(Boolean);
+        if(cols.length) spec.select = cols;
+      }
+      const filterRaw = String((document.getElementById("q_filter") || {}).value || "").trim();
+      if(filterRaw){
+        const filters = [];
+        for(const line of filterRaw.split(/\r?\n/)){
+          const parsed = parseQueryFilterLine(line);
+          if(!parsed) continue;
+          if(parsed.error){
+            return { error: parsed.error };
+          }
+          filters.push(parsed);
+        }
+        if(filters.length) spec.filter = filters;
+      }
+      const orderRaw = String((document.getElementById("q_order") || {}).value || "").trim();
+      if(orderRaw){
+        const out = [];
+        for(const line of orderRaw.split(/\r?\n/)){
+          const t = String(line || "").trim();
+          if(!t) continue;
+          const parts = t.split(/\s+/);
+          const col = String(parts[0] || "").trim();
+          if(!col){
+            return { error: `Invalid order_by line: ${t}` };
+          }
+          const dir = String(parts[1] || "asc").trim().toLowerCase();
+          out.push({ column: col, direction: dir });
+        }
+        if(out.length) spec.order_by = out;
+      }
+      const limitRaw = String((document.getElementById("q_limit") || {}).value || "").trim();
+      if(limitRaw) spec.limit = Number(limitRaw);
+      const offsetRaw = String((document.getElementById("q_offset") || {}).value || "").trim();
+      if(offsetRaw) spec.offset = Number(offsetRaw);
+      return { spec };
+    }
+    function renderQueryTable(columns, rows){
+      const cols = Array.isArray(columns) ? columns : [];
+      const dataRows = Array.isArray(rows) ? rows : [];
+      if(!cols.length){
+        return `<div class="muted">No columns returned.</div>`;
+      }
+      const head = cols.map(c => `<th>${esc(String((c || {}).name || ""))}</th>`).join("");
+      const body = dataRows.slice(0, 200).map(r => {
+        const cells = (Array.isArray(r) ? r : []).map(v => `<td>${esc(v)}</td>`).join("");
+        return `<tr>${cells}</tr>`;
+      }).join("");
+      return `
+        <table>
+          <thead><tr>${head}</tr></thead>
+          <tbody>${body || `<tr><td colspan="${cols.length}" class="muted">No rows.</td></tr>`}</tbody>
+        </table>
+      `;
+    }
+    async function loadQueryPage(){
+      if(!isQueryView) return;
+      const detailEl = document.getElementById("detail");
+      if(!detailEl) return;
+      if(!queryCapsLoaded){
+        detailEl.innerHTML = `
+          <div class="builder-subsection">
+            <div class="builder-subsection-head"><h4>Query Preview</h4></div>
+            <div class="builder-subsection-body">
+              <div class="controls">
+                <select id="q_executor">
+                  <option value="local">local</option>
+                  <option value="hpcc_direct">hpcc_direct</option>
+                  <option value="slurm">slurm</option>
+                </select>
+                <input id="q_source" placeholder="source path, e.g. data/demo.csv" />
+                <input id="q_select" placeholder="select columns (comma-separated), e.g. id,name" />
+              </div>
+              <div class="controls">
+                <input id="q_limit" value="100" placeholder="limit" />
+                <input id="q_offset" value="0" placeholder="offset" />
+                <input id="q_global_config" placeholder="global_config (optional)" />
+                <input id="q_env_config" placeholder="environments_config (optional)" />
+                <input id="q_env" placeholder="env (optional; defaults to nav env)" />
+              </div>
+              <div class="controls">
+                <textarea id="q_filter" style="min-height:74px;flex:1 1 360px;" placeholder="filters, one per line:&#10;id gte 10&#10;name contains oak"></textarea>
+                <textarea id="q_order" style="min-height:74px;flex:1 1 260px;" placeholder="order_by, one per line:&#10;id desc"></textarea>
+              </div>
+              <div class="controls">
+                <textarea id="q_context" style="min-height:64px;flex:1 1 460px;" placeholder="query_context JSON (optional)"></textarea>
+              </div>
+              <div class="controls">
+                <button id="btn_query_preview">Preview Query</button>
+                <span id="query_msg" class="muted">Loading executor capabilities...</span>
+              </div>
+              <div id="query_table_wrap" class="viewer">No query run yet.</div>
+              <h4>Response</h4>
+              <pre id="query_result">No query run yet.</pre>
+            </div>
+          </div>
+        `;
+        const runBtn = document.getElementById("btn_query_preview");
+        if(runBtn) runBtn.onclick = runQueryPreview;
+      }
+      const capRes = await fetch("/api/executors/capabilities");
+      if(!capRes.ok){
+        const msgEl = document.getElementById("query_msg");
+        if(msgEl) msgEl.textContent = await readMessage(capRes);
+        return;
+      }
+      const capPayload = await capRes.json();
+      queryCapsLoaded = true;
+      queryExecutorCaps = capPayload || {};
+      const exSel = document.getElementById("q_executor");
+      if(exSel){
+        const options = Array.from(exSel.options || []);
+        let firstSupported = "";
+        for(const opt of options){
+          const caps = queryExecutorCaps[String(opt.value || "")] || {};
+          const supported = !!caps.query_data;
+          opt.disabled = !supported;
+          if(supported && !firstSupported){
+            firstSupported = String(opt.value || "");
+          }
+        }
+        const current = String(exSel.value || "").trim();
+        const currentCaps = queryExecutorCaps[current] || {};
+        if(!current || !currentCaps.query_data){
+          exSel.value = firstSupported || "local";
+        }
+      }
+      const envCfgInput = document.getElementById("q_env_config");
+      if(envCfgInput && !String(envCfgInput.value || "").trim() && builderEnvironmentsConfig){
+        envCfgInput.value = String(builderEnvironmentsConfig || "").trim();
+      }
+      const envInput = document.getElementById("q_env");
+      if(envInput && !String(envInput.value || "").trim() && currentEnvName()){
+        envInput.value = currentEnvName();
+      }
+      const msgEl = document.getElementById("query_msg");
+      if(msgEl){
+        const supported = Object.entries(queryExecutorCaps).filter(([_, c]) => !!(c || {}).query_data).map(([k]) => k);
+        msgEl.textContent = supported.length
+          ? `Query enabled on: ${supported.join(", ")}`
+          : "No executor currently reports query_data support.";
+      }
+    }
+    async function runQueryPreview(){
+      if(!isQueryView) return;
+      const msgEl = document.getElementById("query_msg");
+      const tableEl = document.getElementById("query_table_wrap");
+      const resultEl = document.getElementById("query_result");
+      const built = buildQuerySpecFromForm();
+      if(built.error){
+        if(msgEl){ msgEl.className = "bad"; msgEl.textContent = built.error; }
+        return;
+      }
+      const ex = String((document.getElementById("q_executor") || {}).value || "local").trim() || "local";
+      const caps = queryExecutorCaps[ex] || {};
+      if(!caps.query_data){
+        if(msgEl){ msgEl.className = "bad"; msgEl.textContent = `Executor '${ex}' does not support query_data.`; }
+        return;
+      }
+      let contextObj = {};
+      const contextRaw = String((document.getElementById("q_context") || {}).value || "").trim();
+      if(contextRaw){
+        try {
+          contextObj = JSON.parse(contextRaw);
+        } catch {
+          if(msgEl){ msgEl.className = "bad"; msgEl.textContent = "query_context must be valid JSON."; }
+          return;
+        }
+      }
+      const body = { executor: ex, query_spec: built.spec };
+      const globalConfig = String((document.getElementById("q_global_config") || {}).value || "").trim();
+      const envConfig = String((document.getElementById("q_env_config") || {}).value || "").trim();
+      const envName = String((document.getElementById("q_env") || {}).value || "").trim() || currentEnvName();
+      if(globalConfig) body.global_config = globalConfig;
+      if(envConfig) body.environments_config = envConfig;
+      if(envName) body.env = envName;
+      if(Object.keys(contextObj).length){
+        body.query_context = contextObj;
+      }
+      if(msgEl){ msgEl.className = "muted"; msgEl.textContent = "Running query preview..."; }
+      if(tableEl) tableEl.textContent = "Running...";
+      const res = await fetch("/api/query/preview", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(body),
+      });
+      if(!res.ok){
+        const msg = await readMessage(res);
+        if(msgEl){ msgEl.className = "bad"; msgEl.textContent = msg; }
+        if(resultEl) resultEl.textContent = msg;
+        if(tableEl) tableEl.textContent = msg;
+        return;
+      }
+      const payload = await res.json();
+      if(msgEl){
+        msgEl.className = "ok";
+        msgEl.textContent = `${payload.row_count_estimate ?? 0} rows, ${payload.elapsed_ms ?? 0} ms, ${payload.executor || ex}`;
+      }
+      if(tableEl) tableEl.innerHTML = renderQueryTable(payload.columns || [], payload.rows || []);
+      if(resultEl) resultEl.textContent = JSON.stringify(payload, null, 2);
     }
     function addBuilderRequire(){
       builderModel.requires_pipelines = builderModel.requires_pipelines || [];
@@ -3899,6 +4176,10 @@
       }
       if(isPluginsView){
         await loadPluginsPage();
+        return;
+      }
+      if(isQueryView){
+        await loadQueryPage();
         return;
       }
       if(isDatasetsView){

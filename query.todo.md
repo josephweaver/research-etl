@@ -44,24 +44,34 @@ Completed:
     - `planner_error` -> `400`
     - `execution_error` -> `422`
     - `transport_error` -> `502`
-- Tests added for query foundation and API behavior:
+  - Tests added for query foundation and API behavior:
   - `tests/test_query_spec.py`
   - `tests/test_query_planner_duckdb.py`
   - `tests/test_query_runner_duckdb.py`
   - `tests/test_local_executor_query.py`
   - `tests/test_web_api.py` (`/api/query/preview` cases)
+- Remote query transport implemented for `hpcc_direct` (2026-03-03):
+  - added structured remote query entrypoint:
+    - `etl/query/remote_entry.py`
+  - `HpccDirectExecutor.query_data(...)` implemented:
+    - remote invocation of `python -m etl.query.remote_entry`
+    - structured payload extraction and JSON parse
+    - preserves typed errors (`planner_error`, `execution_error`, `transport_error`)
+  - capability updated:
+    - `hpcc_direct`: `query_data=true`
+  - tests added/updated:
+    - `tests/test_query_remote_entry.py`
+    - `tests/test_hpcc_direct_executor.py` (query capability + query_data paths)
+    - `tests/test_web_api.py` (`/api/query/preview` with `executor=hpcc_direct`)
 
 Current capability state:
 
 - `local`: `artifact_tree=true`, `artifact_file=true`, `cancel=false`, `query_data=true`
 - `slurm`: `artifact_tree=true`, `artifact_file=true`, `cancel=false`, `query_data=false`
-- `hpcc_direct`: `artifact_tree=false`, `artifact_file=false`, `cancel=false`, `query_data=false`
+- `hpcc_direct`: `artifact_tree=false`, `artifact_file=false`, `cancel=false`, `query_data=true`
 
 Not started yet:
 
-- `hpcc_direct.query_data` implementation (remote query execution path)
-- `etl/query/remote_entry.py` for structured remote JSON in/out
-- remote error propagation preserving `error_code` + `detail`
 - optional additional query API endpoints (`/api/query/schema`, `/api/query/profile`)
 - UI integration for capability-driven enable/disable and live query preview
 - query governance hardening (path allowlists, row/time limits, audit logging)

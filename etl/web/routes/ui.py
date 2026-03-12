@@ -62,6 +62,11 @@ def plugins_index() -> HTMLResponse:
     return _render_web_page("plugins.html")
 
 
+@router.get("/query", response_class=HTMLResponse)
+def query_index() -> HTMLResponse:
+    return _render_web_page("query.html")
+
+
 @router.get("/project-dag", response_class=HTMLResponse)
 def project_dag_index() -> HTMLResponse:
     return _render_web_page("project-dag.html")

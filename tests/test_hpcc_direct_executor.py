@@ -13,6 +13,7 @@ import etl.executors.hpcc_direct as hpcc_mod
 from etl.executors.hpcc_direct import HpccDirectExecutor
 from etl.git_checkout import GitExecutionSpec
 from etl.pipeline import Pipeline, Step
+from etl.query.errors import QueryPlannerError, QueryTransportError
 from etl.source_control import SourceControlError
 
 
@@ -482,3 +483,72 @@ def test_hpcc_direct_includes_db_tunnel_command_in_run_stage(monkeypatch, tmp_pa
     _ = ex.submit(str(pipeline_path), {"run_id": "tunnel1"})
     remote_script = str(seen_scripts[-1])
     assert tunnel_cmd in remote_script
+
+
+def test_hpcc_direct_query_capability_enabled() -> None:
+    ex = HpccDirectExecutor(env_config={"ssh_host": "dev.hpcc.local", "remote_query_repo": "/tmp/repo"}, repo_root=Path("."))
+    caps = ex.capabilities()
+    assert caps["query_data"] is True
+
+
+def test_hpcc_direct_query_data_success(monkeypatch, tmp_path: Path) -> None:
+    seen_scripts: list[str] = []
+
+    def _runner(self, target, script, stream_output=False):
+        seen_scripts.append(str(script))
+        payload = (
+            "__ETL_QUERY_RESULT_BEGIN__\n"
+            '{"ok":true,"result":{"columns":[{"name":"id","type":"INTEGER"}],"rows":[[1]],"row_count_estimate":1,"elapsed_ms":2,"engine":"duckdb"}}\n'
+            "__ETL_QUERY_RESULT_END__\n"
+        )
+        return subprocess.CompletedProcess(["ssh", target], 0, payload, "")
+
+    monkeypatch.setattr(HpccDirectExecutor, "_run_ssh_script", _runner)
+    ex = HpccDirectExecutor(
+        env_config={"ssh_host": "dev.hpcc.local", "remote_query_repo": "/scratch/alice/research-etl"},
+        repo_root=tmp_path,
+    )
+    out = ex.query_data({"source": "data/demo.csv"}, context={"project_id": "land_core"})
+    assert out["executor"] == "hpcc_direct"
+    assert out["engine"] == "duckdb"
+    assert out["rows"] == [[1]]
+    assert seen_scripts
+    assert "python -u -m etl.query.remote_entry" in seen_scripts[-1]
+
+
+def test_hpcc_direct_query_data_maps_planner_error(monkeypatch, tmp_path: Path) -> None:
+    def _runner(self, target, script, stream_output=False):
+        payload = (
+            "__ETL_QUERY_RESULT_BEGIN__\n"
+            '{"ok":false,"error":{"error_code":"planner_error","message":"Bad query spec","detail":{"field":"source"}}}\n'
+            "__ETL_QUERY_RESULT_END__\n"
+        )
+        return subprocess.CompletedProcess(["ssh", target], 0, payload, "")
+
+    monkeypatch.setattr(HpccDirectExecutor, "_run_ssh_script", _runner)
+    ex = HpccDirectExecutor(
+        env_config={"ssh_host": "dev.hpcc.local", "remote_query_repo": "/scratch/alice/research-etl"},
+        repo_root=tmp_path,
+    )
+    try:
+        ex.query_data({"source": "data/demo.csv"})
+        assert False, "expected planner error"
+    except QueryPlannerError as exc:
+        assert "Bad query spec" in str(exc)
+        assert exc.detail.get("field") == "source"
+
+
+def test_hpcc_direct_query_data_maps_transport_error(monkeypatch, tmp_path: Path) -> None:
+    def _runner(self, target, script, stream_output=False):
+        return subprocess.CompletedProcess(["ssh", target], 2, "", "ssh failure")
+
+    monkeypatch.setattr(HpccDirectExecutor, "_run_ssh_script", _runner)
+    ex = HpccDirectExecutor(
+        env_config={"ssh_host": "dev.hpcc.local", "remote_query_repo": "/scratch/alice/research-etl"},
+        repo_root=tmp_path,
+    )
+    try:
+        ex.query_data({"source": "data/demo.csv"})
+        assert False, "expected transport error"
+    except QueryTransportError as exc:
+        assert "rc=2" in str(exc)

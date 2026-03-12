@@ -34,6 +34,9 @@
     body.plugins-mode .grid { grid-template-columns: 1fr; }
     body.plugins-mode .grid > section:first-child { display:none; }
     body.plugins-mode .grid > section:last-child { max-width:none; width:100%; margin:0; }
+    body.query-mode .grid { grid-template-columns: 1fr; }
+    body.query-mode .grid > section:first-child { display:none; }
+    body.query-mode .grid > section:last-child { max-width:none; width:100%; margin:0; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; box-shadow:0 2px 10px rgba(10,25,60,.06); }
     .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
     input, select, button { border:1px solid var(--line); border-radius:8px; padding:6px 8px; font-size:13px; }
