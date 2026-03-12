@@ -1,4 +1,4 @@
-# research-etl
+﻿# research-etl
 # Copyright (c) 2026 Joseph Weaver
 # This file is part of the research-etl project and is licensed under the MIT License.
 # You may not use this file except in compliance with the License.
@@ -740,9 +740,9 @@ def _is_admin_user(user_id: str) -> bool:
 
 def _static_user_projects(user_id: str) -> set[str]:
     mapping = {
-        "admin": {"land_core", "gee_lee"},
+        "admin": {"land_core", "default", "crop_insurance"},
         "land-core": {"land_core"},
-        "gee-lee": {"gee_lee"},
+        "crop-insurance": {"crop_insurance"},
     }
     return set(mapping.get(user_id, set()))
 
@@ -3134,4 +3134,5 @@ def api_stop_run(run_id: str, request: Request, payload: Optional[dict[str, Any]
 
 def api_resume_run(run_id: str, request: Request, payload: Optional[dict[str, Any]] = Body(default=None)) -> dict:
     return web_action_handlers.api_resume_run(run_id, request, payload, _action_handler_deps())
+
 

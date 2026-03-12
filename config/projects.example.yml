@@ -1,4 +1,4 @@
-projects:
+﻿projects:
   default:
     vars:
       basedir: "/data/default"
@@ -36,12 +36,13 @@ projects:
       pipeline_assets_project_key: "land_core"
       pipeline_assets_pipelines_dir: "pipelines"
       pipeline_assets_scripts_dir: "scripts"
-  gee_lee:
+  crop_insurance:
     vars:
-      basedir: "/data/gee_lee"
-      owner: "gee-lee"
+      basedir: "/data/crop_insurance"
+      owner: "crop-insurance"
       pipeline_assets_repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
       pipeline_assets_local_repo_path: "../shared-etl-pipelines"
       pipeline_assets_project_key: "shared"
       pipeline_assets_pipelines_dir: "pipelines"
       pipeline_assets_scripts_dir: "scripts"
+

@@ -169,7 +169,7 @@ This project is currently in a high-flux pre-1.0 phase.
 - Artifacts: timestamp-first run paths for easier debugging:
   - `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>/`
 - Quality: pytest suite + GitHub Actions test workflow.
-- Web UX: compact nav with Operations, Pipelines, New Pipeline, and Live Run jump; builder and live run routes are active, with a top-nav user selector (`admin`, `land-core`, `gee-lee`) for scoped views.
+- Web UX: compact nav with Operations, Pipelines, New Pipeline, and Live Run jump; builder and live run routes are active, with a top-nav user selector (`admin`, `land-core`, `crop-insurance`) for scoped views.
 
 ## Plugin Script
 
@@ -568,7 +568,7 @@ Windows note: if `etl` is not found, use `python -m cli ...` or add your user sc
    - `Pipelines` for catalog/detail views
    - `New Pipeline` for draft builder
    - quick Live Run jump by run id
-   - `User` selector to scope API/UI access (`admin`, `land-core`, `gee-lee`)
+   - `User` selector to scope API/UI access (`admin`, `land-core`, `crop-insurance`)
 5) In Operations, select failed runs and use `Resume` or `View` cards (resume currently local executor only).
 6) In builder (`/pipelines/new` or `/pipelines/{pipeline_id}/edit`), use:
    - `Load` (from existing YAML)
@@ -611,10 +611,14 @@ API endpoints:
 
 Access scoping notes:
 - API user scope can be provided with `X-ETL-User` header or `as_user` query parameter.
+- Current project set:
+  - `land_core` (LandCore)
+  - `default` (shared)
+  - `crop_insurance`
 - Current seeded users/projects:
   - `land-core` -> `land_core`
-  - `gee-lee` -> `gee_lee`
-  - `admin` -> both `land_core` and `gee_lee`
+  - `crop-insurance` -> `crop_insurance`
+  - `admin` -> `land_core`, `default` (shared), `crop_insurance`
 - Most list/detail endpoints accept optional `project_id` filtering; access is validated against user scope.
 
 Artifact browsing uses executor-specific retrieval methods. `local` reads local filesystem artifacts directly. `slurm` currently supports local-visible artifact paths and returns a clear message when only remote cluster paths are available.
@@ -731,4 +735,5 @@ Goal: submit pipelines through interchangeable "executors" (local, SLURM/HPCC, K
 
 Future items (including CI -> SLURM handoff) are tracked in `future.todo.md`.
 Add new future ideas there so the backlog stays centralized in one file.
+
 

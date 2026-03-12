@@ -1,4 +1,4 @@
-# research-etl
+﻿# research-etl
 # Copyright (c) 2026 Joseph Weaver
 # This file is part of the research-etl project and is licensed under the MIT License.
 # You may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ from etl.projects import (
 
 def test_normalize_project_id() -> None:
     assert normalize_project_id("Land Core") == "land_core"
-    assert normalize_project_id("GEE-LEE") == "gee-lee"
+    assert normalize_project_id("crop-insurance") == "crop-insurance"
     assert normalize_project_id("") is None
 
 
@@ -34,12 +34,12 @@ def test_resolve_project_id_precedence() -> None:
     assert (
         resolve_project_id(
             explicit_project_id="Land Core",
-            pipeline_project_id="gee_lee",
+            pipeline_project_id="crop_insurance",
             pipeline_path="pipelines/shared/p.yml",
         )
         == "land_core"
     )
-    assert resolve_project_id(pipeline_project_id="gee_lee", pipeline_path="pipelines/shared/p.yml") == "gee_lee"
+    assert resolve_project_id(pipeline_project_id="crop_insurance", pipeline_path="pipelines/shared/p.yml") == "crop_insurance"
     assert resolve_project_id(pipeline_path="pipelines/shared/p.yml") == "shared"
 
 
@@ -50,7 +50,7 @@ def test_parse_pipeline_reads_project_metadata(tmp_path: Path) -> None:
             [
                 "project_id: land_core",
                 "shared_with_projects:",
-                "  - gee_lee",
+                "  - crop_insurance",
                 "steps:",
                 "  - name: s1",
                 "    script: echo.py",
@@ -60,7 +60,7 @@ def test_parse_pipeline_reads_project_metadata(tmp_path: Path) -> None:
     )
     parsed = parse_pipeline(p)
     assert parsed.project_id == "land_core"
-    assert parsed.shared_with_projects == ["gee_lee"]
+    assert parsed.shared_with_projects == ["crop_insurance"]
 
 
 def test_load_project_vars_from_projects_config(tmp_path: Path) -> None:
@@ -119,3 +119,4 @@ def test_resolve_projects_config_path_default(tmp_path: Path, monkeypatch) -> No
     monkeypatch.chdir(tmp_path)
     resolved = resolve_projects_config_path(None)
     assert resolved == cfg
+

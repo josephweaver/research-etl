@@ -1,4 +1,4 @@
-# research-etl
+﻿# research-etl
 # Copyright (c) 2026 Joseph Weaver
 # This file is part of the research-etl project and is licensed under the MIT License.
 # You may not use this file except in compliance with the License.
@@ -394,7 +394,7 @@ def test_web_api_denies_cross_project_access(monkeypatch):
 
     monkeypatch.setattr(web_api, "fetch_runs", lambda **kwargs: [])
     client = TestClient(web_api.app)
-    r = client.get("/api/runs", params={"project_id": "gee_lee", "as_user": "land-core"})
+    r = client.get("/api/runs", params={"project_id": "crop_insurance", "as_user": "land-core"})
     assert r.status_code == 403
 
 
@@ -411,7 +411,7 @@ def test_web_api_admin_reads_multiple_projects(monkeypatch):
     r = client.get("/api/runs", params={"as_user": "admin"})
     assert r.status_code == 200
     payload = r.json()
-    assert {x["project_id"] for x in payload} == {"land_core", "gee_lee"}
+    assert {x["project_id"] for x in payload} == {"land_core", "crop_insurance"}
 
 
 def test_web_api_builder_source_and_validate(tmp_path: Path):
@@ -682,9 +682,9 @@ def test_web_api_builder_projects_lists_projects(tmp_path: Path) -> None:
                 "  land_core:",
                 "    vars:",
                 "      owner: land-core",
-                "  gee_lee:",
+                "  crop_insurance:",
                 "    vars:",
-                "      owner: gee-lee",
+                "      owner: crop-insurance",
             ]
         )
         + "\n",
@@ -694,7 +694,7 @@ def test_web_api_builder_projects_lists_projects(tmp_path: Path) -> None:
     r = client.get("/api/builder/projects", params={"projects_config": str(projects_cfg)})
     assert r.status_code == 200
     payload = r.json()
-    assert payload["projects"] == ["gee_lee", "land_core"]
+    assert payload["projects"] == ["crop_insurance", "land_core"]
 
 
 def test_web_api_builder_sessions_create_list_get(monkeypatch, tmp_path: Path) -> None:
@@ -2962,3 +2962,4 @@ def test_web_api_live_log_uses_header_scope(monkeypatch):
     assert r.status_code == 200
     payload = r.json()
     assert payload["run_id"] == "r_hdr"
+

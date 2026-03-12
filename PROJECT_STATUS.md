@@ -1,4 +1,4 @@
-# Project Status (2026-02-23)
+﻿# Project Status (2026-02-23)
 
 ## Update (2026-02-23)
 - SSURGO + YanRoy integration advanced in `landcore-etl-pipelines`:
@@ -101,10 +101,14 @@
 - Project partitioning + access scaffolding is active:
   - `project_id` stamped on runs/validations/artifacts.
   - New DB objects: `etl_projects`, `etl_user_projects`, `etl_users`.
+  - Current project set:
+    - `land_core` (LandCore)
+    - `default` (shared)
+    - `crop_insurance`
   - Seeded memberships:
     - `land-core` -> `land_core`
-    - `gee-lee` -> `gee_lee`
-    - `admin` -> `land_core`, `gee_lee`
+    - `crop-insurance` -> `crop_insurance`
+    - `admin` -> `land_core`, `default` (shared), `crop_insurance`
 - Provenance is persisted on all run paths (local/slurm/run_batch/resume):
   - git fields, including `git_origin_url` and `git_repo_name`
   - CLI command
@@ -185,7 +189,7 @@
 - Top-nav user selector is live in web UI:
   - `admin`
   - `land-core`
-  - `gee-lee`
+  - `crop-insurance`
   - selection persists in browser local storage and auto-applies to API calls.
 
 ## Test status
@@ -262,3 +266,4 @@ Additional platform TODO:
 - Start web UI: `etl web --host 127.0.0.1 --port 8000 --reload`
 - Open builder: `http://127.0.0.1:8000/pipelines/new`
 - Test suite: `python -m pytest -q`
+

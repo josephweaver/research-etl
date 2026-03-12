@@ -72,7 +72,7 @@
     const ENV_STORAGE_KEY = "etl_ui_env";
     const BUILDER_LAST_PIPELINE_KEY = "etl_builder_last_pipeline";
     const BUILDER_LAST_SESSION_KEY = "etl_builder_last_session_id";
-    const VALID_UI_USERS = new Set(["admin", "land-core", "gee-lee"]);
+    const VALID_UI_USERS = new Set(["admin", "land-core", "crop-insurance"]);
     const _nativeFetch = window.fetch.bind(window);
     function currentAsUser(){
       const el = document.getElementById("nav_user");
@@ -4203,4 +4203,5 @@
       }
       await loadLiveLog();
     }
+
 
