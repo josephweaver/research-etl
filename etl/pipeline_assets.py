@@ -50,6 +50,10 @@ def _repo_cache_dir(cache_root: Path, repo_url: str) -> Path:
     return cache_root / f"{repo_name}-{digest}"
 
 
+def _sync_mode() -> str:
+    return str(os.environ.get("ETL_PIPELINE_ASSET_SYNC_MODE") or "").strip().lower()
+
+
 def _run_git(args: List[str], *, cwd: Optional[Path] = None) -> str:
     proc = run_logged_subprocess(
         ["git", *args],
@@ -151,6 +155,14 @@ def sync_pipeline_asset_source(source: PipelineAssetSource, *, cache_root: Path,
     cache_root = Path(cache_root).resolve()
     cache_root.mkdir(parents=True, exist_ok=True)
     repo_dir = _repo_cache_dir(cache_root, source.repo_url)
+    mode = _sync_mode()
+    if mode in {"cache_only", "offline", "no_network"}:
+        if repo_dir.exists() and repo_dir.is_dir():
+            return repo_dir
+        raise PipelineAssetError(
+            f"Pipeline asset cache missing in {mode} mode: {repo_dir} "
+            f"(repo_url={source.repo_url}, ref={source.ref})"
+        )
     sync_key = (str(repo_dir), str(source.ref))
     if sync_key in _SYNCED_REPOS and repo_dir.exists():
         return repo_dir

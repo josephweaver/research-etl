@@ -267,6 +267,7 @@ class HpccDirectExecutor(Executor):
             "cd \"$CHECKOUT_ROOT\"",
             "export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"",
             "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \\\"$ETL_REPO_ROOT\\\")\"; fi",
+            "export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only",
         ]
         for module_name in self.remote_modules:
             mod = str(module_name or "").strip()
@@ -883,6 +884,7 @@ class HpccDirectExecutor(Executor):
         run_lines.append(
             "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \\\"$ETL_REPO_ROOT\\\")\"; fi"
         )
+        run_lines.append("export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only")
         run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
         context_seed = context.get("seed_context")
         if context_file and isinstance(context_seed, dict):

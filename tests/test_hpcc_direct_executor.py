@@ -528,6 +528,7 @@ def test_hpcc_direct_wraps_db_tunnel_with_tmux_and_cleanup_when_enabled(monkeypa
     assert "tmux new-session -d -s \"$ETL_DB_TUNNEL_SESSION\"" in remote_script
     assert "trap _etl_db_tunnel_cleanup EXIT INT TERM" in remote_script
     assert tunnel_cmd in remote_script
+    assert "export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only" in remote_script
 
 
 def test_hpcc_direct_query_capability_enabled() -> None:

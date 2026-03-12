@@ -896,6 +896,7 @@ def test_slurm_wraps_db_tunnel_with_tmux_and_cleanup_when_enabled(monkeypatch, t
     assert "tmux new-session -d -s \"$ETL_DB_TUNNEL_SESSION\"" in batch_script
     assert "trap _etl_db_tunnel_cleanup EXIT INT TERM" in setup_script
     assert "trap _etl_db_tunnel_cleanup EXIT INT TERM" in batch_script
+    assert "export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only" in batch_script
 
 
 def test_slurm_prefers_database_url_from_env_config(monkeypatch, tmp_path: Path) -> None:

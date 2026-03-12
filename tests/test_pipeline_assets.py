@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import etl.pipeline_assets as pipeline_assets_mod
 from etl.pipeline_assets import (
     PipelineAssetError,
     PipelineAssetSource,
@@ -153,3 +154,30 @@ def test_resolve_pipeline_path_from_project_sources_honors_env_cache_root(monkey
     assert resolved == ext_pipeline.resolve()
     assert seen_cache_roots
     assert seen_cache_roots[0].resolve() == (tmp_path / "shared-cache-root").resolve()
+
+
+def test_sync_pipeline_asset_source_cache_only_uses_existing_repo_without_git(monkeypatch, tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    repo_dir = pipeline_assets_mod._repo_cache_dir(cache_root, "https://example.com/shared-etl-pipelines.git")
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ETL_PIPELINE_ASSET_SYNC_MODE", "cache_only")
+
+    calls: list[list[str]] = []
+
+    def _fake_run_git(args, *, cwd=None):
+        calls.append(list(args))
+        return ""
+
+    monkeypatch.setattr("etl.pipeline_assets._run_git", _fake_run_git)
+
+    src = PipelineAssetSource(repo_url="https://example.com/shared-etl-pipelines.git", ref="main")
+    out = sync_pipeline_asset_source(src, cache_root=cache_root)
+    assert out.resolve() == repo_dir.resolve()
+    assert calls == []
+
+
+def test_sync_pipeline_asset_source_cache_only_errors_when_missing(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ETL_PIPELINE_ASSET_SYNC_MODE", "cache_only")
+    src = PipelineAssetSource(repo_url="https://example.com/shared-etl-pipelines.git", ref="main")
+    with pytest.raises(PipelineAssetError):
+        _ = sync_pipeline_asset_source(src, cache_root=tmp_path / "cache")
