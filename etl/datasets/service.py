@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -286,7 +287,7 @@ def _upsert_duckdb_workspace_entry(
     pid = normalize_project_id(project_id)
     if not pid:
         return {"updated": False, "reason": "missing_project_id"}
-    repo_root = Path(".").resolve()
+    repo_root = Path(str(os.environ.get("ETL_REPO_ROOT") or "").strip() or ".").resolve()
     if str(explicit_workspace_config_path or "").strip():
         workspace_path = Path(str(explicit_workspace_config_path).strip()).expanduser()
         if not workspace_path.is_absolute():
