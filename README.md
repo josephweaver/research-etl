@@ -4,7 +4,28 @@
 
 A lightweight ETL tool to construct new pipelines from modular Python "plugin" scripts and to track runs and validation. In the future this may also call ChatGPT to write data dictionary entries.
 
-## Latest updates (2026-02-19)
+## Latest updates (2026-03-13)
+
+- Crop insurance dataset registration + query workspace integration:
+  - `dataset_store` now performs best-effort schema/profile inference (DuckDB) during registration and persists:
+    - `etl_dataset_profiles` rows (new migration `db/ddl/019_dataset_profiles.sql`)
+    - `etl_dataset_versions.schema_hash` when inferred
+  - Query workspace API/UI now supports:
+    - DB-backed workspace overrides (`etl_query_workspaces`, migration `db/ddl/018_query_workspaces.sql`)
+    - source discovery across all local `pipeline_asset_sources`
+    - merged table catalog from base workspace + partial manifests (`db/duckdb/workspaces/*.yml`)
+  - `dataset_store` workspace auto-registration:
+    - writes per-dataset partial manifests by default (`db/duckdb/workspaces/<dataset>.yml`)
+    - optional git commit/push support for workspace updates
+    - commit safety hardening: `git commit --only -- <workspace_path>` to avoid committing unrelated staged files
+    - relative workspace paths now resolve against `ETL_REPO_ROOT` (important for HPCC step workdirs)
+- USDA-RMA pipeline efficiency:
+  - `web_download_list` now supports conditional HTTP checks (`conditional_get`) using ETag/Last-Modified validator state.
+  - Crop insurance USDA-RMA pipelines now enable `conditional_get: true` to avoid repeat 250MB downloads when source files are unchanged.
+- Known in-progress issue (HPCC runtime pathing):
+  - observed workspace auto-commit path mismatch (`.../crop-insurance-etl-pipelines` vs expected hashed checkout `.../crop-insurance-etl-pipelines-<sha>`) and occasional stale pipeline asset checkout; path/ref sync debugging is queued next.
+
+## Earlier updates (2026-02-19)
 
 - Pipeline asset source resolution is now integrated end-to-end for run/validate paths:
   - Added `etl/pipeline_assets.py` to support ordered `pipeline_asset_sources` plus backward-compatible single-source keys.

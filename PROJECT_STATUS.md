@@ -1,5 +1,28 @@
-﻿# Project Status (2026-02-23)
+﻿# Project Status (2026-03-13)
 
+## Update (2026-03-13)
+- Crop insurance query workspace + dataset registration integration is active:
+  - added DB table for query workspace overrides (`etl_query_workspaces`, migration `018_query_workspaces.sql`)
+  - added DB table for dataset inferred profile metadata (`etl_dataset_profiles`, migration `019_dataset_profiles.sql`)
+  - `dataset_store` now captures inferred schema/profile and updates `schema_hash` on dataset versions
+  - query workspace API/UI can discover and merge tables across all configured local `pipeline_asset_sources`
+  - workspace partial manifest model is active: `db/duckdb/workspaces/*.yml`
+  - `dataset_store` can auto-register workspace entries and optionally auto-commit/push those manifest updates
+  - commit hardening implemented (`git commit --only -- <workspace_path>`) to avoid accidental inclusion of unrelated staged files
+- Crop insurance USDA-RMA pipeline updates:
+  - download steps use conditional HTTP checks (`conditional_get: true`) to skip unchanged files
+  - registration steps pass `project_id: crop_insurance`
+  - registration steps configured for workspace auto-register + git commit/push controls
+  - relative workspace paths now resolve against `ETL_REPO_ROOT` so HPCC step runs write to repo checkout, not step workdir
+- Operational check to run next:
+  - verify remote job can push commits to `origin/main` (credentials/branch protection); if blocked, switch to branch + PR flow.
+- New blocker observed (2026-03-13 late):
+  - workspace git commit/push failed because runtime resolved repo path as `/mnt/scratch/weave151/etl/crop-insurance-etl-pipelines` instead of hashed checkout path (`/mnt/scratch/weave151/etl/crop-insurance-etl-pipelines-<sha>`).
+  - pipeline asset checkout appears stale (job used a version behind latest pipeline updates).
+  - next debug focus:
+    - trace `pipeline_assets_local_repo_path` and `ETL_REPO_ROOT` resolution in runtime logs for setup + step jobs
+    - verify source checkout/update order (setup job) and path passed into step execution
+    - confirm `git fetch/checkout/pull` behavior against expected branch/ref before step starts
 ## Update (2026-02-23)
 - SSURGO + YanRoy integration advanced in `landcore-etl-pipelines`:
   - `scripts/ssurgo/build_field_mukey_map.py` now supports:
@@ -267,4 +290,5 @@ Additional platform TODO:
 - Start web UI: `etl web --host 127.0.0.1 --port 8000 --reload`
 - Open builder: `http://127.0.0.1:8000/pipelines/new`
 - Test suite: `python -m pytest -q`
+
 
