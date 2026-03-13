@@ -282,8 +282,9 @@ def test_store_data_auto_registers_workspace_entry(monkeypatch, tmp_path):
     )
 
     assert out["profile"]["workspace_auto_register"]["updated"] is True
-    assert ws.exists()
-    text = ws.read_text(encoding="utf-8")
+    auto_ws = Path(out["profile"]["workspace_auto_register"]["workspace_path"])
+    assert auto_ws.exists()
+    text = auto_ws.read_text(encoding="utf-8")
     assert "raw_demo_v1" in text
     assert "dataset_store_auto" in text
 

@@ -280,6 +280,8 @@ def _upsert_duckdb_workspace_entry(
     profile: Dict[str, Any],
     explicit_workspace_config_path: Optional[str],
     explicit_table_name: Optional[str],
+    use_partials: bool,
+    explicit_partial_path: Optional[str],
 ) -> Dict[str, Any]:
     pid = normalize_project_id(project_id)
     if not pid:
@@ -301,14 +303,31 @@ def _upsert_duckdb_workspace_entry(
             project_vars=dict(project_vars or {}),
             repo_root=repo_root,
         )
-    workspace_path.parent.mkdir(parents=True, exist_ok=True)
+
+    write_path = workspace_path
+    if bool(use_partials):
+        if str(explicit_partial_path or "").strip():
+            partial = Path(str(explicit_partial_path).strip()).expanduser()
+            if not partial.is_absolute():
+                partial = (repo_root / partial).resolve()
+            write_path = partial
+        else:
+            base_name = _normalize_table_name(dataset_id.replace(".", "_")) or "dataset"
+            if workspace_path.name == "workspace.yml" and workspace_path.parent.name == "duckdb":
+                partial_dir = workspace_path.parent / "workspaces"
+            elif workspace_path.name == "duckdb.workspace.yml" and workspace_path.parent.name == "query":
+                partial_dir = workspace_path.parent / "workspaces"
+            else:
+                partial_dir = workspace_path.parent / "workspaces"
+            write_path = (partial_dir / f"{base_name}.yml").resolve()
+    write_path.parent.mkdir(parents=True, exist_ok=True)
 
     current: Dict[str, Any] = {}
-    if workspace_path.exists():
+    if write_path.exists():
         try:
             import yaml
 
-            parsed = yaml.safe_load(workspace_path.read_text(encoding="utf-8")) or {}
+            parsed = yaml.safe_load(write_path.read_text(encoding="utf-8")) or {}
             if isinstance(parsed, dict):
                 current = dict(parsed)
         except Exception:
@@ -356,15 +375,17 @@ def _upsert_duckdb_workspace_entry(
         import yaml
 
         text = yaml.safe_dump(current, sort_keys=False, allow_unicode=False)
-        workspace_path.write_text(text, encoding="utf-8")
+        write_path.write_text(text, encoding="utf-8")
     except Exception as exc:
-        return {"updated": False, "reason": f"workspace_write_error: {exc}", "workspace_path": workspace_path.as_posix()}
+        return {"updated": False, "reason": f"workspace_write_error: {exc}", "workspace_path": write_path.as_posix()}
     return {
         "updated": True,
-        "workspace_path": workspace_path.as_posix(),
+        "workspace_path": write_path.as_posix(),
+        "workspace_base_path": workspace_path.as_posix(),
         "table_name": table_name,
         "source": source,
         "replaced": replaced,
+        "partial_mode": bool(use_partials),
     }
 
 
@@ -670,6 +691,8 @@ def store_data(
     workspace_auto_register: bool = True,
     workspace_config_path: Optional[str] = None,
     workspace_table_name: Optional[str] = None,
+    workspace_use_partials: bool = True,
+    workspace_partial_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     trace: List[str] = []
     ds_id = str(dataset_id or "").strip()
@@ -887,6 +910,8 @@ def store_data(
                         profile=profile_payload,
                         explicit_workspace_config_path=str(workspace_config_path or "").strip() or None,
                         explicit_table_name=str(workspace_table_name or "").strip() or None,
+                        use_partials=bool(workspace_use_partials),
+                        explicit_partial_path=str(workspace_partial_path or "").strip() or None,
                     )
                     profile_payload["workspace_auto_register"] = ws
                     if ws.get("updated"):

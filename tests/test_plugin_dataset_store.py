@@ -102,3 +102,41 @@ def test_dataset_store_plugin_passes_location_alias(monkeypatch, tmp_path: Path)
     assert captured["location_alias"] == "LC_GDrive"
     assert captured["locations_config_path"] == "config/data_locations.yml"
     assert out["location_alias"] == "LC_GDrive"
+
+
+def test_dataset_store_plugin_adds_workspace_git_status(monkeypatch, tmp_path: Path) -> None:
+    def _fake_store_data(**kwargs):
+        return {
+            "dataset_id": kwargs["dataset_id"],
+            "version_label": "v1",
+            "stage": kwargs["stage"],
+            "environment": kwargs.get("environment"),
+            "location_type": "hpcc_cache",
+            "target_uri": "/tmp/datasets/raw.demo_v1/v1",
+            "transport": "local_fs",
+            "checksum": "abc",
+            "size_bytes": 12,
+            "dry_run": kwargs.get("dry_run", False),
+            "profile": {
+                "workspace_auto_register": {
+                    "updated": False,
+                    "reason": "workspace_git_commit_disabled",
+                }
+            },
+        }
+
+    monkeypatch.setattr(datasets_module, "store_data", _fake_store_data)
+    plugin = load_plugin(Path("plugins/dataset_store.py"))
+    source = tmp_path / "payload.txt"
+    source.write_text("payload", encoding="utf-8")
+
+    out = plugin.run(
+        {
+            "dataset_id": "serve.demo",
+            "path": str(source),
+            "workspace_git_commit": True,
+        },
+        _ctx(tmp_path),
+    )
+    assert "workspace_git" in out
+    assert out["workspace_git"]["committed"] is False

@@ -629,9 +629,20 @@ Query workspace layering:
   - `<pipeline_assets_local_repo_path>/db/duckdb/workspace.yml` (if set; legacy fallback: `query/duckdb.workspace.yml`)
   - `config/query_workspaces/<project_id>.yml`
 - Query UI workspace catalog also discovers tables from every local `pipeline_asset_sources[].local_repo_path` workspace file, so one project can pull tables from multiple sibling pipeline repos.
+- Query UI also loads partial manifests from `db/duckdb/workspaces/*.yml` under each source repo and merges them into one table catalog.
 - Mutable overrides are stored in DB table `etl_query_workspaces`:
   - project scope (`scope=project`) for shared customer/project defaults
   - user scope (`scope=user`) for personal query workspace customization
+
+Dataset registration workspace manifests:
+- `dataset_store` can auto-register table definitions into DuckDB workspace manifests.
+- Default behavior writes per-dataset partial manifests under `db/duckdb/workspaces/<dataset_id>.yml`.
+- Optional plugin flags:
+  - `workspace_auto_register` (default `true`)
+  - `workspace_use_partials` (default `true`)
+  - `workspace_partial_path` (override output manifest path)
+  - `workspace_config_path` (base workspace path)
+  - `workspace_git_commit` / `workspace_git_push` (disabled by default) for committing/pushing workspace manifest updates.
 
 Artifact browsing uses executor-specific retrieval methods. `local` reads local filesystem artifacts directly. `slurm` currently supports local-visible artifact paths and returns a clear message when only remote cluster paths are available.
 

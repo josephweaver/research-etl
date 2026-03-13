@@ -21,6 +21,47 @@ from ..query.workspaces import (
 from ..pipeline_assets import PipelineAssetError
 
 
+def _load_workspace_tables_from_file(path: Path) -> list[dict[str, Any]]:
+    try:
+        cfg = load_workspace_config_file(path)
+    except QueryWorkspaceError:
+        return []
+    out: list[dict[str, Any]] = []
+    for t in list(cfg.get("tables") or []):
+        if not isinstance(t, dict):
+            continue
+        name = str(t.get("name") or "").strip()
+        source = str(t.get("source") or t.get("path") or "").strip()
+        if not name or not source:
+            continue
+        out.append(dict(t))
+    return out
+
+
+def _workspace_candidate_files(primary_workspace_path: Path, repo_root: Optional[Path]) -> list[Path]:
+    out: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(p: Path) -> None:
+        key = p.resolve().as_posix() if p.exists() else p.as_posix()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(p)
+
+    _add(primary_workspace_path)
+    base = primary_workspace_path.parent / "workspaces"
+    if base.exists() and base.is_dir():
+        for p in sorted(base.glob("*.yml")):
+            _add(p)
+    if repo_root is not None:
+        repo_partial = repo_root / "db" / "duckdb" / "workspaces"
+        if repo_partial.exists() and repo_partial.is_dir():
+            for p in sorted(repo_partial.glob("*.yml")):
+                _add(p)
+    return out
+
+
 def _query_error_payload(error_code: str, message: str, detail: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     payload: dict[str, Any] = {"error_code": str(error_code or "execution_error"), "message": str(message or "")}
     if isinstance(detail, dict) and detail:
@@ -221,16 +262,25 @@ def api_query_workspace(request: Request, payload: Optional[dict[str, Any]], dep
     workspace_sources: list[dict[str, Any]] = []
     source_cfgs: list[dict[str, Any]] = []
     primary_source_id = "project_default"
-    workspace_sources.append(
-        {
-            "source_id": primary_source_id,
-            "label": "project_default",
-            "repo_root": str(repo_path.parent.parent.parent) if repo_path.parts else "",
-            "workspace_path": repo_path.as_posix(),
-            "exists": bool(repo_path.exists()),
-        }
-    )
-    source_cfgs.append({"source_id": primary_source_id, "config": repo_cfg})
+    primary_repo_root = None
+    try:
+        if repo_path.name == "workspace.yml" and repo_path.parent.name == "duckdb" and repo_path.parent.parent.name == "db":
+            primary_repo_root = repo_path.parent.parent.parent
+    except Exception:
+        primary_repo_root = None
+    for idx, fp in enumerate(_workspace_candidate_files(repo_path, primary_repo_root), start=1):
+        sid = f"{primary_source_id}_{idx}"
+        workspace_sources.append(
+            {
+                "source_id": sid,
+                "label": "project_default",
+                "repo_root": primary_repo_root.as_posix() if primary_repo_root else "",
+                "workspace_path": fp.as_posix(),
+                "exists": bool(fp.exists()),
+            }
+        )
+        if fp.exists():
+            source_cfgs.append({"source_id": sid, "config": {"tables": _load_workspace_tables_from_file(fp)}})
 
     try:
         asset_sources = deps["pipeline_asset_sources_from_project_vars"](dict(project_vars or {}))
@@ -249,21 +299,19 @@ def api_query_workspace(request: Request, payload: Optional[dict[str, Any]], dep
             candidate = legacy
         source_id = f"asset_{idx+1}"
         source_label = str(getattr(src, "repo_url", "") or "").strip() or source_id
-        workspace_sources.append(
-            {
-                "source_id": source_id,
-                "label": source_label,
-                "repo_root": local_repo.as_posix(),
-                "workspace_path": candidate.as_posix(),
-                "exists": bool(candidate.exists()),
-            }
-        )
-        if candidate.exists():
-            try:
-                cfg = load_workspace_config_file(candidate)
-                source_cfgs.append({"source_id": source_id, "config": cfg})
-            except QueryWorkspaceError:
-                pass
+        for fp in _workspace_candidate_files(candidate, local_repo):
+            sid = f"{source_id}:{fp.name}"
+            workspace_sources.append(
+                {
+                    "source_id": sid,
+                    "label": source_label,
+                    "repo_root": local_repo.as_posix(),
+                    "workspace_path": fp.as_posix(),
+                    "exists": bool(fp.exists()),
+                }
+            )
+            if fp.exists():
+                source_cfgs.append({"source_id": sid, "config": {"tables": _load_workspace_tables_from_file(fp)}})
 
     catalog_tables: list[dict[str, Any]] = []
     for src_cfg in source_cfgs:
