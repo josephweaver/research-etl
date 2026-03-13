@@ -290,6 +290,57 @@ def test_store_data_auto_registers_workspace_entry(monkeypatch, tmp_path):
     assert "dataset_store_auto" in text
 
 
+def test_store_data_auto_registers_workspace_entry_via_asset_cache_relative_path(monkeypatch, tmp_path):
+    conn = _FakeConn()
+    src = tmp_path / "payload.csv"
+    src.write_text("id,name\n1,a\n", encoding="utf-8")
+    repo_root = tmp_path / "etl-abcdef123456"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    asset_root = tmp_path / "crop-insurance-etl-pipelines-1234567890ab"
+    ws = asset_root / "db" / "duckdb" / "workspace.yml"
+    ws.parent.mkdir(parents=True, exist_ok=True)
+    ws.write_text("tables: []\n", encoding="utf-8")
+
+    def _fake_transfer(**kwargs):
+        return {
+            "transport": kwargs["transport"],
+            "target_uri": str(tmp_path / "datasets" / "raw.demo_v1"),
+            "dry_run": False,
+        }
+
+    monkeypatch.setattr(ds, "_connect", lambda: conn)
+    monkeypatch.setattr(ds, "_load_policy_or_none", lambda: None)
+    monkeypatch.setattr(ds, "transfer_via_transport", _fake_transfer)
+    monkeypatch.setattr(
+        ds,
+        "_infer_dataset_profile",
+        lambda _src: {
+            "format": "delimited",
+            "sample_file": str(src),
+            "columns": [{"name": "id", "type": "BIGINT"}, {"name": "name", "type": "VARCHAR"}],
+            "row_count": 1,
+            "schema_hash": "sch-demo",
+        },
+    )
+    monkeypatch.setenv("ETL_REPO_ROOT", str(repo_root))
+    monkeypatch.setenv("ETL_PIPELINE_ASSET_CACHE_ROOT", str(tmp_path))
+
+    out = ds.store_data(
+        dataset_id="raw.demo_v1",
+        source_path=str(src),
+        stage="staging",
+        runtime_context="local",
+        version_label="v1",
+        project_id="crop_insurance",
+        workspace_auto_register=True,
+        workspace_config_path="../crop-insurance-etl-pipelines/db/duckdb/workspace.yml",
+    )
+
+    info = out["profile"]["workspace_auto_register"]
+    assert info["updated"] is True
+    assert Path(info["workspace_path"]).resolve() == (asset_root / "db" / "duckdb" / "workspaces" / "raw_demo_v1.yml").resolve()
+
+
 def test_store_data_policy_violation_raises(monkeypatch, tmp_path):
     src = tmp_path / "payload.txt"
     src.write_text("hello", encoding="utf-8")

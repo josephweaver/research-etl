@@ -5,6 +5,7 @@ from pathlib import Path
 from etl.query.workspaces import (
     deep_merge_config,
     load_workspace_config_file,
+    resolve_repo_relative_path,
     resolve_repo_workspace_config_path,
 )
 
@@ -29,6 +30,24 @@ def test_resolve_repo_workspace_config_path_uses_pipeline_assets_repo(tmp_path: 
         repo_root=repo_root,
     )
     assert p == (repo_root / "../crop-insurance-etl-pipelines/db/duckdb/workspace.yml").resolve()
+
+
+def test_resolve_repo_relative_path_uses_asset_cache_when_direct_path_missing(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "etl-abcdef123456"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    cache_root = tmp_path
+    asset_root = cache_root / "crop-insurance-etl-pipelines-1234567890ab"
+    target = asset_root / "db" / "duckdb" / "workspace.yml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("tables: []\n", encoding="utf-8")
+    monkeypatch.setenv("ETL_PIPELINE_ASSET_CACHE_ROOT", str(cache_root))
+
+    out = resolve_repo_relative_path(
+        raw_path="../crop-insurance-etl-pipelines/db/duckdb/workspace.yml",
+        repo_root=repo_root,
+    )
+
+    assert out == target.resolve()
 
 
 def test_load_workspace_config_file_yaml(tmp_path: Path) -> None:

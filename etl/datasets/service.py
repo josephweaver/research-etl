@@ -28,7 +28,7 @@ from etl.datasets.locations import DataLocationConfigError, resolve_data_locatio
 from etl.datasets.transports import DatasetTransportError, transfer_via_transport
 from etl.datasets.transports.base import fetch_via_transport
 from etl.projects import ProjectConfigError, load_project_vars, normalize_project_id, resolve_projects_config_path
-from etl.query.workspaces import resolve_repo_workspace_config_path
+from etl.query.workspaces import resolve_repo_relative_path, resolve_repo_workspace_config_path
 
 
 class DatasetServiceError(RuntimeError):
@@ -289,9 +289,10 @@ def _upsert_duckdb_workspace_entry(
         return {"updated": False, "reason": "missing_project_id"}
     repo_root = Path(str(os.environ.get("ETL_REPO_ROOT") or "").strip() or ".").resolve()
     if str(explicit_workspace_config_path or "").strip():
-        workspace_path = Path(str(explicit_workspace_config_path).strip()).expanduser()
-        if not workspace_path.is_absolute():
-            workspace_path = (repo_root / workspace_path).resolve()
+        workspace_path = resolve_repo_relative_path(
+            raw_path=str(explicit_workspace_config_path).strip(),
+            repo_root=repo_root,
+        )
     else:
         cfg_path = Path(str(projects_config_path or "").strip()).expanduser() if str(projects_config_path or "").strip() else None
         try:

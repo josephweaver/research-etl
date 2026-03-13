@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -34,6 +35,47 @@ def _workspace_scope_key(*, scope_type: str, user_id: Optional[str]) -> str:
     return ""
 
 
+def resolve_repo_relative_path(
+    *,
+    raw_path: str,
+    repo_root: Path,
+    prefer_existing: bool = True,
+) -> Path:
+    path = Path(str(raw_path or "").strip()).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+
+    direct = (repo_root / path).resolve()
+    if not prefer_existing or direct.exists():
+        return direct
+
+    cache_root_raw = str(os.environ.get("ETL_PIPELINE_ASSET_CACHE_ROOT") or "").strip()
+    if not cache_root_raw:
+        return direct
+    cache_root = Path(cache_root_raw).expanduser().resolve()
+    if not cache_root.exists() or not cache_root.is_dir():
+        return direct
+
+    parts = list(path.parts)
+    for idx, part in enumerate(parts):
+        token = str(part or "").strip()
+        if not token or token in {".", ".."}:
+            continue
+        suffix = parts[idx + 1 :]
+        matches = sorted(
+            p
+            for p in cache_root.iterdir()
+            if p.is_dir() and (p.name == token or p.name.startswith(f"{token}-"))
+        )
+        if not matches:
+            continue
+        preferred = [p for p in matches if (p.joinpath(*suffix)).exists()]
+        chosen = preferred[0] if preferred else (matches[0] if len(matches) == 1 else None)
+        if chosen is not None:
+            return chosen.joinpath(*suffix).resolve()
+    return direct
+
+
 def resolve_repo_workspace_config_path(
     *,
     project_id: str,
@@ -42,16 +84,15 @@ def resolve_repo_workspace_config_path(
 ) -> Path:
     raw_explicit = str(project_vars.get("duckdb_workspace_config_path") or "").strip()
     if raw_explicit:
-        explicit_path = Path(raw_explicit).expanduser()
-        if not explicit_path.is_absolute():
-            explicit_path = (repo_root / explicit_path).resolve()
-        return explicit_path
+        return resolve_repo_relative_path(raw_path=raw_explicit, repo_root=repo_root)
 
     raw_assets_repo = str(project_vars.get("pipeline_assets_local_repo_path") or "").strip()
     if raw_assets_repo:
-        assets_root = Path(raw_assets_repo).expanduser()
-        if not assets_root.is_absolute():
-            assets_root = (repo_root / assets_root).resolve()
+        assets_root = resolve_repo_relative_path(
+            raw_path=raw_assets_repo,
+            repo_root=repo_root,
+            prefer_existing=False,
+        )
         candidate = assets_root / "db" / "duckdb" / "workspace.yml"
         legacy_candidate = assets_root / "query" / "duckdb.workspace.yml"
         if legacy_candidate.exists() and not candidate.exists():
@@ -207,6 +248,7 @@ def upsert_workspace_override(
 
 __all__ = [
     "QueryWorkspaceError",
+    "resolve_repo_relative_path",
     "resolve_repo_workspace_config_path",
     "load_workspace_config_file",
     "deep_merge_config",
