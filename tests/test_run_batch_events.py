@@ -383,3 +383,63 @@ def test_run_batch_merges_context_into_runtime_vars(monkeypatch, tmp_path: Path)
     )
     assert rc == 0
     assert captured["vars"]["states_interest"]["output_dir"] == "/tmp/meta"
+
+
+def test_run_batch_uses_etl_repo_root_for_pipeline_asset_resolution(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    (repo_root / "pipelines").mkdir(parents=True, exist_ok=True)
+    pipeline_path = repo_root / "pipelines" / "sample.yml"
+    pipeline_path.write_text("steps: []\n", encoding="utf-8")
+    workdir = tmp_path / ".runs"
+
+    monkeypatch.setenv("ETL_REPO_ROOT", str(repo_root))
+    monkeypatch.setattr(run_batch, "upsert_run_status", lambda **_: None)
+    monkeypatch.setattr(run_batch, "upsert_step_attempt", lambda **_: None)
+    monkeypatch.setattr(run_batch, "collect_run_provenance", lambda **_: {})
+    monkeypatch.setattr(run_batch, "load_project_vars", lambda **_: {"pipeline_asset_sources": [{"repo_url": "https://example.com/shared.git"}]})
+
+    captured = {}
+
+    def _fake_resolve_pipeline_path_from_project_sources(pipeline_path, *, project_vars, repo_root, cache_root):
+        captured["repo_root"] = Path(repo_root)
+        return Path(pipeline_path)
+
+    monkeypatch.setattr(run_batch, "resolve_pipeline_path_from_project_sources", _fake_resolve_pipeline_path_from_project_sources)
+    monkeypatch.setattr(
+        run_batch,
+        "parse_pipeline",
+        lambda *args, **kwargs: type("P", (), {"steps": [Step(name="s0", script="echo.py")], "vars": {}, "project_id": None})(),
+    )
+    monkeypatch.setattr(
+        run_batch,
+        "run_pipeline",
+        lambda *args, **kwargs: RunResult(
+            run_id="runroot",
+            steps=[
+                StepResult(
+                    step=Step(name="s0", script="echo.py"),
+                    success=True,
+                    attempt_no=1,
+                    attempts=[{"attempt_no": 1, "success": True, "skipped": False, "error": None, "outputs": {}}],
+                )
+            ],
+            artifact_dir=str(workdir),
+        ),
+    )
+
+    rc = run_batch.main(
+        [
+            str(pipeline_path),
+            "--steps",
+            "0",
+            "--run-id",
+            "runroot",
+            "--workdir",
+            str(workdir),
+            "--project-id",
+            "land_core",
+        ]
+    )
+
+    assert rc == 0
+    assert captured["repo_root"] == repo_root.resolve()

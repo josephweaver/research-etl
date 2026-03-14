@@ -250,6 +250,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
     apply_db_mode_from_exec_env(exec_env)
     parse_context_vars = merge_context_with_secrets(commandline_vars, collect_secret_vars(exec_env))
 
+    repo_root_for_resolution = Path(str(os.environ.get("ETL_REPO_ROOT") or "").strip() or ".").expanduser().resolve()
     pipeline_path_input = Path(args.pipeline).expanduser()
     project_id = resolve_project_id(
         explicit_project_id=args.project_id,
@@ -266,7 +267,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
         resolved_pipeline_path = resolve_pipeline_path_from_project_sources(
             pipeline_path_input,
             project_vars=project_vars,
-            repo_root=Path(".").resolve(),
+            repo_root=repo_root_for_resolution,
             cache_root=resolve_pipeline_assets_cache_root(global_vars=global_vars, exec_env=exec_env),
         )
     except PipelineAssetError as exc:
