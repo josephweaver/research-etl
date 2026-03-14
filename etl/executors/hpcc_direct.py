@@ -20,7 +20,6 @@ import tarfile
 import tempfile
 import shlex
 import subprocess
-import threading
 import uuid
 import json
 from datetime import datetime
@@ -36,6 +35,8 @@ from ..pipeline import parse_pipeline, PipelineError
 from ..query.errors import QueryExecutionError, QueryPlannerError, QueryTransportError
 from ..source_control import SourceControlError, SourceExecutionSpec, make_git_source_provider
 from ..subprocess_logging import run_logged_subprocess
+from ..transports import ExecutionOptions, SshTransport, TransportError
+from ..transports.ssh import build_ssh_common_args
 
 _SOURCE_PROVIDER = make_git_source_provider()
 _LOG = logging.getLogger("etl.executors.hpcc_direct")
@@ -441,18 +442,23 @@ class HpccDirectExecutor(Executor):
         return f"{self.ssh_user + '@' if self.ssh_user else ''}{self.ssh_host}"
 
     def _ssh_common_args(self) -> list[str]:
-        args: list[str] = []
-        if self.ssh_jump:
-            args += ["-J", self.ssh_jump]
-        args += [
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            f"ConnectTimeout={self.ssh_connect_timeout}",
-            "-o",
-            "ConnectionAttempts=1",
-        ]
-        return args
+        return build_ssh_common_args(
+            ssh_jump=self.ssh_jump or None,
+            ssh_connect_timeout=self.ssh_connect_timeout,
+            ssh_strict_host_key_checking="accept-new",
+        )
+
+    def _ssh_transport(self, target: Optional[str] = None) -> SshTransport:
+        resolved_target = str(target or "").strip() or self._ssh_target()
+        return SshTransport(
+            target=resolved_target,
+            ssh_jump=self.ssh_jump or None,
+            ssh_connect_timeout=self.ssh_connect_timeout,
+            ssh_strict_host_key_checking="accept-new",
+            timeout_seconds=self.ssh_timeout,
+            verbose=self.verbose,
+            logger=_LOG,
+        )
 
     def _map_repo_path_for_root(
         self,
@@ -470,64 +476,22 @@ class HpccDirectExecutor(Executor):
             return path.as_posix()
 
     def _run_ssh_script(self, target: str, script: str, *, stream_output: bool = False) -> subprocess.CompletedProcess:
-        ssh_cmd = [
-            "ssh",
-            *self._ssh_common_args(),
-            target,
-            f"bash --login -lc {shlex.quote(script)}",
-        ]
-        if not stream_output:
-            return run_logged_subprocess(
-                ssh_cmd,
-                logger=_LOG,
-                action="hpcc_direct.ssh",
-                timeout=self.ssh_timeout,
-                check=False,
-            )
-        proc = subprocess.Popen(
-            ssh_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        stdout_parts: list[str] = []
-        stderr_parts: list[str] = []
-
-        def _reader(stream, buf: list[str], stream_name: str) -> None:
-            if stream is None:
-                return
-            try:
-                for line in iter(stream.readline, ""):
-                    buf.append(line)
-                    text = line.rstrip("\r\n")
-                    if text:
-                        _LOG.info("[hpcc_direct][%s] %s", stream_name, text)
-                        print(f"[hpcc_direct][{stream_name}] {text}", flush=True)
-            finally:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-
-        t_out = threading.Thread(target=_reader, args=(proc.stdout, stdout_parts, "stdout"), daemon=True)
-        t_err = threading.Thread(target=_reader, args=(proc.stderr, stderr_parts, "stderr"), daemon=True)
-        t_out.start()
-        t_err.start()
         try:
-            rc = proc.wait(timeout=self.ssh_timeout)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            t_out.join(timeout=2)
-            t_err.join(timeout=2)
-            raise
-        t_out.join(timeout=2)
-        t_err.join(timeout=2)
-        return subprocess.CompletedProcess(ssh_cmd, rc, "".join(stdout_parts), "".join(stderr_parts))
+            return self._ssh_transport(target).run_text_completed(
+                script,
+                check=False,
+                options=ExecutionOptions(
+                    total_timeout_seconds=self.ssh_timeout,
+                    stream_output=bool(stream_output),
+                    log_callback=(
+                        (lambda level, message: print(f"[hpcc_direct][{level.lower()}] {message}", flush=True))
+                        if stream_output
+                        else None
+                    ),
+                ),
+            )
+        except TransportError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     def _build_remote_script(self, lines: list[str]) -> str:
         base = [
@@ -560,19 +524,17 @@ class HpccDirectExecutor(Executor):
         raise RuntimeError(f"{stage_name} failed rc={proc.returncode}: {detail[:4000]}")
 
     def _scp_to_remote(self, target: str, local_path: Path, remote_path: str) -> subprocess.CompletedProcess:
-        scp_cmd = [
-            "scp",
-            *self._ssh_common_args(),
-            str(local_path),
-            f"{target}:{remote_path}",
-        ]
-        return run_logged_subprocess(
-            scp_cmd,
-            logger=_LOG,
-            action="hpcc_direct.scp",
-            timeout=self.ssh_timeout,
-            check=False,
-        )
+        try:
+            return self._ssh_transport(target).put_file_completed(
+                local_path,
+                remote_path,
+                options=ExecutionOptions(
+                    total_timeout_seconds=self.ssh_timeout,
+                    stream_output=False,
+                ),
+            )
+        except TransportError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     def _collect_dirty_overlay_paths(self) -> tuple[list[Path], list[str]]:
         proc = run_logged_subprocess(

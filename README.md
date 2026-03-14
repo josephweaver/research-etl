@@ -767,6 +767,21 @@ Pipeline asset resolution can be pinned to a stable shared cache path by setting
 - Observability: structured logs, metrics hooks (OpenTelemetry-ready), optional alerts via webhook/email/Slack.
 - Scheduling: cron/Airflow/Prefect/GitHub Actions via CLI; container-friendly entrypoint.
 
+### Detailed subsystem docs
+
+Additional architecture notes now live next to the code for the newer execution layers:
+
+- `etl/runners/README.md`
+- `etl/transports/README.md`
+- `etl/source_control/README.md`
+- `etl/provisioners/README.md`
+
+Repo-root design notes:
+
+- `TRANSPORT.md`
+- `PROVISIONER.md`
+- `JOB_SPEC.md`
+
 ## Execution Backends (pluggable)
 
 Goal: submit pipelines through interchangeable "executors" (local, SLURM/HPCC, Kubernetes, Airflow, AWS Batch, etc.).

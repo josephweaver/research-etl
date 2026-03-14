@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import shlex
 from .template_engine import render_template_file
+from ...source_control import CheckoutSpec, checkout
 
 
 def write_setup_sbatch(destination: Path, script_text: str) -> Path:
@@ -145,19 +146,22 @@ def render_setup_script(
     chunk_source_checkout.append(f"REPO_SHA={repo_sha_q}")
     chunk_source_checkout.append(f"SOURCE_BUNDLE={source_bundle_q}")
     chunk_source_checkout.append(f"SOURCE_SNAPSHOT={source_snapshot_q}")
-    chunk_source_checkout.append("mkdir -p \"$(dirname \\\"$CHECKOUT_ROOT\\\")\"")
     # Pre-1.0 simplified source path: default to linear git_remote flow.
     if mode in {"git_remote", "auto"}:
         chunk_source_checkout.append(f"[ -n {repo_url_q} ] && [ -n {repo_sha_q} ] || {{ echo \"[etl][setup][source] missing repo_url or repo_sha for git_remote\" >&2; exit 1; }}")
-        chunk_source_checkout.append("if [ ! -d \"$CHECKOUT_ROOT\" ]; then mkdir -p \"$CHECKOUT_ROOT\"; fi")
-        chunk_source_checkout.append("if [ -d \"$CHECKOUT_ROOT\" ] && [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then rm -rf \"$CHECKOUT_ROOT\"; fi")
-        chunk_source_checkout.append(f"if [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then git clone --no-checkout {repo_url_q} \"$CHECKOUT_ROOT\" || {{ echo \"[etl][setup][source] git clone failed\" >&2; exit 1; }}; fi")
-        chunk_source_checkout.append("cd \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] cannot cd checkout root: $CHECKOUT_ROOT\" >&2; exit 1; }")
-        chunk_source_checkout.append("git fetch --tags --prune origin || { echo \"[etl][setup][source] git fetch failed\" >&2; exit 1; }")
-        chunk_source_checkout.append(f"git checkout --detach {repo_sha_q} || {{ echo \"[etl][setup][source] git checkout failed for requested SHA\" >&2; exit 1; }}")
-        chunk_source_checkout.append(f"git reset --hard {repo_sha_q} || {{ echo \"[etl][setup][source] git reset failed for requested SHA\" >&2; exit 1; }}")
+        chunk_source_checkout.extend(
+            checkout(
+                CheckoutSpec(
+                    repo_url=repo_url_q,
+                    revision=repo_sha_q,
+                    checkout_root=shlex.quote(checkout_root),
+                    mode="detached",
+                )
+            )
+        )
     elif mode == "workspace":
         if allow_workspace_source and allow_non_git_source:
+            chunk_source_checkout.append("mkdir -p \"$(dirname \\\"$CHECKOUT_ROOT\\\")\"")
             chunk_source_checkout.append("[ -d \"$CHECKOUT_ROOT\" ] || { echo \"[etl][setup][source] workspace checkout missing: $CHECKOUT_ROOT\" >&2; exit 1; }")
             chunk_source_checkout.append("cd \"$CHECKOUT_ROOT\" || { echo \"[etl][setup][source] cannot cd checkout root: $CHECKOUT_ROOT\" >&2; exit 1; }")
         else:
@@ -219,12 +223,16 @@ def render_setup_script(
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"$(printf '%s' \"$ASSET_REPO_NAME_{idx}\" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')\"")
         chunk_asset_overlays.append(f"ASSET_REPO_HASH_{idx}=\"$(printf '%s' \"$ASSET_URL_{idx}\" | sha1sum | awk '{{print $1}}' | cut -c1-10)\"")
         chunk_asset_overlays.append(f"{asset_dir_var}=\"$ASSET_CACHE_ROOT/${{ASSET_REPO_NAME_{idx}}}-${{ASSET_REPO_HASH_{idx}}}\"")
-        chunk_asset_overlays.append(f"if [ ! -d \"${asset_dir_var}\" ]; then mkdir -p \"${asset_dir_var}\"; fi")
-        chunk_asset_overlays.append(f"if [ -d \"${asset_dir_var}\" ] && [ ! -d \"${asset_dir_var}/.git\" ]; then rm -rf \"${asset_dir_var}\"; fi")
-        chunk_asset_overlays.append(f"if [ ! -d \"${asset_dir_var}/.git\" ]; then git clone \"$ASSET_URL_{idx}\" \"${asset_dir_var}\" || {{ echo \"[etl][setup][source] pipeline asset clone failed: $ASSET_URL_{idx}\" >&2; exit 1; }}; fi")
-        chunk_asset_overlays.append(f"git -C \"${asset_dir_var}\" fetch --tags --prune origin || {{ echo \"[etl][setup][source] pipeline asset fetch failed: $ASSET_URL_{idx}\" >&2; exit 1; }}")
-        chunk_asset_overlays.append(f"git -C \"${asset_dir_var}\" checkout \"$ASSET_REF_{idx}\" || {{ echo \"[etl][setup][source] pipeline asset checkout failed: $ASSET_REF_{idx}\" >&2; exit 1; }}")
-        chunk_asset_overlays.append(f"git -C \"${asset_dir_var}\" pull --ff-only origin \"$ASSET_REF_{idx}\" >/dev/null 2>&1 || true")
+        chunk_asset_overlays.extend(
+            checkout(
+                CheckoutSpec(
+                    repo_url=f"$ASSET_URL_{idx}",
+                    revision=f"$ASSET_REF_{idx}",
+                    checkout_root=f"${asset_dir_var}",
+                    mode="branch",
+                )
+            )
+        )
         chunk_asset_overlays.append(
             f"if [ \"$ASSET_PIPELINES_LINKED\" = \"0\" ] && [ -d \"${asset_dir_var}/{pipelines_dir}\" ]; then "
             "rm -rf \"$CHECKOUT_ROOT/pipelines\"; "

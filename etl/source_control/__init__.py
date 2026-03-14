@@ -6,6 +6,14 @@
 
 from .base import SourceControlError, SourceExecutionSpec, SourceProvider
 from .git_provider import GitSourceProvider, make_git_source_provider
+from .runtime import (
+    CheckoutSpec,
+    build_source_commandline_vars,
+    checkin_single_file,
+    checkout,
+    merge_source_commandline_vars,
+    resolve_source_override,
+)
 
 __all__ = [
     "SourceControlError",
@@ -13,4 +21,10 @@ __all__ = [
     "SourceProvider",
     "GitSourceProvider",
     "make_git_source_provider",
+    "CheckoutSpec",
+    "build_source_commandline_vars",
+    "checkin_single_file",
+    "checkout",
+    "merge_source_commandline_vars",
+    "resolve_source_override",
 ]

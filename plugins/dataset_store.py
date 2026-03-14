@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 from etl.datasets import DatasetServiceError, store_data
+from etl.source_control import checkin_single_file
 
 
 meta = {
@@ -64,30 +64,6 @@ meta = {
     "idempotent": False,
 }
 
-
-def _git_run(cmd, *, cwd: Path, env: dict | None = None):
-    return subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def _find_git_root(path: Path) -> Path | None:
-    cur = path.resolve()
-    if cur.is_file():
-        cur = cur.parent
-    while True:
-        if (cur / ".git").exists():
-            return cur
-        if cur.parent == cur:
-            return None
-        cur = cur.parent
-
-
 def _maybe_commit_workspace(receipt: dict, args: dict, ctx) -> dict:
     info = (((receipt or {}).get("profile") or {}).get("workspace_auto_register") or {})
     if not bool(info.get("updated")):
@@ -97,46 +73,18 @@ def _maybe_commit_workspace(receipt: dict, args: dict, ctx) -> dict:
     ws_path = Path(str(info.get("workspace_path") or "").strip())
     if not ws_path.exists():
         return {"committed": False, "reason": "workspace_path_missing"}
-    repo_root = _find_git_root(ws_path)
-    if repo_root is None:
-        return {"committed": False, "reason": "git_repo_not_found"}
-
-    rel = ws_path.resolve().relative_to(repo_root.resolve()).as_posix()
     env = dict(os.environ)
-    r_add = _git_run(["git", "add", "--", rel], cwd=repo_root, env=env)
-    if r_add.returncode != 0:
-        return {"committed": False, "reason": "git_add_failed", "stderr": (r_add.stderr or "").strip()}
-
-    r_diff = _git_run(["git", "diff", "--cached", "--quiet", "--", rel], cwd=repo_root, env=env)
-    if r_diff.returncode == 0:
-        return {"committed": False, "reason": "no_staged_changes", "workspace_path": ws_path.as_posix()}
     dataset_id = str((receipt or {}).get("dataset_id") or "").strip()
     version = str((receipt or {}).get("version_label") or "").strip()
     msg = f"chore(workspace): update {dataset_id} {version}".strip()
-    r_commit = _git_run(["git", "commit", "--only", "-m", msg, "--", rel], cwd=repo_root, env=env)
-    if r_commit.returncode != 0:
-        return {
-            "committed": False,
-            "reason": "git_commit_failed",
-            "stderr": (r_commit.stderr or "").strip(),
-            "stdout": (r_commit.stdout or "").strip(),
-        }
-    out = {
-        "committed": True,
-        "workspace_path": ws_path.as_posix(),
-        "repo_root": repo_root.as_posix(),
-        "message": msg,
-    }
-    if bool(args.get("workspace_git_push", False)):
-        remote = str(args.get("workspace_git_remote") or "origin").strip() or "origin"
-        branch = str(args.get("workspace_git_branch") or "").strip()
-        if branch:
-            r_push = _git_run(["git", "push", remote, f"HEAD:{branch}"], cwd=repo_root, env=env)
-        else:
-            r_push = _git_run(["git", "push", remote, "HEAD"], cwd=repo_root, env=env)
-        out["pushed"] = r_push.returncode == 0
-        out["push_stderr"] = (r_push.stderr or "").strip()
-    return out
+    return checkin_single_file(
+        file_path=ws_path,
+        message=msg,
+        push=bool(args.get("workspace_git_push", False)),
+        remote=str(args.get("workspace_git_remote") or "origin").strip() or "origin",
+        branch=str(args.get("workspace_git_branch") or "").strip(),
+        env=env,
+    )
 
 
 def run(args, ctx):

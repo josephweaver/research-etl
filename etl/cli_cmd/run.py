@@ -28,6 +28,7 @@ from etl.projects import (
     load_project_vars,
     resolve_project_id,
 )
+from etl.source_control import merge_source_commandline_vars
 from etl.provenance import collect_run_provenance
 from etl.runtime_context import (
     apply_db_mode_from_exec_env,
@@ -331,6 +332,12 @@ def _submit_pipeline_run(
         plugin_dir=plugins_dir_path,
         pipeline=pipeline,
         cli_command=cli_command,
+    )
+    commandline_vars = merge_source_commandline_vars(
+        commandline_vars,
+        repo_root=repo_root,
+        project_vars=project_vars,
+        provenance=provenance,
     )
     execution_source = args.execution_source or exec_env.get("execution_source", "auto")
     source_bundle = args.source_bundle or exec_env.get("source_bundle")

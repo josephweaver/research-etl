@@ -12,6 +12,7 @@ from typing import Any, Optional
 import uuid
 
 from fastapi import HTTPException, Request
+from etl.source_control import merge_source_commandline_vars
 
 
 def parse_action_payload(payload: Optional[dict[str, Any]], deps: dict[str, Any]) -> dict[str, Any]:
@@ -363,6 +364,12 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]], deps: di
         pipeline=pipeline,
         cli_command=f"etl web run {resolved_pipeline_path}",
     )
+    commandline_vars = merge_source_commandline_vars(
+        commandline_vars,
+        repo_root=repo_root,
+        project_vars=project_vars,
+        provenance=provenance,
+    )
     if args["executor"] == "slurm":
         ex = deps["SlurmExecutor"](
             env_config=execution_env,
@@ -449,6 +456,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]], deps: di
             "repo_root": repo_root,
             "global_vars": global_vars,
             "project_vars": project_vars,
+            "commandline_vars": commandline_vars,
             "execution_source": execution_source,
             "source_bundle": source_bundle,
             "source_snapshot": source_snapshot,
@@ -483,6 +491,7 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]], deps: di
                 "repo_root": repo_root,
                 "global_vars": global_vars,
                 "project_vars": project_vars,
+                "commandline_vars": commandline_vars,
                 "execution_source": execution_source,
                 "source_bundle": source_bundle,
                 "source_snapshot": source_snapshot,

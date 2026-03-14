@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 import etl.executors.slurm.executor as slurm_mod
+import etl.subprocess_logging as subprocess_logging_mod
 from etl.executors.slurm import SlurmExecutor
 from etl.pipeline import Pipeline, Step
 from etl.git_checkout import GitExecutionSpec
@@ -489,6 +490,74 @@ def test_slurm_submit_prefers_execution_env_git_remote_url(monkeypatch, tmp_path
     assert "REPO_URL=git@github.com:josephweaver/research-etl.git" in setup_script
 
 
+def test_slurm_submit_prefers_commandline_pipeline_source_revision(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(steps=[Step(name="s1", script="echo.py")])
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+    monkeypatch.setattr(
+        slurm_mod,
+        "resolve_execution_spec",
+        lambda **_: GitExecutionSpec(
+            commit_sha="abc123def456",
+            origin_url="https://github.com/org/research-etl.git",
+            repo_name="research-etl",
+            git_is_dirty=False,
+        ),
+    )
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {"workdir": "/tmp/work", "logdir": "/tmp/logs"},
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+        enforce_git_checkout=True,
+        require_clean_git=False,
+    )
+    ex.submit(
+        "pipelines/sample.yml",
+        {
+            "run_id": "runabc1234",
+            "project_vars": {
+                "pipeline_asset_sources": [
+                    {
+                        "repo_url": "git@github.com:josephweaver/crop-insurance-etl-pipelines.git",
+                        "local_repo_path": "../crop-insurance-etl-pipelines",
+                        "pipelines_dir": "pipelines",
+                        "scripts_dir": "scripts",
+                        "ref": "main",
+                    }
+                ]
+            },
+            "commandline_vars": {
+                "source": {
+                    "pipeline": {
+                        "repo_url": "git@github.com:josephweaver/crop-insurance-etl-pipelines.git",
+                        "revision": "feature/runtime-sync",
+                    }
+                }
+            },
+        },
+    )
+    setup_script = calls[0]["script_text"]
+    assert "ASSET_REF_0=feature/runtime-sync" in setup_script
+
+
 def test_slurm_submit_script_skips_secret_propagation_when_disabled(monkeypatch, tmp_path: Path) -> None:
     ex = SlurmExecutor(
         {
@@ -515,7 +584,7 @@ def test_slurm_submit_script_skips_secret_propagation_when_disabled(monkeypatch,
             self.stderr = err
 
     monkeypatch.setattr(ex, "_ensure_remote_secrets_file", _fake_secret)
-    monkeypatch.setattr(slurm_mod.subprocess, "run", lambda *a, **k: _P())
+    monkeypatch.setattr(subprocess_logging_mod.subprocess, "run", lambda *a, **k: _P())
 
     jobid = ex._submit_script("#!/bin/bash\necho ok\n", run_id="r123", label="x")
     assert jobid == "123"
@@ -554,7 +623,7 @@ def test_slurm_submit_script_retries_transient_remote_failures(monkeypatch, tmp_
             return _P(rc=255, out="", err="ssh: connect to host example.org port 22: Connection timed out")
         return _P()
 
-    monkeypatch.setattr(slurm_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(subprocess_logging_mod.subprocess, "run", _fake_run)
 
     jobid = ex._submit_script("#!/bin/bash\necho ok\n", run_id="r123", label="x")
     assert jobid == "123"
@@ -589,7 +658,7 @@ def test_slurm_remote_commands_use_noninteractive_ssh_options(monkeypatch, tmp_p
         observed_cmds.append([str(x) for x in cmd])
         return _P()
 
-    monkeypatch.setattr(slurm_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(subprocess_logging_mod.subprocess, "run", _fake_run)
     ex._submit_script("#!/bin/bash\necho ok\n", run_id="r123", label="x")
 
     flat = " ".join(" ".join(c) for c in observed_cmds)

@@ -19,7 +19,6 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-import tempfile
 import math
 import re
 from datetime import datetime
@@ -34,19 +33,22 @@ from ...pipeline import Pipeline
 from ...pipeline import parse_pipeline
 from ...pipeline_assets import pipeline_asset_sources_from_project_vars
 from ...plugins.base import load_plugin
-from ...source_control import SourceControlError, SourceExecutionSpec, make_git_source_provider
-from ...tracking import fetch_plugin_resource_stats, upsert_run_status
-from ...variable_solver import VariableSolver
-from .ssh import (
-    build_scp_cmd,
-    build_ssh_cmd,
-    build_ssh_common_args,
-    build_target_host,
-    run_cmd_with_retries,
+from ...provisioners import SlurmProvisioner, WorkloadSpec
+from ...source_control import (
+    SourceControlError,
+    SourceExecutionSpec,
+    make_git_source_provider,
+    resolve_source_override,
 )
-from .sbatch_setup import write_setup_sbatch, render_setup_script
-from .sbatch_step import write_step_sbatch, render_step_script
-from .sbatch_controller import write_controller_sbatch, render_controller_script
+from ...subprocess_logging import run_logged_subprocess
+from ...tracking import fetch_plugin_resource_stats, upsert_run_status
+from ...transports import ExecutionOptions, SshTransport, TransportError
+from ...variable_solver import VariableSolver
+from .job_spec_builder import SlurmJobSpecBuilder
+from .run_spec_builder import SlurmRunSpecBuilder
+from .sbatch_setup import render_setup_script
+from .sbatch_step import render_step_script
+from .sbatch_controller import render_controller_script
 
 _SOURCE_PROVIDER = make_git_source_provider()
 
@@ -245,7 +247,11 @@ def _git_current_branch(repo_path: Path) -> Optional[str]:
     return branch
 
 
-def _resolve_pipeline_asset_overlays(project_vars: Dict[str, Any], repo_root: Path) -> List[Dict[str, str]]:
+def _resolve_pipeline_asset_overlays(
+    project_vars: Dict[str, Any],
+    repo_root: Path,
+    commandline_vars: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, str]]:
     try:
         sources = pipeline_asset_sources_from_project_vars(project_vars)
     except Exception:  # noqa: BLE001
@@ -282,6 +288,14 @@ def _resolve_pipeline_asset_overlays(project_vars: Dict[str, Any], repo_root: Pa
                 "scripts_dir": scripts_dir,
             }
         )
+    override = resolve_source_override(
+        commandline_vars=dict(commandline_vars or {}),
+        kind="pipeline",
+        fallback=None,
+    )
+    if override and overlays:
+        overlays[0]["repo_url"] = str(override.origin_url or overlays[0].get("repo_url") or "").strip()
+        overlays[0]["ref"] = str(override.revision or overlays[0].get("ref") or "").strip() or "main"
     return overlays
 
 
@@ -524,36 +538,89 @@ class SlurmExecutor(Executor):
             ]
         )
 
-    def _run_cmd_with_retries(
-        self,
-        cmd: List[str],
-        *,
-        timeout: int,
-        retries: int,
-        op_name: str,
-    ) -> subprocess.CompletedProcess:
-        return run_cmd_with_retries(
-            cmd,
-            timeout=timeout,
-            retries=retries,
-            op_name=op_name,
-            retry_delay_seconds=self.remote_retry_delay_seconds,
-            verbose=self.verbose,
-            error_factory=SlurmSubmitError,
-        )
+    def _ssh_target(self) -> str:
+        host = str(self.env.ssh_host or "").strip()
+        if not host:
+            raise SlurmSubmitError("Remote SSH mode requires ssh_host.")
+        user = str(self.env.ssh_user or "").strip()
+        return f"{user + '@' if user else ''}{host}"
 
-    def _ssh_common_args(self) -> List[str]:
-        return build_ssh_common_args(
+    def _ssh_transport(
+        self,
+        *,
+        timeout_seconds: Optional[int] = None,
+        retries: Optional[int] = None,
+    ) -> SshTransport:
+        return SshTransport(
+            target=self._ssh_target(),
             ssh_jump=self.env.ssh_jump,
             ssh_connect_timeout=self.ssh_connect_timeout,
             ssh_strict_host_key_checking=self.ssh_strict_host_key_checking,
+            timeout_seconds=int(timeout_seconds or self.ssh_timeout),
+            retries=int(self.ssh_retries if retries is None else retries),
+            retry_delay_seconds=self.remote_retry_delay_seconds,
+            verbose=self.verbose,
         )
 
-    def _build_ssh_cmd(self, target: str, *remote_parts: str) -> List[str]:
-        return build_ssh_cmd(target, *remote_parts, common_args=self._ssh_common_args())
+    def _ssh_run(self, argv: List[str], *, timeout: Optional[int] = None, retries: Optional[int] = None) -> subprocess.CompletedProcess:
+        try:
+            return self._ssh_transport(timeout_seconds=timeout, retries=retries).run_completed(
+                argv,
+                check=False,
+                options=ExecutionOptions(
+                    total_timeout_seconds=float(timeout or self.ssh_timeout),
+                    stream_output=False,
+                ),
+            )
+        except TransportError as exc:
+            raise SlurmSubmitError(str(exc)) from exc
 
-    def _build_scp_cmd(self, *parts: str) -> List[str]:
-        return build_scp_cmd(*parts, common_args=self._ssh_common_args())
+    def _ssh_run_text(self, text: str, *, timeout: Optional[int] = None, retries: Optional[int] = None) -> subprocess.CompletedProcess:
+        try:
+            return self._ssh_transport(timeout_seconds=timeout, retries=retries).run_text_completed(
+                text,
+                check=False,
+                options=ExecutionOptions(
+                    total_timeout_seconds=float(timeout or self.ssh_timeout),
+                    stream_output=False,
+                ),
+            )
+        except TransportError as exc:
+            raise SlurmSubmitError(str(exc)) from exc
+
+    def _ssh_put_file(
+        self,
+        source: str | Path,
+        destination: str | Path,
+        *,
+        timeout: Optional[int] = None,
+        retries: Optional[int] = None,
+    ) -> subprocess.CompletedProcess:
+        try:
+            return self._ssh_transport(timeout_seconds=timeout or self.scp_timeout, retries=self.scp_retries if retries is None else retries).put_file_completed(
+                source,
+                destination,
+                options=ExecutionOptions(
+                    total_timeout_seconds=float(timeout or self.scp_timeout),
+                    stream_output=False,
+                ),
+            )
+        except TransportError as exc:
+            raise SlurmSubmitError(str(exc)) from exc
+
+    def _slurm_provisioner(self):
+        if self.env.ssh_host:
+            transport = self._ssh_transport(timeout_seconds=self.ssh_timeout, retries=self.ssh_retries)
+        else:
+            from ...transports import LocalProcessTransport
+
+            transport = LocalProcessTransport()
+        return SlurmProvisioner(
+            transport,
+            dry_run=self.dry_run,
+            default_submit_timeout_seconds=float(self.ssh_timeout),
+            default_transfer_timeout_seconds=float(self.scp_timeout),
+        )
 
     @staticmethod
     def _group_steps_with_indices(steps: List[Any]) -> List[List[Tuple[int, Any]]]:
@@ -770,288 +837,63 @@ class SlurmExecutor(Executor):
         }
 
     def submit(self, pipeline_path: str, context: Dict[str, Any]) -> SubmissionResult:
-        # 1) Resolve run identity and parse the pipeline with all variable scopes.
-        pipeline_input = Path(pipeline_path)
-        pipeline_path = pipeline_input.as_posix()
-        resume_run_id = context.get("resume_run_id")
-        provenance = dict(context.get("provenance") or {})
-        source_repo_root = Path(context.get("repo_root") or Path(".").resolve()).resolve()
-        run_id = context.get("run_id")
-        if not run_id:
-            import uuid
-
-            run_id = uuid.uuid4().hex
-        ts = datetime.utcnow()
-        run_date = ts.strftime("%y%m%d")
-        run_stamp = ts.strftime("%H%M%S")
-        run_started_at = ts.isoformat() + "Z"
-        run_fs_id = f"{run_stamp}-{run_id[:8]}"
-        pipeline = parse_pipeline(
-            Path(pipeline_path),
-            global_vars=context.get("global_vars") or {},
-            env_vars=context.get("execution_env") or {},
-            project_vars=context.get("project_vars") or {},
-            context_vars=context.get("commandline_vars") or {},
-        )
-        batches = self._group_steps_with_indices(pipeline.steps)
-        requested_step_indices = _parse_step_indices(context.get("step_indices"), len(pipeline.steps))
-        if requested_step_indices:
-            wanted = set(requested_step_indices)
-            filtered_batches = []
-            for batch in batches:
-                kept = [pair for pair in batch if int(pair[0]) in wanted]
-                if kept:
-                    filtered_batches.append(kept)
-            batches = filtered_batches
+        try:
+            run_spec = SlurmRunSpecBuilder(
+                self,
+                parse_pipeline_fn=parse_pipeline,
+                resolve_execution_spec_fn=resolve_execution_spec,
+                repo_relative_path_fn=repo_relative_path,
+            ).build(pipeline_path, context)
+        except SlurmSubmitError:
+            raise
+        except Exception as exc:
+            raise SlurmSubmitError(str(exc)) from exc
+        pipeline = run_spec.pipeline
+        batches = run_spec.batches
+        run_id = run_spec.run_id
         if not batches:
             self._statuses[run_id] = RunStatus(run_id=run_id, state=RunState.SUCCEEDED, message="No selected steps to run.")
             return SubmissionResult(run_id=run_id, message="No selected steps to run.")
-        # 2) Build a solver namespace and compute cluster-side run/work paths.
         submission_records = []
         submitted_step_jobs = 0
         prev_jobid = None
-        jobname = str(pipeline.vars.get("jobname") or pipeline.vars.get("name") or "run")
-        pipeline_workdir_template = str((getattr(pipeline, "dirs", {}) or {}).get("workdir") or "").strip()
-        resolve_max_passes = max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20))
-        path_style = str((context.get("execution_env") or {}).get("path_style") or "").strip()
-        style_norm = VariableSolver._normalize_path_style(path_style)
-        if not style_norm:
-            # SLURM submission paths are cluster-side paths; default to POSIX.
-            style_norm = "unix"
-        solver = VariableSolver(max_passes=resolve_max_passes)
-        global_ns = dict(context.get("global_vars") or {})
-        env_ns = dict(context.get("execution_env") or {})
-        commandline_ns = dict(context.get("commandline_vars") or {})
-        project_ns = dict(context.get("project_vars") or {})
-        solver.overlay("global", global_ns, add_namespace=True, add_flat=True)
-        solver.overlay("globals", global_ns, add_namespace=True, add_flat=False)
-        solver.overlay("env", env_ns, add_namespace=True, add_flat=True)
-        solver.overlay("project", project_ns, add_namespace=True, add_flat=True)
-        solver.overlay("pipe", dict(getattr(pipeline, "vars", {}) or {}), add_namespace=True, add_flat=True)
-        solver.overlay("vars", dict(getattr(pipeline, "vars", {}) or {}), add_namespace=True, add_flat=False)
-        solver.overlay("dirs", dict(getattr(pipeline, "dirs", {}) or {}), add_namespace=True, add_flat=True)
-        solver.overlay("commandline", commandline_ns, add_namespace=True, add_flat=True)
-        solver.with_sys(
-            {
-                "run": {"id": run_id, "short_id": run_id[:8]},
-                "job": {"id": run_id, "name": jobname},
-                "step": {"id": "", "name": "", "index": ""},
-                "now": {"yymmdd": run_date, "hhmmss": run_stamp},
-            }
-        )
-        solver.update({"run_id": run_id, "jobname": jobname})
-        env_workdir_default = solver.get_path(
-            "env.workdir",
-            str(self.env.workdir or self.workdir),
-            path_style=style_norm,
-        )
-        if "{" in env_workdir_default or "}" in env_workdir_default:
-            env_workdir_default = Path(self.env.workdir or self.workdir).as_posix()
-        default_remote_workdir = (Path(env_workdir_default) / jobname / run_date / run_fs_id).as_posix()
-        remote_workdir = default_remote_workdir
-        if pipeline_workdir_template:
-            solver.update({"_candidate_workdir": pipeline_workdir_template})
-            candidate = str(solver.get("_candidate_workdir", "", resolve=True) or "").strip()
-            if "{" in candidate or "}" in candidate:
-                raise SlurmSubmitError(
-                    "Could not fully resolve pipeline dirs.workdir for SLURM submit: "
-                    f"{pipeline_workdir_template}"
-                )
-            if candidate:
-                resolved_candidate = solver.get_path(
-                    "_candidate_workdir",
-                    candidate,
-                    resolve=True,
-                    path_style=style_norm,
-                )
-                candidate_path = Path(resolved_candidate)
-                if candidate_path.is_absolute():
-                    remote_workdir = candidate_path.as_posix()
-                else:
-                    remote_workdir = (Path(env_workdir_default) / candidate_path).as_posix()
-        solver.update({"workdir": remote_workdir})
+        ts = run_spec.created_at
+        provenance = dict(run_spec.provenance)
+        resume_run_id = run_spec.selection.resume_run_id
+        run_started_at = run_spec.selection.run_started_at or (ts.isoformat() + "Z")
+        remote_workdir = run_spec.paths.workdir
         remote_workdir_root = Path(remote_workdir)
-        child_jobs_file = f"{remote_workdir}/child_jobs.txt"
-        context_file = f"{remote_workdir}/context.json"
-        checkout_root = (self.remote_base / self.local_repo_name).as_posix()
-        source_mode = str(context.get("execution_source") or self.execution_source or "auto").strip().lower()
-        source_bundle = context.get("source_bundle") or self.source_bundle
-        source_snapshot = context.get("source_snapshot") or self.source_snapshot
-        allow_workspace_source = _parse_bool(
-            context.get("allow_workspace_source", self.allow_workspace_source),
-            default=self.allow_workspace_source,
-        )
-        selected_source_mode = "workspace"
-        git_origin_url = None
-        git_commit_sha = None
-        git_remote_override = str(context.get("execution_env", {}).get("git_remote_url") or self.env.git_remote_url or "").strip() or None
+        child_jobs_file = run_spec.paths.child_jobs_file
+        context_file = run_spec.paths.context_file
+        checkout_root = run_spec.paths.checkout_root
+        pipeline_remote = run_spec.paths.pipeline_path
+        plugins_remote = run_spec.paths.plugins_dir
+        global_config_remote = run_spec.paths.global_config_path
+        projects_config_remote = run_spec.paths.projects_config_path
+        environments_config_remote = run_spec.paths.environments_config_path
+        venv_path = run_spec.paths.venv_path
+        req_path = run_spec.paths.requirements_path
+        python_bin = run_spec.paths.python_bin
+        base_logdir = Path(run_spec.paths.base_logdir)
+        setup_logdir = run_spec.paths.setup_logdir
+        workdirs_to_create = list(run_spec.paths.workdirs_to_create)
+        logdirs_to_create = list(run_spec.paths.logdirs_to_create)
+        source_bundle = run_spec.metadata.get("source_bundle_path")
+        source_snapshot = run_spec.metadata.get("source_snapshot_path")
+        selected_source_mode = str(run_spec.metadata.get("selected_source_mode") or run_spec.etl_source.mode or "workspace")
+        allow_workspace_source = bool(run_spec.metadata.get("allow_workspace_source", False))
+        commandline_ns = dict(run_spec.commandline_vars)
+        pipeline_path = run_spec.pipeline_path_input
+        pipeline_asset_overlays = [
+            {
+                "repo_url": asset.repo_url,
+                "ref": asset.revision,
+                "pipelines_dir": asset.pipelines_dir,
+                "scripts_dir": asset.scripts_dir,
+            }
+            for asset in run_spec.pipeline_assets
+        ]
 
-        # 3) Decide which source model setup should use (workspace/git/bundle/snapshot).
-        if self.enforce_git_checkout:
-            if source_mode == "workspace" and not allow_workspace_source:
-                raise SlurmSubmitError("execution_source=workspace requires allow_workspace_source=true")
-
-            spec = None
-            spec_error: Optional[Exception] = None
-            if source_mode in {"git_remote", "auto"}:
-                try:
-                    spec = resolve_execution_spec(
-                        repo_root=source_repo_root,
-                        provenance=provenance,
-                        require_clean=self.require_clean_git,
-                        require_origin=not bool(git_remote_override),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    spec_error = exc
-            elif source_mode == "git_bundle":
-                try:
-                    spec = resolve_execution_spec(
-                        repo_root=source_repo_root,
-                        provenance=provenance,
-                        require_clean=self.require_clean_git,
-                        require_origin=False,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    spec_error = exc
-            elif source_mode == "snapshot":
-                try:
-                    spec = resolve_execution_spec(
-                        repo_root=source_repo_root,
-                        provenance=provenance,
-                        require_clean=False,
-                        require_origin=False,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    spec_error = exc
-
-            if source_mode in {"git_remote", "git_bundle", "snapshot"} and spec is None:
-                raise SlurmSubmitError(str(spec_error or "Could not resolve execution source metadata"))
-
-            if spec is not None:
-                if git_remote_override:
-                    spec = replace(spec, origin_url=git_remote_override)
-                git_origin_url = spec.origin_url
-                git_commit_sha = spec.commit_sha
-                provenance["git_repo_name"] = spec.repo_name
-                provenance["git_commit_sha"] = spec.commit_sha
-                if spec.origin_url:
-                    provenance["git_origin_url"] = spec.origin_url
-
-                if source_mode == "git_remote":
-                    selected_source_mode = "git_remote"
-                elif source_mode == "git_bundle":
-                    selected_source_mode = "git_bundle"
-                elif source_mode == "snapshot":
-                    selected_source_mode = "snapshot"
-                else:
-                    # auto: decide at runtime in setup script
-                    selected_source_mode = "auto"
-
-                if selected_source_mode in {"git_remote", "auto", "git_bundle", "snapshot"}:
-                    if self.env.ssh_host:
-                        remote_base = (self.env.remote_repo or "$HOME/.etl/checkouts").rstrip("/")
-                        checkout_root = f"{remote_base}/{spec.repo_name}-{spec.commit_sha[:12]}"
-                    else:
-                        checkout_root = (Path(self.workdir) / "_code" / f"{spec.repo_name}-{spec.commit_sha[:12]}").as_posix()
-            elif source_mode == "workspace":
-                selected_source_mode = "workspace"
-                checkout_root = (
-                    (Path(self.env.remote_repo).as_posix() if (self.env.ssh_host and self.env.remote_repo) else (self.remote_base / self.local_repo_name).as_posix())
-                    if self.env.ssh_host
-                    else source_repo_root.as_posix()
-                )
-            elif source_mode == "auto":
-                selected_source_mode = "auto"
-                checkout_root = (
-                    (Path(self.env.remote_repo).as_posix() if (self.env.ssh_host and self.env.remote_repo) else (self.remote_base / self.local_repo_name).as_posix())
-                    if self.env.ssh_host
-                    else source_repo_root.as_posix()
-                )
-            provenance["source_mode"] = selected_source_mode
-
-        venv_path = (Path(self.env.venv) if self.env.venv else Path(checkout_root) / ".venv").as_posix()
-        req_path = (
-            Path(self.env.requirements).as_posix()
-            if self.env.requirements
-            else (Path(checkout_root) / "requirements.txt").as_posix()
-        )
-        python_bin = self.env.python or "python3"
-        # resolve pipeline and plugins dir to POSIX paths on remote checkout
-        use_repo_relative_paths = self.enforce_git_checkout and selected_source_mode != "workspace"
-        workspace_repo_root = Path(checkout_root)
-        pipeline_remote_hint = str(context.get("pipeline_remote_hint") or "").strip()
-
-        if use_repo_relative_paths:
-            try:
-                pipeline_rel = repo_relative_path(pipeline_input, source_repo_root, "pipeline")
-                rewritten_rel = _rewrite_asset_cache_pipeline_rel(pipeline_rel)
-                if rewritten_rel is not None:
-                    pipeline_rel = rewritten_rel
-                pipeline_remote = (Path(checkout_root) / pipeline_rel).as_posix()
-            except SourceControlError as exc:
-                if pipeline_remote_hint:
-                    pipeline_remote = (Path(checkout_root) / Path(pipeline_remote_hint)).as_posix()
-                else:
-                    raise SlurmSubmitError(
-                        "Pipeline path is outside the execution source repository and no pipeline_remote_hint was "
-                        f"provided: {pipeline_input}"
-                    ) from exc
-        else:
-            if Path(pipeline_path).is_absolute():
-                pipeline_remote = Path(pipeline_path).as_posix()
-            else:
-                pipeline_remote = (workspace_repo_root / Path(pipeline_path)).as_posix()
-
-        if use_repo_relative_paths:
-            plugins_rel = repo_relative_path(self.plugins_dir, source_repo_root, "plugins_dir")
-            plugins_remote = (Path(checkout_root) / plugins_rel).as_posix()
-        else:
-            plugins_remote = (
-                (workspace_repo_root / self.plugins_dir).as_posix()
-                if not self.plugins_dir.is_absolute()
-                else self.plugins_dir.as_posix()
-            )
-
-        global_config_remote = None
-        if self.global_config:
-            gc_path = Path(self.global_config)
-            if use_repo_relative_paths:
-                gc_rel = repo_relative_path(gc_path, source_repo_root, "global_config")
-                global_config_remote = (Path(checkout_root) / gc_rel).as_posix()
-            else:
-                global_config_remote = ((Path(checkout_root) / gc_path).as_posix() if not gc_path.is_absolute() else gc_path.as_posix())
-
-        environments_config_remote = None
-        if self.environments_config and self.env_name:
-            ec_path = Path(self.environments_config)
-            if use_repo_relative_paths:
-                ec_rel = repo_relative_path(ec_path, source_repo_root, "environments_config")
-                environments_config_remote = (Path(checkout_root) / ec_rel).as_posix()
-            else:
-                environments_config_remote = (
-                    (Path(checkout_root) / ec_path).as_posix() if not ec_path.is_absolute() else ec_path.as_posix()
-                )
-        projects_config_remote = None
-        if self.projects_config:
-            pc_path = Path(self.projects_config)
-            if use_repo_relative_paths:
-                pc_rel = repo_relative_path(pc_path, source_repo_root, "projects_config")
-                projects_config_remote = (Path(checkout_root) / pc_rel).as_posix()
-            else:
-                projects_config_remote = (
-                    (Path(checkout_root) / pc_path).as_posix() if not pc_path.is_absolute() else pc_path.as_posix()
-                )
-
-        pipeline_logdir_resolved = str(solver.get_path("dirs.logdir", "", path_style=style_norm) or "").strip()
-        if "{" in pipeline_logdir_resolved or "}" in pipeline_logdir_resolved:
-            pipeline_logdir_resolved = ""
-        use_pipeline_logdir = bool(pipeline_logdir_resolved)
-        # Default SLURM log layout is run-scoped under the resolved remote workdir:
-        #   <remote_workdir>/logs/<setup|step_name>/...
-        # Pipeline-level dirs.logdir remains the explicit override.
-        base_logdir = Path(pipeline_logdir_resolved) if use_pipeline_logdir else (Path(remote_workdir) / "logs")
-
-        # 4) Stage optional source artifacts and submit a setup job first.
         if self.env.ssh_host and self.env.sync and not self.enforce_git_checkout:
             self._sync_repo()
         source_bundle_remote = self._stage_source_asset(
@@ -1060,226 +902,34 @@ class SlurmExecutor(Executor):
         source_snapshot_remote = self._stage_source_asset(
             source_snapshot, remote_workdir, run_id=run_id, label="source-snapshot"
         )
-        pipeline_asset_overlays = _resolve_pipeline_asset_overlays(
-            dict(context.get("project_vars") or {}),
-            source_repo_root,
-        )
 
-        # submit setup job to prep venv and work dirs
-        setup_logdir = (base_logdir / "setup").as_posix()
-        workdirs_to_create = []
-        logdirs_to_create = [setup_logdir]
-        # gather work/log dirs for batches
-        for batch_idx, batch in enumerate(batches):
-            if len(batch) == 1:
-                step_indices = [batch[0][0]]
-                steps = [batch[0][1]]
-                step_name = getattr(steps[0], "name", f"step{step_indices[0]}")
-                label = step_name
-                step_workdir = (remote_workdir_root / label).as_posix()
-                step_logdir = (base_logdir / label).as_posix()
-                workdirs_to_create.append(step_workdir)
-                logdirs_to_create.append(step_logdir)
-            else:
-                chunk_size = min(self.array_task_limit, len(batch))
-                start = 0
-                while start < len(batch):
-                    chunk = batch[start:start+chunk_size]
-                    first_name = getattr(chunk[0][1], "name", f"step{chunk[0][0]}")
-                    label = f"{first_name}_array{batch_idx}_chunk{start}"
-                    step_workdir = (remote_workdir_root / label).as_posix()
-                    step_logdir = (base_logdir / label).as_posix()
-                    workdirs_to_create.append(step_workdir)
-                    logdirs_to_create.append(step_logdir)
-                    start += chunk_size
-
-        setup_script = self._render_setup_script(
-            run_id,
-            checkout_root,
-            remote_workdir,
-            setup_logdir,
-            venv_path,
-            req_path,
-            python_bin,
-            workdirs_to_create,
-            logdirs_to_create,
-            execution_source=selected_source_mode,
-            git_origin_url=git_origin_url,
-            git_commit_sha=git_commit_sha,
+        planned_jobs = SlurmJobSpecBuilder(self).build(
+            run_spec,
             source_bundle_path=source_bundle_remote,
             source_snapshot_path=source_snapshot_remote,
-            allow_workspace_source=allow_workspace_source,
-            pipeline_asset_overlays=pipeline_asset_overlays,
         )
-        setup_jobid = self._submit_script(setup_script, run_id, label="setup", remote_dest_dir=remote_workdir)
-        prev_jobid = setup_jobid
-        submission_records.append(setup_jobid)
-
-        # 5) Submit step jobs in dependency order (single, foreach-array, or batch arrays).
-        for batch_idx, batch in enumerate(batches):
-            # Cap array size if needed (for now we treat batch as single job if size==1, else array)
-            if len(batch) == 1:
-                step_indices = [batch[0][0]]
-                steps = [batch[0][1]]
-                step_name = getattr(steps[0], "name", f"step{step_indices[0]}")
-                foreach_count = self._foreach_count_from_pipeline(steps[0], pipeline)
-                if foreach_count and foreach_count > 1:
-                    foreach_array_max_parallel = self._foreach_array_max_concurrency(steps[0])
-                    chunk_size = min(self.array_task_limit, int(foreach_count))
-                    start = 0
-                    while start < int(foreach_count):
-                        chunk_n = min(chunk_size, int(foreach_count) - start)
-                        label = f"{step_name}_foreach_chunk{start}"
-                        step_workdir = (remote_workdir_root / step_name).as_posix()
-                        step_logdir = (base_logdir / step_name).as_posix()
-                        batch_resources = self._resolve_batch_resources(steps)
-                        script_text = self._render_batch_script(
-                            run_id,
-                            checkout_root,
-                            pipeline_remote,
-                            steps,
-                            step_indices,
-                            context_file,
-                            remote_workdir,
-                            plugins_remote,
-                            step_logdir,
-                            venv_path,
-                            req_path,
-                            python_bin,
-                            project_id=context.get("project_id"),
-                            resume_run_id=resume_run_id,
-                            run_started_at=run_started_at,
-                            global_config_path=global_config_remote,
-                            projects_config_path=projects_config_remote,
-                            environments_config_path=environments_config_remote,
-                            commandline_vars=commandline_ns,
-                            child_jobs_file=child_jobs_file,
-                            sbatch_time=batch_resources.get("time"),
-                            sbatch_cpus_per_task=batch_resources.get("cpus_per_task"),
-                            sbatch_mem=batch_resources.get("mem"),
-                            array_index=True,
-                            array_count=chunk_n,
-                            array_max_parallel=foreach_array_max_parallel,
-                            foreach_from_array=True,
-                            foreach_item_offset=start,
-                        )
-                        jobid = self._submit_script(
-                            script_text,
-                            run_id,
-                            label=label,
-                            prev_dependency=prev_jobid,
-                            array_bounds=(0, chunk_n - 1),
-                            remote_dest_dir=step_workdir,
-                        )
-                        prev_jobid = jobid
-                        submission_records.append(jobid)
-                        submitted_step_jobs += 1
-                        start += chunk_size
-                    continue
-                label = step_name
-                step_workdir = (remote_workdir_root / step_name).as_posix()
-                step_logdir = (base_logdir / step_name).as_posix()
-                batch_resources = self._resolve_batch_resources(steps)
-                script_text = self._render_batch_script(
-                    run_id,
-                    checkout_root,
-                    pipeline_remote,
-                    steps,
-                    step_indices,
-                    context_file,
-                    remote_workdir,
-                    plugins_remote,
-                    step_logdir,
-                    venv_path,
-                    req_path,
-                    python_bin,
-                    project_id=context.get("project_id"),
-                    resume_run_id=resume_run_id,
-                    run_started_at=run_started_at,
-                    global_config_path=global_config_remote,
-                    projects_config_path=projects_config_remote,
-                    environments_config_path=environments_config_remote,
-                    commandline_vars=commandline_ns,
-                    child_jobs_file=child_jobs_file,
-                    sbatch_time=batch_resources.get("time"),
-                    sbatch_cpus_per_task=batch_resources.get("cpus_per_task"),
-                    sbatch_mem=batch_resources.get("mem"),
-                    array_index=False,
-                )
-                jobid = self._submit_script(script_text, run_id, label=label, prev_dependency=prev_jobid, remote_dest_dir=step_workdir)
-                prev_jobid = jobid
-                submission_records.append(jobid)
+        job_id_map: Dict[str, str] = {}
+        for job_spec in planned_jobs:
+            prev_dependencies = [job_id_map[dep] for dep in job_spec.dependencies if dep in job_id_map]
+            prev_dependency = prev_dependencies[-1] if prev_dependencies else None
+            jobid = self._submit_script(
+                job_spec.script_text or "",
+                run_id,
+                label=str(job_spec.backend_options.get("label") or job_spec.name or job_spec.job_id),
+                prev_dependency=prev_dependency,
+                array_bounds=job_spec.backend_options.get("array_bounds"),
+                remote_dest_dir=job_spec.backend_options.get("remote_dest_dir"),
+            )
+            job_id_map[job_spec.job_id] = jobid
+            submission_records.append(jobid)
+            if job_spec.kind == "step":
                 submitted_step_jobs += 1
-            else:
-                # array: chunk if exceeds array_task_limit
-                chunk_size = min(self.array_task_limit, len(batch))
-                start = 0
-                while start < len(batch):
-                    chunk = batch[start:start+chunk_size]  # list of (idx, step)
-                    chunk_steps = [s for _, s in chunk]
-                    chunk_indices = [idx for idx, _ in chunk]
-                    first_name = getattr(chunk_steps[0], "name", f"step{chunk_indices[0]}")
-                    label = f"{first_name}_array{batch_idx}_chunk{start}"
-                    step_workdir = (remote_workdir_root / label).as_posix()
-                    step_logdir = (base_logdir / label).as_posix()
-                    batch_resources = self._resolve_batch_resources(chunk_steps)
-                    script_text = self._render_batch_script(
-                        run_id,
-                        checkout_root,
-                        pipeline_remote,
-                        chunk_steps,
-                        chunk_indices,
-                        context_file,
-                        remote_workdir,
-                        plugins_remote,
-                        step_logdir,
-                        venv_path,
-                        req_path,
-                        python_bin,
-                        project_id=context.get("project_id"),
-                        resume_run_id=resume_run_id,
-                        run_started_at=run_started_at,
-                        global_config_path=global_config_remote,
-                        projects_config_path=projects_config_remote,
-                        environments_config_path=environments_config_remote,
-                        commandline_vars=commandline_ns,
-                        child_jobs_file=child_jobs_file,
-                        sbatch_time=batch_resources.get("time"),
-                        sbatch_cpus_per_task=batch_resources.get("cpus_per_task"),
-                        sbatch_mem=batch_resources.get("mem"),
-                        array_index=True,
-                    )
-                    jobid = self._submit_script(script_text, run_id, label=label, prev_dependency=prev_jobid, array_bounds=(0, len(chunk)-1), remote_dest_dir=step_workdir)
-                    prev_jobid = jobid
-                    submission_records.append(jobid)
-                    submitted_step_jobs += 1
-                    start += chunk_size
 
         if pipeline.steps and submitted_step_jobs == 0:
             raise SlurmSubmitError(
                 "SLURM submit produced no step jobs for a non-empty pipeline. "
                 "Check step parsing and batch expansion."
             )
-
-        if self.enable_controller_job:
-            # Optional terminal controller job for child job tracking/coordination.
-            controller_script = self._render_controller_script(
-                run_id=run_id,
-                workdir=remote_workdir,
-                logdir=setup_logdir,
-                child_jobs_file=child_jobs_file,
-                wait_children=self.controller_wait_children,
-                poll_seconds=self.controller_poll_seconds,
-            )
-            controller_jobid = self._submit_script(
-                controller_script,
-                run_id,
-                label="controller",
-                prev_dependency=prev_jobid,
-                remote_dest_dir=remote_workdir,
-            )
-            prev_jobid = controller_jobid
-            submission_records.append(controller_jobid)
 
         controller_jobs = 1 if self.enable_controller_job else 0
         status = RunStatus(
@@ -1294,7 +944,7 @@ class SlurmExecutor(Executor):
         upsert_run_status(
             run_id=run_id,
             pipeline=pipeline_path,
-            project_id=context.get("project_id"),
+            project_id=run_spec.project_id,
             status="queued",
             success=False,
             started_at=ts.isoformat() + "Z",
@@ -1499,109 +1149,64 @@ class SlurmExecutor(Executor):
             # Assume caller provided a remote-visible path.
             return asset_path
 
-        target = build_target_host(self.env.ssh_user, self.env.ssh_host)
         remote_dir = f"{remote_workdir}/source"
         remote_file = f"{remote_dir}/{local_candidate.name}"
-        mkdir_cmd = self._build_ssh_cmd(target, f"mkdir -p {remote_dir}")
-        proc = self._run_cmd_with_retries(
-            mkdir_cmd,
+        proc = self._ssh_run(
+            ["mkdir", "-p", remote_dir],
             timeout=self.ssh_timeout,
             retries=self.ssh_retries,
-            op_name="ssh mkdir source dir",
         )
         if proc.returncode != 0:
             raise SlurmSubmitError(proc.stderr or proc.stdout)
-        scp_cmd = self._build_scp_cmd(str(local_candidate), f"{target}:{remote_file}")
-        proc2 = self._run_cmd_with_retries(
-            scp_cmd,
+        proc2 = self._ssh_put_file(
+            local_candidate,
+            remote_file,
             timeout=self.scp_timeout,
             retries=self.scp_retries,
-            op_name="scp source asset",
         )
         if proc2.returncode != 0:
             raise SlurmSubmitError(proc2.stderr or proc2.stdout)
         return remote_file
 
     def _submit_script(self, script_text: str, run_id: str, label: str = "job", prev_dependency: Optional[str] = None, array_bounds: Optional[Tuple[int, int]] = None, remote_dest_dir: Optional[str] = None) -> str:
-        dependency_arg = []
-        if prev_dependency:
-            dependency_arg = [f"--dependency=afterok:{prev_dependency}"]
+        _ = array_bounds
 
         if self.dry_run:
             return "dry-run"
 
         if self.env.ssh_host:
-            # Remote mode: write local temp sbatch, copy via scp, then submit over ssh.
-            target = build_target_host(self.env.ssh_user, self.env.ssh_host)
             if self.propagate_db_secret:
-                self._ensure_remote_secrets_file(target)
+                self._ensure_remote_secrets_file(self._ssh_target())
             remote_dir = remote_dest_dir or self.env.remote_repo or "/tmp"
-            remote_file = f"{remote_dir}/etl-{run_id}-{label}.sbatch"
-            # ensure remote dir
-            mkdir_cmd = self._build_ssh_cmd(target, f"mkdir -p {remote_dir}")
-            if self.verbose:
-                print("SSH mkdir:", " ".join(mkdir_cmd))
-            proc = self._run_cmd_with_retries(
-                mkdir_cmd,
-                timeout=self.ssh_timeout,
-                retries=self.ssh_retries,
-                op_name="ssh mkdir remote dir",
+            handle = self._slurm_provisioner().submit(
+                WorkloadSpec(
+                    name=f"etl-{run_id}-{label}",
+                    script_text=script_text,
+                    backend_options={
+                        "destination_dir": remote_dir,
+                        "file_name": f"etl-{run_id}-{label}.sbatch",
+                        "dependencies": [prev_dependency] if prev_dependency else [],
+                        "submit_timeout_seconds": float(self.ssh_timeout),
+                        "transfer_timeout_seconds": float(self.scp_timeout),
+                    },
+                )
             )
-            if proc.returncode != 0:
-                raise SlurmSubmitError(proc.stderr or proc.stdout)
-            # write temp file locally with LF and scp it
-            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch", prefix="etl-", newline="\n") as tmp:
-                tmp_path = Path(tmp.name)
-            if label == "setup":
-                write_setup_sbatch(tmp_path, script_text)
-            elif label == "controller":
-                write_controller_sbatch(tmp_path, script_text)
-            else:
-                write_step_sbatch(tmp_path, script_text)
-            scp_cmd = self._build_scp_cmd(str(tmp_path), f"{target}:{remote_file}")
-            if self.verbose:
-                print("SCP script:", " ".join(scp_cmd))
-            proc_scp = self._run_cmd_with_retries(
-                scp_cmd,
-                timeout=self.scp_timeout,
-                retries=self.scp_retries,
-                op_name="scp sbatch script",
-            )
-            if proc_scp.returncode != 0:
-                raise SlurmSubmitError(proc_scp.stderr or proc_scp.stdout)
-            # submit remotely
-            remote_cmd = self._build_ssh_cmd(target, "sbatch", *dependency_arg, remote_file)
-            if self.verbose:
-                print("SSH sbatch:", " ".join(remote_cmd))
-            proc_submit = self._run_cmd_with_retries(
-                remote_cmd,
-                timeout=self.ssh_timeout,
-                retries=self.ssh_retries,
-                op_name="ssh sbatch submit",
-            )
-            if proc_submit.returncode != 0:
-                raise SlurmSubmitError(proc_submit.stderr or proc_submit.stdout)
-            if self.verbose:
-                print("sbatch stdout:", proc_submit.stdout.strip())
-                print("sbatch stderr:", proc_submit.stderr.strip())
-            out = (proc_submit.stdout or "").strip().split()
-            return out[-1] if out else "unknown"
+            return handle.backend_run_id or "unknown"
         else:
-            # Local mode: write sbatch file directly under workdir and submit locally.
-            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sbatch", prefix=f"etl-{label}-", dir=self.workdir, newline="\n") as tmp:
-                tmp_path = Path(tmp.name)
-            if label == "setup":
-                write_setup_sbatch(tmp_path, script_text)
-            elif label == "controller":
-                write_controller_sbatch(tmp_path, script_text)
-            else:
-                write_step_sbatch(tmp_path, script_text)
-            cmd = ["sbatch"] + dependency_arg + [str(tmp_path)]
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-            if proc.returncode != 0:
-                raise SlurmSubmitError(proc.stderr or proc.stdout)
-            out = (proc.stdout or "").strip().split()
-            return out[-1] if out else "unknown"
+            handle = self._slurm_provisioner().submit(
+                WorkloadSpec(
+                    name=f"etl-{run_id}-{label}",
+                    script_text=script_text,
+                    backend_options={
+                        "destination_dir": str(self.workdir),
+                        "file_name": f"etl-{label}-{run_id}.sbatch",
+                        "dependencies": [prev_dependency] if prev_dependency else [],
+                        "submit_timeout_seconds": float(self.ssh_timeout),
+                        "transfer_timeout_seconds": float(self.scp_timeout),
+                    },
+                )
+            )
+            return handle.backend_run_id or "unknown"
 
     def _ensure_remote_secrets_file(self, target: str) -> None:
         remote_lines = [
@@ -1630,15 +1235,10 @@ class SlurmExecutor(Executor):
                     "fi",
                 ]
             )
-        remote_script = "bash -lc " + shlex.quote("\n".join(remote_lines))
-        cmd = self._build_ssh_cmd(target, remote_script)
-        if self.verbose:
-            print("SSH secrets init: ~/.secrets/etl")
-        proc = self._run_cmd_with_retries(
-            cmd,
+        proc = self._ssh_run_text(
+            "\n".join(remote_lines),
             timeout=self.ssh_timeout,
             retries=self.ssh_retries,
-            op_name="ssh secrets init",
         )
         if proc.returncode != 0:
             raise SlurmSubmitError(
@@ -1689,25 +1289,23 @@ class SlurmExecutor(Executor):
     def _sync_repo(self) -> None:
         if not self.env.remote_repo:
             raise SlurmSubmitError("remote_repo must be set to sync code")
-        target = build_target_host(self.env.ssh_user, self.env.ssh_host)
+        target = self._ssh_target()
         remote_path = f"{target}:{self.env.remote_repo}"
-        # Create remote dir then copy
-        mkdir_cmd = self._build_ssh_cmd(target, f"mkdir -p {self.env.remote_repo}")
-        proc = self._run_cmd_with_retries(
-            mkdir_cmd,
+        proc = self._ssh_run(
+            ["mkdir", "-p", self.env.remote_repo],
             timeout=self.ssh_timeout,
             retries=self.ssh_retries,
-            op_name="ssh mkdir sync dir",
         )
         if proc.returncode != 0:
             raise SlurmSubmitError(proc.stderr or proc.stdout)
         # Use scp to sync repo (simple recursive copy)
-        scp_cmd = self._build_scp_cmd("-r", str(Path(".").resolve()), remote_path)
-        proc2 = self._run_cmd_with_retries(
+        transport = self._ssh_transport(timeout_seconds=self.scp_timeout, retries=self.scp_retries)
+        scp_cmd = transport._scp_cmd("-r", str(Path(".").resolve()), remote_path)  # transport tree copy is a fast follower
+        proc2 = run_logged_subprocess(
             scp_cmd,
+            action="slurm.scp_sync_repo",
             timeout=self.scp_timeout,
-            retries=self.scp_retries,
-            op_name="scp sync repo",
+            check=False,
         )
         if proc2.returncode != 0:
             raise SlurmSubmitError(proc2.stderr or proc2.stdout)

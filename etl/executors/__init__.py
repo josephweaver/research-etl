@@ -9,6 +9,7 @@
 from .base import Executor, RunState, RunStatus, SubmissionResult
 from .hpcc_direct import HpccDirectExecutor
 from .local import LocalExecutor
+from .local_batch import LocalBatchExecutor
 from .slurm import SlurmExecutor
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "RunStatus",
     "SubmissionResult",
     "LocalExecutor",
+    "LocalBatchExecutor",
     "SlurmExecutor",
     "HpccDirectExecutor",
 ]
