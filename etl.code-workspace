@@ -40,6 +40,9 @@
 		],
 		"python.testing.cwd": "${workspaceFolder}",
 		"python.envFile": "${workspaceFolder}/.env",
-		"testing.automaticallyOpenTestResults": "neverOpen"
+		"testing.automaticallyOpenTestResults": "neverOpen",
+		"git.ignoredRepositories": [
+			"**/.out/src"
+		]
 	}
 }
