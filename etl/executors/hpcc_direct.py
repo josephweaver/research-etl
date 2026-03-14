@@ -842,6 +842,7 @@ class HpccDirectExecutor(Executor):
         asset_cache_lines: list[str] = [
             f"CHECKOUT_ROOT={shlex.quote(repo_root_remote)}",
             "ASSET_CACHE_ROOT=${ETL_PIPELINE_ASSET_CACHE_ROOT:-$(dirname \"$CHECKOUT_ROOT\")}",
+            "export ASSET_CACHE_ROOT",
             "mkdir -p \"$ASSET_CACHE_ROOT\"",
         ]
         for idx, asset in enumerate(asset_cache_specs):
@@ -853,11 +854,14 @@ class HpccDirectExecutor(Executor):
                 [
                     f"ASSET_URL_{idx}={shlex.quote(repo_url)}",
                     f"ASSET_REF_{idx}={shlex.quote(ref)}",
+                    f"export ASSET_URL_{idx}",
+                    f"export ASSET_REF_{idx}",
                     f"ASSET_REPO_NAME_{idx}=\"$(basename \"$ASSET_URL_{idx}\")\"",
                     f"ASSET_REPO_NAME_{idx}=\"${{ASSET_REPO_NAME_{idx}%.git}}\"",
                     f"ASSET_REPO_NAME_{idx}=\"$(printf '%s' \"$ASSET_REPO_NAME_{idx}\" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')\"",
                     f"ASSET_REPO_HASH_{idx}=\"$(printf '%s' \"$ASSET_URL_{idx}\" | sha1sum | awk '{{print $1}}' | cut -c1-10)\"",
                     f"ASSET_DIR_{idx}=\"$ASSET_CACHE_ROOT/${{ASSET_REPO_NAME_{idx}}}-${{ASSET_REPO_HASH_{idx}}}\"",
+                    f"export ASSET_DIR_{idx}",
                     f"if [ ! -d \"$ASSET_DIR_{idx}/.git\" ]; then git clone --no-checkout \"$ASSET_URL_{idx}\" \"$ASSET_DIR_{idx}\"; fi",
                     f"git -C \"$ASSET_DIR_{idx}\" remote set-url origin \"$ASSET_URL_{idx}\" || true",
                     f"git -C \"$ASSET_DIR_{idx}\" fetch --tags --prune origin",

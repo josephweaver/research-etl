@@ -109,7 +109,7 @@ environments:
     modules: ["Python/3.11.3-GCCcore-12.3.0", "rclone/1.63.1-amd64", "PostgreSQL/16.1-GCCcore-12.3.0"]
     ssh_timeout: 1800
     ssh_connect_timeout: 1800
-    ssh_host: dev-amd24.passwordless
+    ssh_host: dev-amd20.passwordless
     ssh_user: weave151
     # programmatic: immutable remote ETL and pipeline-asset checkouts live under src/.
     remote_repo: "{basedir}/src"
