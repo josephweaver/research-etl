@@ -12,45 +12,8 @@ from typing import Any, Optional
 import uuid
 
 from fastapi import HTTPException, Request
+from etl.runtime_context import resolve_execution_policy, resolve_pipeline_assets_cache_root
 from etl.source_control import merge_source_commandline_vars
-
-
-def _parse_bool_local(value: Any, *, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "on"}:
-        return True
-    if text in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _resolve_execution_policy(
-    *,
-    global_vars: dict[str, Any],
-    execution_env: dict[str, Any],
-    execution_mode: str | None,
-    execution_source: str | None,
-    allow_workspace_source: bool,
-) -> tuple[str, bool]:
-    mode = str(
-        execution_mode
-        or execution_env.get("execution_mode")
-        or global_vars.get("execution_mode")
-        or ""
-    ).strip().lower()
-    if mode == "workspace":
-        resolved_source = str(execution_source or execution_env.get("execution_source") or "workspace").strip().lower() or "workspace"
-        return resolved_source, True
-    if mode == "immutable":
-        resolved_source = str(execution_source or execution_env.get("execution_source") or "git_remote").strip().lower() or "git_remote"
-        return resolved_source, False
-    resolved_source = str(execution_source or execution_env.get("execution_source") or "auto").strip().lower() or "auto"
-    resolved_allow_workspace = allow_workspace_source or _parse_bool_local(execution_env.get("allow_workspace_source"), default=False)
-    return resolved_source, resolved_allow_workspace
 
 
 def parse_action_payload(payload: Optional[dict[str, Any]], deps: dict[str, Any]) -> dict[str, Any]:
@@ -222,15 +185,7 @@ def resolve_action_pipeline_context(
                 pipeline_path,
                 project_vars=tentative_project_vars,
                 repo_root=Path(".").resolve(),
-                cache_root=Path(
-                    str(
-                        execution_env.get("pipeline_assets_cache_root")
-                        or execution_env.get("source_root")
-                        or ""
-                    ).strip()
-                ).expanduser()
-                if str(execution_env.get("pipeline_assets_cache_root") or execution_env.get("source_root") or "").strip()
-                else None,
+                cache_root=resolve_pipeline_assets_cache_root(global_vars=global_vars, exec_env=execution_env),
             )
         except deps["PipelineAssetError"] as exc:
             raise HTTPException(status_code=400, detail=f"Pipeline asset resolution error: {exc}") from exc
@@ -341,9 +296,9 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]], deps: di
     )
     execution_env["step_max_retries"] = max_retries
     execution_env["step_retry_delay_seconds"] = retry_delay_seconds
-    execution_source, allow_workspace_source = _resolve_execution_policy(
+    execution_source, allow_workspace_source = resolve_execution_policy(
         global_vars=global_vars,
-        execution_env=execution_env,
+        exec_env=execution_env,
         execution_mode=args.get("execution_mode"),
         execution_source=args["execution_source"],
         allow_workspace_source=deps["parse_bool"](args["allow_workspace_source"], default=False),

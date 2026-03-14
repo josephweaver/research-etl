@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shlex
+from ...common.parsing import parse_bool
 from .template_engine import render_template_file
 from ...source_control import CheckoutSpec, checkout
 
@@ -28,22 +29,6 @@ def _with_chunk_logs(lines: list[str], name: str, verbose: bool) -> list[str]:
     if verbose:
         out.append(f"log_step 'chunk:{name}:end'")
     return out
-
-
-def _parse_bool(value: object, default: bool = False) -> bool:
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if not text:
-        return bool(default)
-    if text in {"1", "true", "yes", "on", "y"}:
-        return True
-    if text in {"0", "false", "no", "off", "n"}:
-        return False
-    return bool(default)
-
 
 def render_setup_script(
     *,
@@ -136,7 +121,7 @@ def render_setup_script(
     if executor.verbose:
         chunk_source_checkout.append("log_step 'preparing execution source'")
     mode = str(execution_source or "auto").strip().lower() or "auto"
-    allow_non_git_source = _parse_bool(getattr(executor, "env_config", {}).get("allow_non_git_source"), default=False)
+    allow_non_git_source = parse_bool(getattr(executor, "env_config", {}).get("allow_non_git_source"), default=False)
     repo_url_q = shlex.quote(str(git_origin_url or "").strip())
     repo_sha_q = shlex.quote(str(git_commit_sha or "").strip())
     source_bundle_q = shlex.quote(str(source_bundle_path or "").strip())

@@ -49,117 +49,19 @@ from etl.projects import (
 from etl.runner import run_pipeline, RunResult
 from etl.tracking import upsert_run_status, upsert_step_attempt, load_run_step_states, upsert_run_context_snapshot
 from etl.entrypoint import guarded_entrypoint
-
-DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
+from etl.runtime_context import (
+    apply_db_mode_from_exec_env,
+    build_resolved_runtime_settings,
+    collect_secret_vars,
+    merge_context_with_secrets,
+    parse_cli_var_overrides,
+    resolve_pipeline_assets_cache_root,
+)
 
 
 def _vprint(enabled: bool, message: str) -> None:
     if enabled:
         print(f"[run_batch] {message}")
-
-
-def _assign_dotted_path(target: dict, dotted_key: str, value: str) -> None:
-    parts = [p.strip() for p in str(dotted_key or "").split(".")]
-    if not parts or any(not p for p in parts):
-        raise ValueError(f"Invalid --var key: '{dotted_key}'")
-    cur = target
-    for part in parts[:-1]:
-        nxt = cur.get(part)
-        if not isinstance(nxt, dict):
-            nxt = {}
-            cur[part] = nxt
-        cur = nxt
-    cur[parts[-1]] = value
-
-
-def _parse_cli_var_overrides(entries: list[str] | None) -> dict:
-    out: dict = {}
-    for raw in list(entries or []):
-        text = str(raw or "").strip()
-        if not text:
-            continue
-        if "=" not in text:
-            raise ValueError(f"Invalid --var '{text}': expected KEY=VALUE")
-        key, value = text.split("=", 1)
-        key_text = key.strip()
-        if not key_text:
-            raise ValueError(f"Invalid --var '{text}': key may not be empty")
-        _assign_dotted_path(out, key_text, value)
-    return out
-
-
-def _parse_secret_env_keys(exec_env: dict) -> list[str]:
-    raw = exec_env.get("secret_env_keys")
-    if isinstance(raw, (list, tuple, set)):
-        items = [str(x).strip() for x in raw]
-    elif raw is None:
-        env_raw = str(os.environ.get("ETL_SECRET_ENV_KEYS") or "").strip()
-        if env_raw:
-            items = [x.strip() for x in env_raw.replace(";", ",").split(",")]
-        else:
-            items = list(DEFAULT_SECRET_ENV_KEYS)
-    else:
-        items = [x.strip() for x in str(raw).replace(";", ",").split(",")]
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in items:
-        if not item:
-            continue
-        if item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-    return out
-
-
-def _collect_secret_vars(exec_env: dict) -> dict:
-    out: dict = {}
-    for key in _parse_secret_env_keys(exec_env):
-        val = os.environ.get(key)
-        if val is None:
-            continue
-        text = str(val).strip()
-        if not text:
-            continue
-        out[key] = text
-    return out
-
-
-def _merge_context_with_secrets(context_vars: dict, secret_vars: dict) -> dict:
-    merged = dict(context_vars or {})
-    if not secret_vars:
-        return merged
-    secret_ns = dict(secret_vars)
-    existing = merged.get("secret")
-    if isinstance(existing, dict):
-        secret_ns.update({str(k): v for k, v in existing.items()})
-    merged["secret"] = secret_ns
-    return merged
-
-
-def _apply_db_mode_from_exec_env(exec_env: dict) -> None:
-    mode = str(exec_env.get("db_mode") or "").strip()
-    if mode:
-        os.environ["ETL_DB_MODE"] = mode
-    verbose = exec_env.get("db_verbose")
-    if verbose is not None:
-        if bool(verbose):
-            os.environ["ETL_DB_VERBOSE"] = "1"
-        else:
-            os.environ["ETL_DB_VERBOSE"] = "0"
-
-
-def _pipeline_assets_cache_root(*, global_vars: dict, exec_env: dict) -> Path | None:
-    raw = (
-        exec_env.get("pipeline_assets_cache_root")
-        or exec_env.get("source_root")
-        or global_vars.get("pipeline_assets_cache_root")
-        or global_vars.get("source_root")
-    )
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    return Path(text).expanduser()
 
 
 def load_context(path: Path) -> dict:
@@ -264,7 +166,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
     if unknown_args:
         print(f"[run_batch][WARN] ignoring unknown arguments: {' '.join(str(x) for x in unknown_args)}")
     try:
-        commandline_vars = _parse_cli_var_overrides(args.var)
+        commandline_vars = parse_cli_var_overrides(args.var)
     except ValueError as exc:
         print(str(exc))
         return 1
@@ -272,7 +174,8 @@ def _main_impl(argv: list[str] | None = None) -> int:
     if not run_id:
         print("run_batch.py requires --run-id for remote tracking consistency")
         return 1
-    run_log_file = (Path(args.workdir) / "_live" / f"{run_id}.log").resolve()
+    workdir_path = Path(args.workdir).resolve()
+    run_log_file = (workdir_path / "_live" / f"{run_id}.log").resolve()
     os.environ["ETL_LOG_FILE"] = run_log_file.as_posix()
     logger = configure_app_logger(log_file=run_log_file)
     logger.info("run_batch start run_id=%s pipeline=%s steps=%s", run_id, args.pipeline, args.steps)
@@ -344,8 +247,8 @@ def _main_impl(argv: list[str] | None = None) -> int:
         return 1
     if resolved_exec_cfg:
         args.environments_config = str(resolved_exec_cfg)
-    _apply_db_mode_from_exec_env(exec_env)
-    parse_context_vars = _merge_context_with_secrets(commandline_vars, _collect_secret_vars(exec_env))
+    apply_db_mode_from_exec_env(exec_env)
+    parse_context_vars = merge_context_with_secrets(commandline_vars, collect_secret_vars(exec_env))
 
     pipeline_path_input = Path(args.pipeline).expanduser()
     project_id = resolve_project_id(
@@ -364,7 +267,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             pipeline_path_input,
             project_vars=project_vars,
             repo_root=Path(".").resolve(),
-            cache_root=_pipeline_assets_cache_root(global_vars=global_vars, exec_env=exec_env),
+            cache_root=resolve_pipeline_assets_cache_root(global_vars=global_vars, exec_env=exec_env),
         )
     except PipelineAssetError as exc:
         logger.error("Pipeline asset resolution failed: %s", exc)
@@ -452,7 +355,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             args.verbose,
             f"resume enabled from run_id={args.resume_run_id}; prior successful steps={len(resume_succeeded_steps)}",
         )
-    queue_dir = Path(exec_env.get("db_sync_queue_dir") or (Path(args.workdir) / "db_sync_queue" / "pending"))
+    queue_dir = Path(exec_env.get("db_sync_queue_dir") or (workdir_path / "db_sync_queue" / "pending"))
     tracking_executor = str(args.tracking_executor or args.executor_type or "slurm").strip() or "slurm"
     scheduler_meta = {
         "slurm_job_id": str(os.environ.get("SLURM_JOB_ID", "") or ""),
@@ -475,7 +378,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
         ended_at=batch_started_at,
         message=f"running steps {indices}",
         executor=tracking_executor,
-        artifact_dir=str(args.workdir),
+        artifact_dir=str(workdir_path),
         provenance=provenance,
         event_type="batch_started",
         event_details={"step_indices": indices, "scheduler": scheduler_meta},
@@ -487,44 +390,60 @@ def _main_impl(argv: list[str] | None = None) -> int:
         args.verbose,
         f"executing batch in workdir={args.workdir} with max_retries={args.max_retries}, retry_delay_seconds={args.retry_delay_seconds}",
     )
-    result: RunResult = run_pipeline(
-        pipeline,
-        plugin_dir=Path(args.plugins_dir),
-        workdir=Path(args.workdir),
-        run_id=run_id,
-        run_started=run_started,
-        dry_run=False,
-        max_retries=args.max_retries,
-        retry_delay_seconds=args.retry_delay_seconds,
-        resume_succeeded_steps=resume_succeeded_steps,
-        prior_step_outputs=prior_step_outputs,
-        log_func=None,
-        foreach_selection=(
-            {
-                step.name: int(args.foreach_item_index)
-                for step in pipeline.steps
-                if (step.foreach or step.sequential_foreach or step.foreach_glob) and args.foreach_item_index is not None
-            }
-            if args.foreach_item_index is not None
-            else None
-        ),
-        context_snapshot_func=lambda **snap: upsert_run_context_snapshot(
-            run_id=run_id,
-            pipeline=str(resolved_pipeline_path),
-            project_id=project_id,
-            executor=tracking_executor,
-            event_type=str(snap.get("event_type") or "snapshot"),
-            context=dict(snap.get("context") or {}),
-            step_name=str(snap.get("step_name") or "").strip() or None,
-            step_index=snap.get("step_index"),
-            snapshot_file=(Path(args.workdir) / "_context_snapshots" / f"{run_id}.jsonl"),
-        ),
+    runtime_settings = build_resolved_runtime_settings(
+        global_vars=global_vars,
+        exec_env=exec_env,
+        project_vars=project_vars,
+        commandline_vars=commandline_vars,
+        pipeline=pipeline,
+        workdir_default=workdir_path,
+        execution_cwd_default=Path.home(),
     )
+    execution_cwd = runtime_settings.paths.execution_cwd
+    execution_cwd.mkdir(parents=True, exist_ok=True)
+    prev_cwd = Path.cwd()
+    os.chdir(execution_cwd)
+    try:
+        result: RunResult = run_pipeline(
+            pipeline,
+            plugin_dir=Path(args.plugins_dir),
+            workdir=workdir_path,
+            run_id=run_id,
+            run_started=run_started,
+            dry_run=False,
+            max_retries=args.max_retries,
+            retry_delay_seconds=args.retry_delay_seconds,
+            resume_succeeded_steps=resume_succeeded_steps,
+            prior_step_outputs=prior_step_outputs,
+            log_func=None,
+            foreach_selection=(
+                {
+                    step.name: int(args.foreach_item_index)
+                    for step in pipeline.steps
+                    if (step.foreach or step.sequential_foreach or step.foreach_glob) and args.foreach_item_index is not None
+                }
+                if args.foreach_item_index is not None
+                else None
+            ),
+            context_snapshot_func=lambda **snap: upsert_run_context_snapshot(
+                run_id=run_id,
+                pipeline=str(resolved_pipeline_path),
+                project_id=project_id,
+                executor=tracking_executor,
+                event_type=str(snap.get("event_type") or "snapshot"),
+                context=dict(snap.get("context") or {}),
+                step_name=str(snap.get("step_name") or "").strip() or None,
+                step_index=snap.get("step_index"),
+                snapshot_file=(workdir_path / "_context_snapshots" / f"{run_id}.jsonl"),
+            ),
+        )
+    finally:
+        os.chdir(prev_cwd)
     _vprint(args.verbose, f"batch execution finished: success={result.success}")
     logger.info("Batch execution finished success=%s", bool(result.success))
     batch_ended_at = datetime.utcnow().isoformat() + "Z"
     for step_res in result.steps:
-        step_artifact_dir = str(Path(args.workdir) / step_res.step.name / str(step_res.step_id or ""))
+        step_artifact_dir = str(workdir_path / step_res.step.name / str(step_res.step_id or ""))
         attempts = step_res.attempts or []
         if attempts:
             for att in attempts:
@@ -613,7 +532,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             ended_at=batch_ended_at,
             message=f"batch failed for steps {indices}",
             executor=tracking_executor,
-            artifact_dir=str(args.workdir),
+            artifact_dir=str(workdir_path),
             provenance=provenance,
             event_type="batch_failed",
             event_details={"step_indices": indices, "step_attempts": step_attempts, "scheduler": scheduler_meta},
@@ -638,7 +557,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
         ended_at=batch_ended_at,
         message=f"batch completed for steps {indices}",
         executor=tracking_executor,
-        artifact_dir=str(args.workdir),
+        artifact_dir=str(workdir_path),
         provenance=provenance,
         event_type="batch_skipped" if all_skipped else "batch_completed",
         event_details={"step_indices": indices, "step_attempts": step_attempts, "scheduler": scheduler_meta},
@@ -661,7 +580,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             ended_at=batch_ended_at,
             message="all batches completed",
             executor=tracking_executor,
-            artifact_dir=str(args.workdir),
+            artifact_dir=str(workdir_path),
             provenance=provenance,
             event_type="run_completed",
             event_details={"step_indices": indices, "step_attempts": step_attempts, "scheduler": scheduler_meta},

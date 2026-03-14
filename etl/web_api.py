@@ -26,6 +26,7 @@ from typing import Any, Optional
 import psycopg
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 
+from .common.parsing import parse_optional_float, parse_optional_int
 from .config import ConfigError, load_global_config, resolve_global_config_path
 from .ai_pipeline import AIPipelineError, generate_pipeline_draft
 from .db import get_database_url
@@ -953,21 +954,17 @@ app.include_router(
 
 
 def _parse_optional_int(value: Any, *, field_name: str) -> Optional[int]:
-    if value is None or str(value).strip() == "":
-        return None
     try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid {field_name}: must be an integer.") from exc
+        return parse_optional_int(value, field_name=field_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _parse_optional_float(value: Any, *, field_name: str) -> Optional[float]:
-    if value is None or str(value).strip() == "":
-        return None
     try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid {field_name}: must be a number.") from exc
+        return parse_optional_float(value, field_name=field_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _git_out(repo_root: Path, *args: str) -> str:

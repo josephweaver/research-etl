@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional, List, Tuple
 from urllib.parse import urlparse
 
 from ..base import Executor, RunState, RunStatus, SubmissionResult
+from ...common.parsing import parse_bool
 from ...git_checkout import GitExecutionSpec
 from ...pipeline import Pipeline
 from ...pipeline import parse_pipeline
@@ -171,22 +172,6 @@ def _format_mb_as_slurm_mem(mb: int) -> str:
     if value % 1024 == 0:
         return f"{value // 1024}G"
     return f"{value}M"
-
-
-def _parse_bool(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if not text:
-        return bool(default)
-    if text in {"1", "true", "yes", "on", "y"}:
-        return True
-    if text in {"0", "false", "no", "off", "n"}:
-        return False
-    return bool(default)
-
 
 def _parse_step_indices(value: Any, step_count: int) -> list[int]:
     if value is None or value == "":
@@ -421,16 +406,16 @@ class SlurmExecutor(Executor):
         )
         self.source_bundle = source_bundle or env_config.get("source_bundle")
         self.source_snapshot = source_snapshot or env_config.get("source_snapshot")
-        self.propagate_db_secret = _parse_bool(env_config.get("propagate_db_secret"), default=True)
-        self.load_secrets_file = _parse_bool(env_config.get("load_secrets_file"), default=True)
+        self.propagate_db_secret = parse_bool(env_config.get("propagate_db_secret"), default=True)
+        self.load_secrets_file = parse_bool(env_config.get("load_secrets_file"), default=True)
         if allow_workspace_source is None:
-            self.allow_workspace_source = _parse_bool(env_config.get("allow_workspace_source"), default=False)
+            self.allow_workspace_source = parse_bool(env_config.get("allow_workspace_source"), default=False)
         else:
-            self.allow_workspace_source = _parse_bool(allow_workspace_source, default=False)
+            self.allow_workspace_source = parse_bool(allow_workspace_source, default=False)
         config_database_url = str(env_config.get("database_url") or "").strip()
         self.database_url = config_database_url or self._load_database_url()
         self.db_tunnel_command = str(env_config.get("db_tunnel_command") or "").strip()
-        self.db_tunnel_via_tmux = _parse_bool(env_config.get("db_tunnel_via_tmux"), default=False)
+        self.db_tunnel_via_tmux = parse_bool(env_config.get("db_tunnel_via_tmux"), default=False)
         self.db_tunnel_session_prefix = (
             str(env_config.get("db_tunnel_session_prefix") or "").strip() or "etl-db-tunnel"
         )
@@ -439,7 +424,7 @@ class SlurmExecutor(Executor):
             self.db_tunnel_port = int(env_config.get("db_tunnel_port", 6543) or 6543)
         except (TypeError, ValueError):
             self.db_tunnel_port = 6543
-        self.db_tunnel_rewrite_database_url = _parse_bool(
+        self.db_tunnel_rewrite_database_url = parse_bool(
             env_config.get("db_tunnel_rewrite_database_url"),
             default=bool(self.db_tunnel_command),
         )

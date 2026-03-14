@@ -78,7 +78,8 @@ environments:
     ssh_strict_host_key_checking: accept-new
     ssh_host: dev-amd24.passwordless
     ssh_user: weave151
-    remote_repo: "{basedir}/etl"
+    # programmatic: immutable remote ETL and pipeline-asset checkouts live under src/.
+    remote_repo: "{basedir}/src"
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
     propagate_db_secret: false
     load_secrets_file: true
@@ -91,10 +92,10 @@ environments:
     db_tunnel_port: 6543
 
     # ---- Template-only variables (kept at the end on purpose) ----
-    basedir: /mnt/scratch/weave151
+    basedir: /mnt/gs21/scratch/weave151/etl
     workdir: "{basedir}/work"
     datadir: "{basedir}/data"
-    logdir: "{workdir}/logs"
+    logdir: "{basedir}/logs"
 
   hpcc_msu_direct:
     # programmatic: remote direct-execution executor type.
@@ -110,10 +111,12 @@ environments:
     ssh_connect_timeout: 1800
     ssh_host: dev-amd24.passwordless
     ssh_user: weave151
-    remote_repo: "{basedir}/etl"
+    # programmatic: immutable remote ETL and pipeline-asset checkouts live under src/.
+    remote_repo: "{basedir}/src"
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
 
     # ---- Template-only variables (kept at the end on purpose) ----
-    basedir: /mnt/scratch/weave151
+    basedir: /mnt/gs21/scratch/weave151/etl
     workdir: "{basedir}/work"
-    logdir: "{workdir}/logs"
+    logdir: "{basedir}/logs"
+    datadir: "{basedir}/data"

@@ -14,14 +14,18 @@ logging lifecycle:
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .app_logging import configure_app_logger
+from .common.parsing import parse_bool
 from .config import ConfigError, load_global_config, resolve_global_config_path
+from .expr import try_eval_expr_text
 from .execution_config import (
     ExecutionConfigError,
     apply_execution_env_overrides,
@@ -41,9 +45,226 @@ from .projects import (
 from .variable_solver import VariableSolver
 
 DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
+_RUNTIME_TPL_RE = re.compile(r"\{([^{}]+)\}")
 
 
-def _pipeline_assets_cache_root(*, global_vars: Dict[str, Any], exec_env: Dict[str, Any]) -> Optional[Path]:
+def _commandline_env_value(commandline_vars: Dict[str, Any], key: str) -> str:
+    env_ns = commandline_vars.get("env")
+    if not isinstance(env_ns, dict):
+        return ""
+    return str(env_ns.get(key) or "").strip()
+
+
+@dataclass(frozen=True)
+class ResolvedExecutionPolicy:
+    """Typed execution policy derived from global/env/CLI settings."""
+
+    execution_mode: str
+    execution_source: str
+    allow_workspace_source: bool
+
+
+@dataclass(frozen=True)
+class ResolvedRuntimePaths:
+    """Resolved runtime paths shared by executors and batch entrypoints."""
+
+    path_style: str
+    workdir: Path
+    source_root: Path
+    pipeline_assets_cache_root: Path
+    execution_cwd: Path
+
+
+@dataclass(frozen=True)
+class ResolvedRuntimeSettings:
+    """Immutable programmatic runtime settings resolved via VariableSolver."""
+
+    policy: ResolvedExecutionPolicy
+    paths: ResolvedRuntimePaths
+    git_remote_url: Optional[str]
+    source_bundle: Optional[str]
+    source_snapshot: Optional[str]
+
+
+@dataclass
+class RuntimeNamespace:
+    """Mutable run-time variable namespace for dynamic step outputs and snapshots."""
+
+    max_passes: int
+    base_context: Dict[str, Any]
+    dynamic_vars: Dict[str, Any]
+
+    @classmethod
+    def from_context(
+        cls,
+        context: Optional[Dict[str, Any]] = None,
+        *,
+        max_passes: int = 20,
+    ) -> "RuntimeNamespace":
+        return cls(
+            max_passes=max(1, int(max_passes or 20)),
+            base_context=copy.deepcopy(context or {}),
+            dynamic_vars={},
+        )
+
+    def snapshot(self) -> Dict[str, Any]:
+        merged = copy.deepcopy(self.base_context)
+        state_ns = copy.deepcopy(self.dynamic_vars)
+        merged["state"] = state_ns
+        for key, value in state_ns.items():
+            merged[str(key)] = copy.deepcopy(value)
+        return merged
+
+    def resolved_context(self) -> Dict[str, Any]:
+        return self.snapshot()
+
+    def resolve(self, value: Any) -> Any:
+        return VariableSolver.resolve_iterative(value, self.snapshot(), max_passes=self.max_passes)
+
+    def set_base(self, key: str, value: Any) -> None:
+        self.base_context[str(key)] = copy.deepcopy(value)
+
+    def update_base(self, values: Optional[Dict[str, Any]]) -> None:
+        for key, value in dict(values or {}).items():
+            self.set_base(str(key), value)
+
+    def set_var(self, key: str, value: Any) -> None:
+        self.dynamic_vars[str(key)] = copy.deepcopy(value)
+
+    def update_vars(self, values: Optional[Dict[str, Any]]) -> None:
+        for key, value in dict(values or {}).items():
+            self.set_var(str(key), value)
+
+    def set_output(self, output_var: Optional[str], outputs: Any) -> None:
+        name = str(output_var or "").strip()
+        if not name:
+            return
+        self.set_var(name, outputs)
+
+
+def lookup_runtime_value(ctx: Dict[str, Any], dotted: str) -> tuple[Any, bool]:
+    return VariableSolver._lookup_path(ctx, dotted)
+
+
+def resolve_runtime_template_text(value: str, ctx: Dict[str, Any]) -> Any:
+    text = str(value or "")
+    exact = _RUNTIME_TPL_RE.fullmatch(text)
+    if exact:
+        token = str(exact.group(1) or "")
+        found, ok = lookup_runtime_value(ctx, token)
+        if ok:
+            return found
+        expr_value, expr_ok = try_eval_expr_text(token, ctx)
+        if expr_ok:
+            return expr_value
+        return text
+
+    def _repl(match: re.Match[str]) -> str:
+        token = str(match.group(1) or "")
+        found, ok = lookup_runtime_value(ctx, token)
+        if not ok or isinstance(found, (dict, list)):
+            expr_value, expr_ok = try_eval_expr_text(token, ctx)
+            if not expr_ok or isinstance(expr_value, (dict, list)):
+                return match.group(0)
+            return str(expr_value)
+        return str(found)
+
+    return _RUNTIME_TPL_RE.sub(_repl, text)
+
+
+def resolve_runtime_value(value: Any, ctx: Dict[str, Any], *, max_passes: int = 20) -> Any:
+    def _walk(current: Any) -> Any:
+        if isinstance(current, str):
+            return resolve_runtime_template_text(current, ctx)
+        if isinstance(current, list):
+            return [_walk(item) for item in current]
+        if isinstance(current, dict):
+            return {key: _walk(item) for key, item in current.items()}
+        return current
+
+    cur = value
+    for _ in range(max(1, int(max_passes or 20))):
+        nxt = _walk(cur)
+        if nxt == cur:
+            return cur
+        cur = nxt
+    return cur
+
+
+def resolve_runtime_expr_only(value: Any, ctx: Dict[str, Any], *, max_passes: int = 20) -> Any:
+    def _walk(current: Any) -> Any:
+        if isinstance(current, str):
+            text = str(current or "")
+            exact = _RUNTIME_TPL_RE.fullmatch(text)
+            if exact:
+                token = str(exact.group(1) or "")
+                expr_value, expr_ok = try_eval_expr_text(token, ctx)
+                return expr_value if expr_ok else text
+
+            def _repl(match: re.Match[str]) -> str:
+                token = str(match.group(1) or "")
+                expr_value, expr_ok = try_eval_expr_text(token, ctx)
+                if not expr_ok or isinstance(expr_value, (dict, list)):
+                    return match.group(0)
+                return str(expr_value)
+
+            return _RUNTIME_TPL_RE.sub(_repl, text)
+        if isinstance(current, list):
+            return [_walk(item) for item in current]
+        if isinstance(current, dict):
+            return {key: _walk(item) for key, item in current.items()}
+        return current
+
+    cur = value
+    for _ in range(max(1, int(max_passes or 20))):
+        nxt = _walk(cur)
+        if nxt == cur:
+            return cur
+        cur = nxt
+    return cur
+
+
+def eval_runtime_when(expr: Optional[str], ctx: Dict[str, Any]) -> bool:
+    if expr is None:
+        return True
+    try:
+        return bool(eval(expr, {"__builtins__": {}}, ctx))
+    except Exception:
+        return False
+
+
+def resolve_runtime_text(
+    *,
+    key: str,
+    default: str,
+    global_vars: Dict[str, Any],
+    exec_env: Dict[str, Any],
+    project_vars: Dict[str, Any],
+    commandline_vars: Dict[str, Any],
+    pipeline: Optional[Any] = None,
+    max_passes: int = 20,
+) -> str:
+    fallback = str(default or "")
+    raw = str(
+        commandline_vars.get(key)
+        or _commandline_env_value(commandline_vars, key)
+        or exec_env.get(key)
+        or global_vars.get(key)
+        or fallback
+    ).strip() or fallback
+    solver = build_runtime_solver(
+        global_vars=global_vars,
+        exec_env=exec_env,
+        project_vars=project_vars,
+        commandline_vars=commandline_vars,
+        pipeline=pipeline,
+        max_passes=max_passes,
+    )
+    resolved = str(solver.resolve(raw, context=solver.resolved_context()) or "").strip()
+    return resolved or fallback
+
+
+def resolve_pipeline_assets_cache_root(*, global_vars: Dict[str, Any], exec_env: Dict[str, Any]) -> Optional[Path]:
     raw = (
         exec_env.get("pipeline_assets_cache_root")
         or exec_env.get("source_root")
@@ -53,7 +274,236 @@ def _pipeline_assets_cache_root(*, global_vars: Dict[str, Any], exec_env: Dict[s
     text = str(raw or "").strip()
     if not text:
         return None
-    return Path(text).expanduser()
+    return Path(text).expanduser().resolve()
+
+
+def build_runtime_solver(
+    *,
+    global_vars: Dict[str, Any],
+    exec_env: Dict[str, Any],
+    project_vars: Dict[str, Any],
+    commandline_vars: Dict[str, Any],
+    pipeline: Optional[Any] = None,
+    max_passes: int = 20,
+) -> VariableSolver:
+    solver = VariableSolver(max_passes=max(1, int(max_passes or 20)))
+    solver.overlay("global", dict(global_vars), add_namespace=True, add_flat=True)
+    solver.overlay("globals", dict(global_vars), add_namespace=True, add_flat=False)
+    merged_env = dict(exec_env)
+    env_ns = commandline_vars.get("env")
+    if isinstance(env_ns, dict):
+        merged_env.update(env_ns)
+    solver.overlay("env", merged_env, add_namespace=True, add_flat=True)
+    solver.overlay("project", dict(project_vars), add_namespace=True, add_flat=True)
+    if pipeline is not None:
+        solver.overlay("pipe", dict(getattr(pipeline, "vars", {}) or {}), add_namespace=True, add_flat=True)
+        solver.overlay("vars", dict(getattr(pipeline, "vars", {}) or {}), add_namespace=True, add_flat=False)
+        solver.overlay("dirs", dict(getattr(pipeline, "dirs", {}) or {}), add_namespace=True, add_flat=True)
+        pipeline_workdir = str(getattr(pipeline, "workdir", "") or "").strip()
+        if pipeline_workdir:
+            solver.update({"workdir": pipeline_workdir})
+    solver.overlay("commandline", dict(commandline_vars), add_namespace=True, add_flat=True)
+    return solver
+
+
+def resolve_runtime_path(
+    *,
+    key: str,
+    default: str | Path,
+    global_vars: Dict[str, Any],
+    exec_env: Dict[str, Any],
+    project_vars: Dict[str, Any],
+    commandline_vars: Dict[str, Any],
+    pipeline: Optional[Any] = None,
+    path_style: str = "",
+    max_passes: int = 20,
+) -> Path:
+    fallback = str(default)
+    raw = str(
+        commandline_vars.get(key)
+        or _commandline_env_value(commandline_vars, key)
+        or exec_env.get(key)
+        or global_vars.get(key)
+        or fallback
+    ).strip() or fallback
+    solver = build_runtime_solver(
+        global_vars=global_vars,
+        exec_env=exec_env,
+        project_vars=project_vars,
+        commandline_vars=commandline_vars,
+        pipeline=pipeline,
+        max_passes=max_passes,
+    )
+    solver.update({key: raw})
+    resolved = str(solver.get_path(key, fallback, path_style=path_style or "") or "").strip()
+    return Path(resolved or fallback)
+
+
+def resolve_execution_policy(
+    *,
+    global_vars: Dict[str, Any],
+    exec_env: Dict[str, Any],
+    execution_mode: str | None,
+    execution_source: str | None,
+    allow_workspace_source: bool,
+) -> tuple[str, bool]:
+    policy = build_execution_policy(
+        global_vars=global_vars,
+        exec_env=exec_env,
+        execution_mode=execution_mode,
+        execution_source=execution_source,
+        allow_workspace_source=allow_workspace_source,
+    )
+    return policy.execution_source, policy.allow_workspace_source
+
+
+def build_execution_policy(
+    *,
+    global_vars: Dict[str, Any],
+    exec_env: Dict[str, Any],
+    execution_mode: str | None,
+    execution_source: str | None,
+    allow_workspace_source: bool,
+) -> ResolvedExecutionPolicy:
+    mode = str(
+        execution_mode
+        or exec_env.get("execution_mode")
+        or global_vars.get("execution_mode")
+        or ""
+    ).strip().lower()
+    if mode == "workspace":
+        resolved_source = str(execution_source or exec_env.get("execution_source") or "workspace").strip().lower() or "workspace"
+        return ResolvedExecutionPolicy(
+            execution_mode="workspace",
+            execution_source=resolved_source,
+            allow_workspace_source=True,
+        )
+    if mode == "immutable":
+        resolved_source = str(execution_source or exec_env.get("execution_source") or "git_remote").strip().lower() or "git_remote"
+        return ResolvedExecutionPolicy(
+            execution_mode="immutable",
+            execution_source=resolved_source,
+            allow_workspace_source=False,
+        )
+    resolved_source = str(execution_source or exec_env.get("execution_source") or "auto").strip().lower() or "auto"
+    resolved_allow_workspace = parse_bool(
+        allow_workspace_source or exec_env.get("allow_workspace_source") or global_vars.get("allow_workspace_source"),
+        default=False,
+    )
+    return ResolvedExecutionPolicy(
+        execution_mode=mode,
+        execution_source=resolved_source,
+        allow_workspace_source=resolved_allow_workspace,
+    )
+
+
+def build_resolved_runtime_settings(
+    *,
+    global_vars: Dict[str, Any],
+    exec_env: Dict[str, Any],
+    project_vars: Dict[str, Any],
+    commandline_vars: Dict[str, Any],
+    pipeline: Optional[Any] = None,
+    workdir_default: str | Path = ".runs",
+    execution_cwd_default: str | Path = Path.home(),
+    source_root_default: str | Path | None = None,
+    execution_mode: str | None = None,
+    execution_source: str | None = None,
+    allow_workspace_source: bool = False,
+    max_passes: int = 20,
+) -> ResolvedRuntimeSettings:
+    path_style = str(
+        commandline_vars.get("path_style")
+        or _commandline_env_value(commandline_vars, "path_style")
+        or exec_env.get("path_style")
+        or global_vars.get("path_style")
+        or ""
+    ).strip()
+    workdir = resolve_runtime_path(
+        key="workdir",
+        default=workdir_default,
+        global_vars=global_vars,
+        exec_env=exec_env,
+        project_vars=project_vars,
+        commandline_vars=commandline_vars,
+        pipeline=pipeline,
+        path_style=path_style,
+        max_passes=max_passes,
+    ).resolve()
+    default_source_root = Path(source_root_default).expanduser() if source_root_default is not None else (workdir / "_code")
+    source_root = resolve_runtime_path(
+        key="source_root",
+        default=default_source_root,
+        global_vars=global_vars,
+        exec_env=exec_env,
+        project_vars=project_vars,
+        commandline_vars=commandline_vars,
+        pipeline=pipeline,
+        path_style=path_style,
+        max_passes=max_passes,
+    ).resolve()
+    pipeline_assets_cache_root = resolve_pipeline_assets_cache_root(global_vars=global_vars, exec_env=exec_env) or source_root
+    execution_cwd = resolve_runtime_path(
+        key="execution_cwd",
+        default=execution_cwd_default,
+        global_vars=global_vars,
+        exec_env=exec_env,
+        project_vars=project_vars,
+        commandline_vars=commandline_vars,
+        pipeline=pipeline,
+        path_style=path_style,
+        max_passes=max_passes,
+    ).resolve()
+    policy = build_execution_policy(
+        global_vars=global_vars,
+        exec_env=exec_env,
+        execution_mode=execution_mode,
+        execution_source=execution_source,
+        allow_workspace_source=allow_workspace_source,
+    )
+    git_remote_url = resolve_runtime_text(
+        key="git_remote_url",
+        default=str(global_vars.get("etl_git_remote_url") or ""),
+        global_vars=global_vars,
+        exec_env=exec_env,
+        project_vars=project_vars,
+        commandline_vars=commandline_vars,
+        pipeline=pipeline,
+        max_passes=max_passes,
+    ).strip() or None
+    source_bundle = resolve_runtime_text(
+        key="source_bundle",
+        default="",
+        global_vars=global_vars,
+        exec_env=exec_env,
+        project_vars=project_vars,
+        commandline_vars=commandline_vars,
+        pipeline=pipeline,
+        max_passes=max_passes,
+    ).strip() or None
+    source_snapshot = resolve_runtime_text(
+        key="source_snapshot",
+        default="",
+        global_vars=global_vars,
+        exec_env=exec_env,
+        project_vars=project_vars,
+        commandline_vars=commandline_vars,
+        pipeline=pipeline,
+        max_passes=max_passes,
+    ).strip() or None
+    return ResolvedRuntimeSettings(
+        policy=policy,
+        paths=ResolvedRuntimePaths(
+            path_style=path_style,
+            workdir=workdir,
+            source_root=source_root,
+            pipeline_assets_cache_root=Path(pipeline_assets_cache_root).expanduser().resolve(),
+            execution_cwd=execution_cwd,
+        ),
+        git_remote_url=git_remote_url,
+        source_bundle=source_bundle,
+        source_snapshot=source_snapshot,
+    )
 
 
 class RuntimeContextError(RuntimeError):
@@ -261,7 +711,7 @@ def apply_db_mode_from_exec_env(exec_env: Dict[str, Any]) -> None:
         os.environ["ETL_DB_MODE"] = mode
     verbose = exec_env.get("db_verbose")
     if verbose is not None:
-        os.environ["ETL_DB_VERBOSE"] = "1" if bool(verbose) else "0"
+        os.environ["ETL_DB_VERBOSE"] = "1" if parse_bool(verbose, default=False) else "0"
 
 
 def _resolve_max_passes(*, global_vars: Dict[str, Any], exec_env: Dict[str, Any]) -> int:
@@ -429,7 +879,7 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
                 pipeline_path,
                 project_vars=project_vars,
                 repo_root=Path(".").resolve(),
-                cache_root=_pipeline_assets_cache_root(global_vars=global_vars, exec_env=exec_env),
+                cache_root=resolve_pipeline_assets_cache_root(global_vars=global_vars, exec_env=exec_env),
             )
         except PipelineAssetError as exc:
             raise RuntimeContextError(f"Pipeline asset resolution error: {exc}") from exc
@@ -529,9 +979,25 @@ __all__ = [
     "VariableCatalog",
     "RuntimeContextRequest",
     "build_runtime_context",
+    "build_runtime_solver",
     "parse_cli_var_overrides",
     "parse_secret_env_keys",
     "collect_secret_vars",
     "merge_context_with_secrets",
     "apply_db_mode_from_exec_env",
+    "ResolvedExecutionPolicy",
+    "ResolvedRuntimePaths",
+    "ResolvedRuntimeSettings",
+    "RuntimeNamespace",
+    "build_execution_policy",
+    "build_resolved_runtime_settings",
+    "eval_runtime_when",
+    "resolve_execution_policy",
+    "resolve_pipeline_assets_cache_root",
+    "lookup_runtime_value",
+    "resolve_runtime_expr_only",
+    "resolve_runtime_template_text",
+    "resolve_runtime_text",
+    "resolve_runtime_path",
+    "resolve_runtime_value",
 ]

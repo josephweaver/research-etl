@@ -9,26 +9,10 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Optional
 
+from ..common.parsing import parse_bool
 from ..variable_solver import VariableSolver
 
 _TPL_RE = re.compile(r"\{([^{}]+)\}")
-
-
-def parse_bool(value: Any, *, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    lowered = str(value).strip().lower()
-    if lowered in {"1", "true", "yes", "y", "on"}:
-        return True
-    if lowered in {"0", "false", "no", "n", "off"}:
-        return False
-    return default
-
-
 def extract_unresolved_tokens(value: Any) -> list[str]:
     if not isinstance(value, str):
         return []

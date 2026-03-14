@@ -118,6 +118,50 @@ def test_local_executor_applies_execution_env_vars_in_parse(tmp_path: Path, monk
     assert captured["script"] == 'echo.py message="HELLO_ENV"'
 
 
+def test_local_executor_runs_pipeline_from_execution_cwd(tmp_path: Path, monkeypatch) -> None:
+    pipeline_path = tmp_path / "pipeline.yml"
+    pipeline_path.write_text("steps:\n  - name: s1\n    script: echo.py\n", encoding="utf-8")
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    execution_cwd = tmp_path / "work-root"
+    captured = {}
+
+    monkeypatch.setattr(
+        local_mod,
+        "parse_pipeline",
+        lambda *_args, **_kwargs: Pipeline(
+            workdir=str(tmp_path / ".runs"),
+            steps=[Step(name="s1", script="echo.py")],
+        ),
+    )
+
+    def _fake_run_pipeline(*args, **kwargs):
+        captured["cwd"] = str(Path.cwd())
+        return RunResult(
+            run_id="run1",
+            steps=[StepResult(step=Step(name="s1", script="echo.py"), success=True)],
+            artifact_dir=str(kwargs.get("workdir")),
+        )
+
+    monkeypatch.setattr(local_mod, "run_pipeline", _fake_run_pipeline)
+    monkeypatch.setattr(local_mod, "record_run", lambda *_a, **_k: None)
+
+    ex = LocalExecutor(
+        plugin_dir=plugins_dir,
+        workdir=tmp_path / ".runs",
+        dry_run=True,
+    )
+    submit = ex.submit(
+        str(pipeline_path),
+        context={
+            "global_vars": {},
+            "execution_env": {"execution_cwd": str(execution_cwd)},
+        },
+    )
+    assert submit.run_id
+    assert Path(captured["cwd"]).resolve() == execution_cwd.resolve()
+
+
 def test_local_executor_prefers_execution_env_git_remote_url(tmp_path: Path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True, exist_ok=True)
@@ -225,8 +269,8 @@ def test_local_executor_workdir_prefers_commandline_vars_override(tmp_path: Path
         },
     )
     assert submit.run_id
-    assert str(captured["run_workdir"]).replace("\\", "/") == "/cli/work"
-    assert str(captured["store"]).replace("\\", "/") == "/cli/work/runs.jsonl"
+    assert Path(captured["run_workdir"]).resolve() == Path("/cli/work").resolve()
+    assert Path(captured["store"]).resolve() == Path("/cli/work/runs.jsonl").resolve()
 
 
 def test_local_executor_prefers_execution_env_source_root_for_checkout(tmp_path: Path, monkeypatch) -> None:

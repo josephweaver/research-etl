@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ...common.parsing import parse_bool
 from ...git_checkout import infer_repo_name
 from ...job_specs import PipelineAssetRef, ResolvedPaths, RunSelection, RunSpec, SourceRef
 from ...pipeline import parse_pipeline
@@ -14,22 +15,6 @@ from ...source_control import SourceControlError, make_git_source_provider, reso
 from ...variable_solver import VariableSolver
 
 _SOURCE_PROVIDER = make_git_source_provider()
-
-
-def _parse_bool(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if not text:
-        return bool(default)
-    if text in {"1", "true", "yes", "on", "y"}:
-        return True
-    if text in {"0", "false", "no", "off", "n"}:
-        return False
-    return bool(default)
-
 
 def _parse_step_indices(value: Any, step_count: int) -> list[int]:
     if value is None or value == "":
@@ -255,7 +240,7 @@ class SlurmRunSpecBuilder:
         source_mode = str(context.get("execution_source") or executor.execution_source or "auto").strip().lower()
         source_bundle = context.get("source_bundle") or executor.source_bundle
         source_snapshot = context.get("source_snapshot") or executor.source_snapshot
-        allow_workspace_source = _parse_bool(
+        allow_workspace_source = parse_bool(
             context.get("allow_workspace_source", executor.allow_workspace_source),
             default=executor.allow_workspace_source,
         )

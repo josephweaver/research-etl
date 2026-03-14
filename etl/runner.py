@@ -36,13 +36,19 @@ from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .pipeline import Pipeline, Step
-from .expr import try_eval_expr_text
 from .logging import CallbackLogSink, CompositeLogSink, ConsoleLogSink, FileLogSink, RedactingLogSink, StepLogger
 from .plugins.base import (
     PluginContext,
     PluginDefinition,
     PluginLoadError,
     load_plugin,
+)
+from .runtime_context import (
+    RuntimeNamespace,
+    eval_runtime_when,
+    lookup_runtime_value,
+    resolve_runtime_expr_only,
+    resolve_runtime_value,
 )
 
 
@@ -292,15 +298,6 @@ def _resolve_plugin_path(plugin_dir: Path, ref: str) -> Path:
     return candidate
 
 
-def _eval_when(expr: Optional[str], ctx: Dict[str, Any]) -> bool:
-    if expr is None:
-        return True
-    try:
-        return bool(eval(expr, {"__builtins__": {}}, ctx))
-    except Exception:
-        return False
-
-
 def _classify_attempt_failure(*, success: bool, skipped: bool, error: Optional[str]) -> str:
     if skipped:
         return "skipped"
@@ -382,112 +379,8 @@ def _alpha_suffix(index: int) -> str:
     return "".join(reversed(chars))
 
 
-class _SafeDict(dict):
-    def __missing__(self, key):
-        return "{" + key + "}"
-
-
-def _format_value(value: Any, ctx: Dict[str, Any]) -> Any:
-    if isinstance(value, str):
-        return value.format_map(_SafeDict(ctx))
-    if isinstance(value, dict):
-        return {k: _format_value(v, ctx) for k, v in value.items()}
-    return value
-
-
-_TPL_RE = re.compile(r"\{([^{}]+)\}")
-
-
-def _lookup_ctx_path(ctx: Dict[str, Any], dotted: str) -> tuple[Any, bool]:
-    cur: Any = ctx
-    for part in str(dotted or "").split("."):
-        if isinstance(cur, dict) and part in cur:
-            cur = cur[part]
-            continue
-        return None, False
-    return cur, True
-
-
-def _resolve_text_with_ctx(value: str, ctx: Dict[str, Any]) -> Any:
-    text = str(value or "")
-    exact = _TPL_RE.fullmatch(text)
-    if exact:
-        token = str(exact.group(1) or "")
-        found, ok = _lookup_ctx_path(ctx, token)
-        if ok:
-            return found
-        expr_value, expr_ok = try_eval_expr_text(token, ctx)
-        if expr_ok:
-            return expr_value
-        return text
-
-    def _repl(match: re.Match[str]) -> str:
-        key = str(match.group(1) or "")
-        found, ok = _lookup_ctx_path(ctx, key)
-        if not ok or isinstance(found, (dict, list)):
-            expr_value, expr_ok = try_eval_expr_text(key, ctx)
-            if not expr_ok or isinstance(expr_value, (dict, list)):
-                return match.group(0)
-            return str(expr_value)
-        return str(found)
-
-    return _TPL_RE.sub(_repl, text)
-
-
-def _resolve_with_ctx(value: Any, ctx: Dict[str, Any], *, max_passes: int = 20) -> Any:
-    def _walk(v: Any) -> Any:
-        if isinstance(v, str):
-            return _resolve_text_with_ctx(v, ctx)
-        if isinstance(v, list):
-            return [_walk(x) for x in v]
-        if isinstance(v, dict):
-            return {k: _walk(x) for k, x in v.items()}
-        return v
-
-    cur = value
-    for _ in range(max_passes):
-        nxt = _walk(cur)
-        if nxt == cur:
-            return cur
-        cur = nxt
-    return cur
-
-
-def _resolve_expr_only_with_ctx(value: Any, ctx: Dict[str, Any], *, max_passes: int = 20) -> Any:
-    def _walk(v: Any) -> Any:
-        if isinstance(v, str):
-            text = str(v or "")
-            exact = _TPL_RE.fullmatch(text)
-            if exact:
-                token = str(exact.group(1) or "")
-                expr_value, expr_ok = try_eval_expr_text(token, ctx)
-                return expr_value if expr_ok else text
-
-            def _repl(match: re.Match[str]) -> str:
-                token = str(match.group(1) or "")
-                expr_value, expr_ok = try_eval_expr_text(token, ctx)
-                if not expr_ok or isinstance(expr_value, (dict, list)):
-                    return match.group(0)
-                return str(expr_value)
-
-            return _TPL_RE.sub(_repl, text)
-        if isinstance(v, list):
-            return [_walk(x) for x in v]
-        if isinstance(v, dict):
-            return {k: _walk(x) for k, x in v.items()}
-        return v
-
-    cur = value
-    for _ in range(max_passes):
-        nxt = _walk(cur)
-        if nxt == cur:
-            return cur
-        cur = nxt
-    return cur
-
-
 def _foreach_items_from_var(foreach: str, ctx: Dict[str, Any]) -> List[Any]:
-    items, ok = _lookup_ctx_path(ctx, str(foreach or ""))
+    items, ok = lookup_runtime_value(ctx, str(foreach or ""))
     if not ok:
         return []
     if not isinstance(items, (list, tuple)):
@@ -502,7 +395,7 @@ def _foreach_items_from_glob(
     ctx: Dict[str, Any],
     max_passes: int,
 ) -> List[str]:
-    pattern = str(_resolve_with_ctx(foreach_glob, ctx, max_passes=max_passes) or "").strip()
+    pattern = str(resolve_runtime_value(foreach_glob, ctx, max_passes=max_passes) or "").strip()
     if not pattern:
         return []
     matches = sorted(glob.glob(pattern, recursive=True))
@@ -574,9 +467,9 @@ def _expand_step(
         local_ctx["item_stem"] = item_path.stem
         new_step = Step(
             name=f"{step.name}_{idx}",
-            script=str(_resolve_with_ctx(step.script, local_ctx, max_passes=resolve_max_passes)),
+            script=str(resolve_runtime_value(step.script, local_ctx, max_passes=resolve_max_passes)),
             output_var=f"{step.output_var}_{idx}" if step.output_var else None,
-            env=_resolve_with_ctx(step.env, local_ctx, max_passes=resolve_max_passes),
+            env=resolve_runtime_value(step.env, local_ctx, max_passes=resolve_max_passes),
             resources=dict(step.resources or {}),
             when=step.when,
             parallel_with=None if sequential_fanout else step.parallel_with,
@@ -686,22 +579,26 @@ def run_pipeline(
             print(f"[{run_id}] [{level}] {safe_msg}")
 
     step_results: List[StepResult] = []
-    ctx_vars: Dict[str, Any] = dict(pipeline.vars)
-    ctx_vars.update(pipeline.dirs)
-    ctx_vars = _with_runtime_sys(
-        ctx_vars,
+    base_ctx_vars: Dict[str, Any] = dict(pipeline.vars)
+    base_ctx_vars.update(pipeline.dirs)
+    base_ctx_vars = _with_runtime_sys(
+        base_ctx_vars,
         run_id=run_id,
         run_started=ts,
         job_name=str((pipeline.vars or {}).get("jobname") or ""),
     )
-    ctx_vars = _resolve_expr_only_with_ctx(
-        ctx_vars,
-        ctx_vars,
+    base_ctx_vars = resolve_runtime_expr_only(
+        base_ctx_vars,
+        base_ctx_vars,
+        max_passes=max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20)),
+    )
+    runtime_ns = RuntimeNamespace.from_context(
+        base_ctx_vars,
         max_passes=max(1, int(getattr(pipeline, "resolve_max_passes", 20) or 20)),
     )
     if context_snapshot_func is not None:
         try:
-            context_snapshot_func(event_type="run_started", context=dict(ctx_vars), step_name=None, step_index=None)
+            context_snapshot_func(event_type="run_started", context=runtime_ns.resolved_context(), step_name=None, step_index=None)
         except Exception:
             pass
     prior_step_outputs = prior_step_outputs or {}
@@ -715,7 +612,7 @@ def run_pipeline(
             raw = str((pipeline.dirs or {}).get(key) or "").strip()
             if not raw:
                 continue
-            resolved = _resolve_with_ctx(raw, ctx_vars, max_passes=resolve_max_passes)
+            resolved = resolve_runtime_value(raw, runtime_ns.resolved_context(), max_passes=resolve_max_passes)
             resolved_text = str(resolved or "").strip()
             if resolved_text:
                 base_logdir = Path(resolved_text)
@@ -726,7 +623,7 @@ def run_pipeline(
     failed = False
     step_batch_seq = 0
     for orig_batch in batches:
-        expansion_ctx = dict(ctx_vars)
+        expansion_ctx = runtime_ns.resolved_context()
         expanded_for_batch: List[Step] = []
         for step in orig_batch:
             expanded_for_batch.extend(
@@ -749,7 +646,7 @@ def run_pipeline(
                     if step.name in resume_succeeded_steps:
                         log(f"[{run_id}] step {step.name} skipped (resume from prior success)")
                         if step.output_var and step.name in prior_step_outputs:
-                            ctx_vars[step.output_var] = prior_step_outputs.get(step.name, {})
+                            runtime_ns.set_output(step.output_var, prior_step_outputs.get(step.name, {}))
                         step_results.append(
                             StepResult(
                                 step=step,
@@ -781,7 +678,7 @@ def run_pipeline(
                     max_retries,
                     retry_delay_seconds,
                     log,
-                    ctx_vars,
+                    runtime_ns.resolved_context(),
                     resolve_max_passes=resolve_max_passes,
                     step_index=len(step_results),
                     step_nn=f"{batch_base:02d}",
@@ -790,12 +687,12 @@ def run_pipeline(
                 )
                 step_results.append(res)
                 if res.success and step.output_var:
-                    ctx_vars[step.output_var] = res.outputs
+                    runtime_ns.set_output(step.output_var, res.outputs)
                     if context_snapshot_func is not None:
                         try:
                             context_snapshot_func(
                                 event_type="step_succeeded",
-                                context=dict(ctx_vars),
+                                context=runtime_ns.resolved_context(),
                                 step_name=str(step.name),
                                 step_index=len(step_results) - 1,
                             )
@@ -822,7 +719,7 @@ def run_pipeline(
                                 max_retries,
                                 retry_delay_seconds,
                                 log,
-                                dict(ctx_vars),
+                                runtime_ns.resolved_context(),
                                 resolve_max_passes,
                                 None,
                                 step_nn,
@@ -834,12 +731,12 @@ def run_pipeline(
                         res = fut.result()
                         step_results.append(res)
                         if res.success and res.step.output_var:
-                            ctx_vars[res.step.output_var] = res.outputs
+                            runtime_ns.set_output(res.step.output_var, res.outputs)
                             if context_snapshot_func is not None:
                                 try:
                                     context_snapshot_func(
                                         event_type="step_succeeded",
-                                        context=dict(ctx_vars),
+                                        context=runtime_ns.resolved_context(),
                                         step_name=str(res.step.name),
                                         step_index=len(step_results) - 1,
                                     )
@@ -884,11 +781,11 @@ def _execute_step(
         step_nn=step_nn,
     )
 
-    if not _eval_when(step.when, runtime_ctx):
+    if not eval_runtime_when(step.when, runtime_ctx):
         log(f"step {step.name} skipped (when={step.when})")
         return StepResult(step=step, success=True, step_id=step_id, skipped=True, attempt_no=0, attempts=[])
-    script_runtime = str(_resolve_with_ctx(step.script, runtime_ctx, max_passes=resolve_max_passes))
-    env_runtime = _resolve_with_ctx(step.env, runtime_ctx, max_passes=resolve_max_passes)
+    script_runtime = str(resolve_runtime_value(step.script, runtime_ctx, max_passes=resolve_max_passes))
+    env_runtime = resolve_runtime_value(step.env, runtime_ctx, max_passes=resolve_max_passes)
     plugin_ref, arg_tokens = _parse_script(script_runtime)
     try:
         plugin_path = _resolve_plugin_path(plugin_dir, plugin_ref)

@@ -33,6 +33,7 @@ from etl.source_control import merge_source_commandline_vars
 from etl.provenance import collect_run_provenance
 from etl.runtime_context import (
     apply_db_mode_from_exec_env,
+    build_resolved_runtime_settings,
     collect_secret_vars,
     merge_context_with_secrets,
     parse_cli_var_overrides,
@@ -204,31 +205,6 @@ def _resolve_workdir_with_solver(
     )
 
 
-def _resolve_execution_policy(
-    *,
-    global_vars: Dict[str, Any],
-    exec_env: Dict[str, Any],
-    execution_mode: str | None,
-    execution_source: str | None,
-    allow_workspace_source: bool,
-) -> tuple[str, bool]:
-    mode = str(
-        execution_mode
-        or exec_env.get("execution_mode")
-        or global_vars.get("execution_mode")
-        or ""
-    ).strip().lower()
-    if mode == "workspace":
-        resolved_source = str(execution_source or exec_env.get("execution_source") or "workspace").strip().lower() or "workspace"
-        return resolved_source, True
-    if mode == "immutable":
-        resolved_source = str(execution_source or exec_env.get("execution_source") or "git_remote").strip().lower() or "git_remote"
-        return resolved_source, False
-    resolved_source = str(execution_source or exec_env.get("execution_source") or "auto").strip().lower() or "auto"
-    resolved_allow_workspace = bool(allow_workspace_source or exec_env.get("allow_workspace_source", False))
-    return resolved_source, resolved_allow_workspace
-
-
 def _has_successful_run_for_pipeline(pipeline_path: Path, *, workdir: str) -> bool:
     records = load_runs(_run_store_path(workdir))
     target = pipeline_path.resolve().as_posix()
@@ -372,30 +348,31 @@ def _submit_pipeline_run(
         provenance=provenance,
     )
     pipeline_remote_hint: str | None = None
-    execution_source, allow_workspace_source = _resolve_execution_policy(
+    runtime_settings = build_resolved_runtime_settings(
         global_vars=global_vars,
         exec_env=exec_env,
+        project_vars=project_vars,
+        commandline_vars=commandline_vars,
+        pipeline=pipeline,
+        workdir_default=resolved_workdir,
+        execution_cwd_default=Path.home(),
         execution_mode=getattr(args, "execution_mode", None),
         execution_source=args.execution_source,
         allow_workspace_source=bool(args.allow_workspace_source),
     )
-    source_bundle = args.source_bundle or exec_env.get("source_bundle")
-    source_snapshot = args.source_snapshot or exec_env.get("source_snapshot")
+    execution_source = runtime_settings.policy.execution_source
+    allow_workspace_source = runtime_settings.policy.allow_workspace_source
+    source_bundle = args.source_bundle or runtime_settings.source_bundle
+    source_snapshot = args.source_snapshot or runtime_settings.source_snapshot
     if args.executor in {"slurm", "hpcc_direct"} and not pipeline_inside_repo:
         if execution_source == "workspace":
             execution_source = str(exec_env.get("execution_source") or "auto").strip().lower() or "auto"
             allow_workspace_source = False
-        source_root_text = str(
-            commandline_vars.get("source_root")
-            or exec_env.get("source_root")
-            or global_vars.get("source_root")
-            or ""
-        ).strip()
         pipeline_asset_match = infer_pipeline_asset_match(
             pipeline_path,
             project_vars=project_vars,
             repo_root=repo_root,
-            cache_root=Path(source_root_text).expanduser() if source_root_text else None,
+            cache_root=runtime_settings.paths.source_root,
         )
         if pipeline_asset_match is None:
             print(

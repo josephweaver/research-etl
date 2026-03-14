@@ -99,6 +99,8 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
     assert "etl.run_batch" in remote_script
     assert "python -u -m etl.run_batch" in remote_script
     assert "python3 -m etl.run_batch" not in remote_script
+    assert "EXECUTION_CWD='~'" in remote_script or "EXECUTION_CWD=~" in remote_script
+    assert "cd \"$EXECUTION_CWD\"" in remote_script
     assert "export PYTHONUNBUFFERED=1" in remote_script
     assert "export ETL_DB_MODE=offline" in remote_script
     assert "export ETL_DB_VERBOSE=1" in remote_script

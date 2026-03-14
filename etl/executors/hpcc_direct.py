@@ -27,12 +27,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .base import Executor, RunState, RunStatus, SubmissionResult
+from ..common.parsing import last_non_empty_text, parse_bool, parse_str_list
 from ..git_checkout import (
     GitExecutionSpec,
     infer_repo_name,
 )
 from ..pipeline import parse_pipeline, PipelineError
 from ..query.errors import QueryExecutionError, QueryPlannerError, QueryTransportError
+from ..runtime_context import resolve_runtime_text
 from ..source_control import SourceControlError, SourceExecutionSpec, make_git_source_provider
 from ..subprocess_logging import run_logged_subprocess
 from ..transports import ExecutionOptions, SshTransport, TransportError
@@ -81,40 +83,6 @@ def _flatten_scalar_vars(prefix: str, obj: Dict[str, Any]) -> Dict[str, str]:
     return out
 
 
-def _parse_str_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple, set)):
-        raw_items = [str(x).strip() for x in value]
-    else:
-        raw_items = [x.strip() for x in str(value).replace(";", ",").split(",")]
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in raw_items:
-        if not item:
-            continue
-        if item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-    return out
-
-
-def _parse_bool(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return bool(default)
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if not text:
-        return bool(default)
-    if text in {"1", "true", "yes", "on", "y"}:
-        return True
-    if text in {"0", "false", "no", "off", "n"}:
-        return False
-    return bool(default)
-
-
 def _parse_step_indices(value: Any, step_count: int) -> list[int]:
     if value is None or value == "":
         return []
@@ -141,15 +109,6 @@ def _parse_step_indices(value: Any, step_count: int) -> list[int]:
         out.append(idx)
     out.sort()
     return out
-
-
-def _last_non_empty_text(value: Any) -> str:
-    lines = str(value or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    for line in reversed(lines):
-        text = str(line or "").strip()
-        if text:
-            return text
-    return ""
 
 
 def _extract_marked_payload(text: str, *, begin: str, end: str) -> str:
@@ -207,7 +166,7 @@ class HpccDirectExecutor(Executor):
         self.load_secrets_file = bool(self.env_config.get("load_secrets_file", True))
         self.database_url = str(self.env_config.get("database_url") or "").strip() or None
         self.db_tunnel_command = str(self.env_config.get("db_tunnel_command") or "").strip()
-        self.db_tunnel_via_tmux = _parse_bool(self.env_config.get("db_tunnel_via_tmux"), default=False)
+        self.db_tunnel_via_tmux = parse_bool(self.env_config.get("db_tunnel_via_tmux"), default=False)
         self.db_tunnel_session_prefix = (
             str(self.env_config.get("db_tunnel_session_prefix") or "").strip() or "etl-db-tunnel"
         )
@@ -216,12 +175,12 @@ class HpccDirectExecutor(Executor):
             self.db_tunnel_port = int(self.env_config.get("db_tunnel_port", 6543) or 6543)
         except (TypeError, ValueError):
             self.db_tunnel_port = 6543
-        self.db_tunnel_rewrite_database_url = _parse_bool(
+        self.db_tunnel_rewrite_database_url = parse_bool(
             self.env_config.get("db_tunnel_rewrite_database_url"),
             default=bool(self.db_tunnel_command),
         )
-        self.secret_env_keys = _parse_str_list(self.env_config.get("secret_env_keys")) or list(DEFAULT_SECRET_ENV_KEYS)
-        self.required_secret_keys = _parse_str_list(self.env_config.get("required_secret_keys"))
+        self.secret_env_keys = parse_str_list(self.env_config.get("secret_env_keys")) or list(DEFAULT_SECRET_ENV_KEYS)
+        self.required_secret_keys = parse_str_list(self.env_config.get("required_secret_keys"))
         self._statuses: Dict[str, RunStatus] = {}
 
     def capabilities(self) -> Dict[str, bool]:
@@ -641,8 +600,8 @@ class HpccDirectExecutor(Executor):
         return remote_tar, deletes
 
     def _collect_secret_exports(self, context: Dict[str, Any]) -> Dict[str, str]:
-        key_candidates = _parse_str_list(context.get("secret_env_keys")) or list(self.secret_env_keys)
-        required = _parse_str_list(context.get("required_secret_keys")) or list(self.required_secret_keys)
+        key_candidates = parse_str_list(context.get("secret_env_keys")) or list(self.secret_env_keys)
+        required = parse_str_list(context.get("required_secret_keys")) or list(self.required_secret_keys)
         out: Dict[str, str] = {}
         for key in key_candidates:
             val = os.environ.get(key)
@@ -720,10 +679,15 @@ class HpccDirectExecutor(Executor):
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Could not prepare git-pinned execution source: {exc}") from exc
 
-        git_remote_override = (
-            str(exec_env.get("git_remote_url") or "").strip()
-            or str(global_vars.get("etl_git_remote_url") or "").strip()
-        )
+        git_remote_override = resolve_runtime_text(
+            key="git_remote_url",
+            default=str(global_vars.get("etl_git_remote_url") or ""),
+            global_vars=global_vars,
+            exec_env=exec_env,
+            project_vars=project_vars,
+            commandline_vars=cmdline_vars,
+            pipeline=pipeline,
+        ).strip()
         if git_remote_override:
             spec = replace(spec, origin_url=git_remote_override, repo_name=infer_repo_name(git_remote_override))
         if not spec.origin_url:
@@ -788,6 +752,15 @@ class HpccDirectExecutor(Executor):
             batch_cmd += ["--max-retries", shlex.quote(str(int(max_retries)))]
         if retry_delay is not None:
             batch_cmd += ["--retry-delay-seconds", shlex.quote(str(float(retry_delay)))]
+        execution_cwd = resolve_runtime_text(
+            key="execution_cwd",
+            default="~",
+            global_vars=global_vars,
+            exec_env=exec_env,
+            project_vars=project_vars,
+            commandline_vars=cmdline_vars,
+            pipeline=pipeline,
+        ).strip() or "~"
 
         if self.verbose:
             batch_cmd.append("--verbose")
@@ -890,7 +863,12 @@ class HpccDirectExecutor(Executor):
             "python -m pip install --no-deps -e \"$CHECKOUT_ROOT\"; "
             "fi"
         )
-        run_lines = [f"CHECKOUT_ROOT={shlex.quote(repo_root_remote)}", "cd \"$CHECKOUT_ROOT\""]
+        run_lines = [
+            f"CHECKOUT_ROOT={shlex.quote(repo_root_remote)}",
+            f"EXECUTION_CWD={shlex.quote(execution_cwd)}",
+            "mkdir -p \"$EXECUTION_CWD\"",
+            "cd \"$EXECUTION_CWD\"",
+        ]
         for module_name in self.remote_modules:
             mod = str(module_name or "").strip()
             if mod:
@@ -915,7 +893,7 @@ class HpccDirectExecutor(Executor):
         if db_mode:
             run_lines.append(f"export ETL_DB_MODE={shlex.quote(db_mode)}")
         if exec_env.get("db_verbose") is not None:
-            run_lines.append(f"export ETL_DB_VERBOSE={'1' if _parse_bool(exec_env.get('db_verbose')) else '0'}")
+            run_lines.append(f"export ETL_DB_VERBOSE={'1' if parse_bool(exec_env.get('db_verbose')) else '0'}")
         run_lines.append("export PYTHONUNBUFFERED=1")
         run_lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
         run_lines.append(
@@ -990,7 +968,7 @@ class HpccDirectExecutor(Executor):
         stdout = str(proc.stdout or "").strip()
         stderr = str(proc.stderr or "").strip()
         detail = stderr or stdout or ("remote output streamed to console" if self.verbose else "")
-        summary = _last_non_empty_text(detail) or detail
+        summary = last_non_empty_text(detail) or detail
         if proc.returncode == 0:
             status = RunStatus(
                 run_id=run_id,

@@ -23,8 +23,8 @@ from ..job_specs import ResolvedPaths, RunSelection, RunSpec, SourceRef
 from ..pipeline_assets import PipelineAssetMatch, infer_pipeline_asset_match
 from ..pipeline import PipelineError
 from ..provisioners import LocalProvisioner, ProvisionState
+from ..runtime_context import build_resolved_runtime_settings
 from ..tracking import upsert_run_status
-from ..variable_solver import VariableSolver
 
 
 def _group_steps_with_indices(steps: list[Any]) -> list[list[tuple[int, Any]]]:
@@ -106,33 +106,20 @@ class LocalBatchExecutor(LocalExecutor):
         execution_env = dict(ctx.get("execution_env") or {})
         project_vars = dict(ctx.get("project_vars") or {})
         commandline_vars = dict(ctx.get("commandline_vars") or {})
-        path_style = str(commandline_vars.get("path_style") or execution_env.get("path_style") or "").strip()
 
         pipeline_ref = Path(pipeline_path)
         plugin_dir = self.plugin_dir
-        preparse_workdir = self._resolve_effective_workdir(
-            None,
+        preparse_settings = build_resolved_runtime_settings(
             global_vars=global_vars,
-            execution_env=execution_env,
+            exec_env=execution_env,
             project_vars=project_vars,
             commandline_vars=commandline_vars,
-            path_style=path_style,
+            pipeline=None,
+            workdir_default=self.workdir,
+            execution_cwd_default=Path.home(),
         )
-        source_root_raw = (
-            commandline_vars.get("source_root")
-            or execution_env.get("source_root")
-            or global_vars.get("source_root")
-        )
-        source_root_text = str(source_root_raw or "").strip()
-        source_root = Path(source_root_text).expanduser() if source_root_text else (preparse_workdir / "_code")
-        pipeline_assets_root_raw = (
-            commandline_vars.get("pipeline_assets_cache_root")
-            or execution_env.get("pipeline_assets_cache_root")
-            or global_vars.get("pipeline_assets_cache_root")
-            or source_root_text
-        )
-        pipeline_assets_root_text = str(pipeline_assets_root_raw or "").strip()
-        pipeline_assets_root = Path(pipeline_assets_root_text).expanduser() if pipeline_assets_root_text else source_root
+        source_root = preparse_settings.paths.source_root
+        pipeline_assets_root = preparse_settings.paths.pipeline_assets_cache_root
 
         if self.enforce_git_checkout:
             repo_root = Path(ctx.get("repo_root") or Path(".").resolve()).resolve()
@@ -140,11 +127,7 @@ class LocalBatchExecutor(LocalExecutor):
             bundle = ctx.get("source_bundle") or self.source_bundle
             snapshot = ctx.get("source_snapshot") or self.source_snapshot
             allow_workspace = bool(ctx.get("allow_workspace_source", self.allow_workspace_source))
-            git_remote_override = (
-                str(ctx.get("execution_env", {}).get("git_remote_url") or "").strip()
-                or str(global_vars.get("etl_git_remote_url") or "").strip()
-                or None
-            )
+            git_remote_override = preparse_settings.git_remote_url
 
             modes = self._resolve_mode_order(source_mode, allow_workspace)
             checkout_root = None
@@ -232,14 +215,16 @@ class LocalBatchExecutor(LocalExecutor):
         except PipelineError as exc:
             raise RuntimeError(f"Pipeline parse failed: {exc}") from exc
 
-        effective_workdir = self._resolve_effective_workdir(
-            pipeline,
+        runtime_settings = build_resolved_runtime_settings(
             global_vars=global_vars,
-            execution_env=execution_env,
+            exec_env=execution_env,
             project_vars=project_vars,
             commandline_vars=commandline_vars,
-            path_style=path_style,
+            pipeline=pipeline,
+            workdir_default=self.workdir,
+            execution_cwd_default=Path.home(),
         )
+        effective_workdir = runtime_settings.paths.workdir
         run_root = self._compute_run_root(effective_workdir, run_id, ts)
         requested_step_indices = _parse_step_indices(ctx.get("step_indices"), len(pipeline.steps))
         batches = _group_steps_with_indices(pipeline.steps)
@@ -375,36 +360,6 @@ class LocalBatchExecutor(LocalExecutor):
             job_ids=job_ids,
             message=success_message,
         )
-
-    def _resolve_effective_workdir(
-        self,
-        pipeline_obj: Optional[Any],
-        *,
-        global_vars: Dict[str, Any],
-        execution_env: Dict[str, Any],
-        project_vars: Dict[str, Any],
-        commandline_vars: Dict[str, Any],
-        path_style: str = "",
-    ) -> Path:
-        solver = VariableSolver(max_passes=20)
-        solver.overlay("global", dict(global_vars), add_namespace=True, add_flat=True)
-        solver.overlay("globals", dict(global_vars), add_namespace=True, add_flat=False)
-        solver.overlay("env", dict(execution_env), add_namespace=True, add_flat=True)
-        solver.overlay("project", dict(project_vars), add_namespace=True, add_flat=True)
-        if pipeline_obj is not None:
-            solver.overlay("pipe", dict(getattr(pipeline_obj, "vars", {}) or {}), add_namespace=True, add_flat=True)
-            solver.overlay("vars", dict(getattr(pipeline_obj, "vars", {}) or {}), add_namespace=True, add_flat=False)
-            solver.overlay("dirs", dict(getattr(pipeline_obj, "dirs", {}) or {}), add_namespace=True, add_flat=True)
-            pipeline_workdir = str(getattr(pipeline_obj, "workdir", "") or "").strip()
-            if pipeline_workdir:
-                solver.update({"workdir": pipeline_workdir})
-        solver.overlay("commandline", dict(commandline_vars), add_namespace=True, add_flat=True)
-        default_workdir = str(self.workdir)
-        existing = str(solver.get("workdir", "", resolve=False) or "").strip()
-        if not existing:
-            solver.update({"workdir": default_workdir})
-        resolved = str(solver.get_path("workdir", default_workdir, path_style=path_style) or "").strip()
-        return Path(resolved or default_workdir)
 
     @staticmethod
     def _compute_run_root(base_workdir: Path, run_id: str, started_at: datetime) -> Path:

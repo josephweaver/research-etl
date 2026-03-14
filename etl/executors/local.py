@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from dataclasses import replace
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import shutil
@@ -26,9 +27,9 @@ from ..query.planner_duckdb import build_duckdb_query_plan
 from ..query.runners.duckdb_runner import run_duckdb_query_plan
 from ..query.spec import validate_query_spec
 from ..runner import run_pipeline, RunResult
+from ..runtime_context import build_resolved_runtime_settings
 from ..source_control import SourceExecutionSpec, make_git_source_provider
 from ..tracking import record_run, load_run_step_states, upsert_run_context_snapshot
-from ..variable_solver import VariableSolver
 
 _SOURCE_PROVIDER = make_git_source_provider()
 
@@ -87,6 +88,16 @@ def overlay_pipeline_asset_checkout(checkout_root: Path, match: PipelineAssetMat
     scripts_root = match.scripts_root
     if scripts_root.exists() and scripts_root.is_dir():
         _replace_path_with_link_or_copy(scripts_root, checkout_root / "scripts")
+
+
+@contextmanager
+def _pushd(path: Path):
+    prev = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(prev)
 
 
 class LocalExecutor(Executor):
@@ -155,46 +166,18 @@ class LocalExecutor(Executor):
         execution_env = context.get("execution_env") or {}
         project_vars = context.get("project_vars") or {}
         commandline_vars = context.get("commandline_vars") or {}
-        path_style = str(commandline_vars.get("path_style") or execution_env.get("path_style") or "").strip()
-
-        def _resolve_effective_workdir(pipeline_obj: Optional[Pipeline]) -> Path:
-            solver = VariableSolver(max_passes=20)
-            solver.overlay("global", dict(global_vars), add_namespace=True, add_flat=True)
-            solver.overlay("globals", dict(global_vars), add_namespace=True, add_flat=False)
-            solver.overlay("env", dict(execution_env), add_namespace=True, add_flat=True)
-            solver.overlay("project", dict(project_vars), add_namespace=True, add_flat=True)
-            if pipeline_obj is not None:
-                solver.overlay("pipe", dict(getattr(pipeline_obj, "vars", {}) or {}), add_namespace=True, add_flat=True)
-                solver.overlay("vars", dict(getattr(pipeline_obj, "vars", {}) or {}), add_namespace=True, add_flat=False)
-                solver.overlay("dirs", dict(getattr(pipeline_obj, "dirs", {}) or {}), add_namespace=True, add_flat=True)
-                pipeline_workdir = str(getattr(pipeline_obj, "workdir", "") or "").strip()
-                if pipeline_workdir:
-                    solver.update({"workdir": pipeline_workdir})
-            solver.overlay("commandline", dict(commandline_vars), add_namespace=True, add_flat=True)
-            default_workdir = str(self.workdir)
-            existing = str(solver.get("workdir", "", resolve=False) or "").strip()
-            if not existing:
-                solver.update({"workdir": default_workdir})
-            resolved = str(solver.get_path("workdir", default_workdir, path_style=path_style) or "").strip()
-            return Path(resolved or default_workdir)
-
-        preparse_workdir = _resolve_effective_workdir(None)
-
-        source_root_raw = (
-            commandline_vars.get("source_root")
-            or execution_env.get("source_root")
-            or global_vars.get("source_root")
+        preparse_settings = build_resolved_runtime_settings(
+            global_vars=global_vars,
+            exec_env=execution_env,
+            project_vars=project_vars,
+            commandline_vars=commandline_vars,
+            pipeline=None,
+            workdir_default=self.workdir,
+            execution_cwd_default=Path.home(),
         )
-        source_root_text = str(source_root_raw or "").strip()
-        source_root = Path(source_root_text).expanduser() if source_root_text else (preparse_workdir / "_code")
-        pipeline_assets_root_raw = (
-            commandline_vars.get("pipeline_assets_cache_root")
-            or execution_env.get("pipeline_assets_cache_root")
-            or global_vars.get("pipeline_assets_cache_root")
-            or source_root_text
-        )
-        pipeline_assets_root_text = str(pipeline_assets_root_raw or "").strip()
-        pipeline_assets_root = Path(pipeline_assets_root_text).expanduser() if pipeline_assets_root_text else source_root
+        preparse_workdir = preparse_settings.paths.workdir
+        source_root = preparse_settings.paths.source_root
+        pipeline_assets_root = preparse_settings.paths.pipeline_assets_cache_root
 
         if self.enforce_git_checkout:
             repo_root = Path(context.get("repo_root") or Path(".").resolve()).resolve()
@@ -203,11 +186,7 @@ class LocalExecutor(Executor):
             bundle = context.get("source_bundle") or self.source_bundle
             snapshot = context.get("source_snapshot") or self.source_snapshot
             allow_workspace = bool(context.get("allow_workspace_source", self.allow_workspace_source))
-            git_remote_override = (
-                str(context.get("execution_env", {}).get("git_remote_url") or "").strip()
-                or str(global_vars.get("etl_git_remote_url") or "").strip()
-                or None
-            )
+            git_remote_override = preparse_settings.git_remote_url
 
             modes = self._resolve_mode_order(source_mode, allow_workspace)
             checkout_root = None
@@ -304,7 +283,18 @@ class LocalExecutor(Executor):
         if seed_context:
             pipeline.vars = dict(getattr(pipeline, "vars", {}) or {})
             pipeline.vars.update(seed_context)
-        effective_workdir = _resolve_effective_workdir(pipeline)
+        runtime_settings = build_resolved_runtime_settings(
+            global_vars=global_vars,
+            exec_env=execution_env,
+            project_vars=project_vars,
+            commandline_vars=commandline_vars,
+            pipeline=pipeline,
+            workdir_default=self.workdir,
+            execution_cwd_default=Path.home(),
+        )
+        effective_workdir = runtime_settings.paths.workdir
+        execution_cwd = runtime_settings.paths.execution_cwd
+        execution_cwd.mkdir(parents=True, exist_ok=True)
         resume_run_id = context.get("resume_run_id")
         resume_succeeded_steps = None
         prior_step_outputs = None
@@ -325,35 +315,36 @@ class LocalExecutor(Executor):
                 except Exception:
                     run_started = None
 
-        run_result = run_pipeline(
-            pipeline,
-            plugin_dir=plugin_dir,
-            workdir=effective_workdir,
-            run_id=str(context.get("run_id") or "").strip() or None,
-            run_started=run_started,
-            dry_run=self.dry_run,
-            max_retries=self.max_retries,
-            retry_delay_seconds=self.retry_delay_seconds,
-            resume_succeeded_steps=resume_succeeded_steps,
-            prior_step_outputs=prior_step_outputs,
-            log_func=context.get("log"),
-            step_log_func=context.get("step_log"),
-            context_snapshot_func=lambda **snap: upsert_run_context_snapshot(
-                run_id=str((snap.get("context") or {}).get("sys", {}).get("run", {}).get("id") or context.get("run_id") or ""),
-                pipeline=str(pipeline_path),
-                project_id=context.get("project_id"),
-                executor=self.name,
-                event_type=str(snap.get("event_type") or "snapshot"),
-                context=dict(snap.get("context") or {}),
-                step_name=str(snap.get("step_name") or "").strip() or None,
-                step_index=snap.get("step_index"),
-                snapshot_file=(
-                    effective_workdir
-                    / "_context_snapshots"
-                    / f"{str((snap.get('context') or {}).get('sys', {}).get('run', {}).get('id') or context.get('run_id') or 'run').strip()}.jsonl"
+        with _pushd(execution_cwd):
+            run_result = run_pipeline(
+                pipeline,
+                plugin_dir=plugin_dir,
+                workdir=effective_workdir,
+                run_id=str(context.get("run_id") or "").strip() or None,
+                run_started=run_started,
+                dry_run=self.dry_run,
+                max_retries=self.max_retries,
+                retry_delay_seconds=self.retry_delay_seconds,
+                resume_succeeded_steps=resume_succeeded_steps,
+                prior_step_outputs=prior_step_outputs,
+                log_func=context.get("log"),
+                step_log_func=context.get("step_log"),
+                context_snapshot_func=lambda **snap: upsert_run_context_snapshot(
+                    run_id=str((snap.get("context") or {}).get("sys", {}).get("run", {}).get("id") or context.get("run_id") or ""),
+                    pipeline=str(pipeline_path),
+                    project_id=context.get("project_id"),
+                    executor=self.name,
+                    event_type=str(snap.get("event_type") or "snapshot"),
+                    context=dict(snap.get("context") or {}),
+                    step_name=str(snap.get("step_name") or "").strip() or None,
+                    step_index=snap.get("step_index"),
+                    snapshot_file=(
+                        effective_workdir
+                        / "_context_snapshots"
+                        / f"{str((snap.get('context') or {}).get('sys', {}).get('run', {}).get('id') or context.get('run_id') or 'run').strip()}.jsonl"
+                    ),
                 ),
-            ),
-        )
+            )
         # attach timestamps
         run_result.started_at = context.get("started_at") or datetime.utcnow().isoformat() + "Z"  # type: ignore[attr-defined]
         run_result.ended_at = datetime.utcnow().isoformat() + "Z"  # type: ignore[attr-defined]
