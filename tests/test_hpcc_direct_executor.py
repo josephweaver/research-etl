@@ -563,6 +563,7 @@ def test_hpcc_direct_includes_db_tunnel_command_in_run_stage(monkeypatch, tmp_pa
     assert "ETL_DB_TUNNEL_HOST" in remote_script
     assert "ETL_DB_TUNNEL_PORT" in remote_script
     assert "ETL_DATABASE_URL=\"$(" in remote_script
+    assert "rewrite_tunneled_database_url" in remote_script
 
 
 def test_hpcc_direct_wraps_db_tunnel_with_tmux_and_cleanup_when_enabled(monkeypatch, tmp_path: Path) -> None:
