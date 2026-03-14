@@ -53,6 +53,12 @@ Current engineering focus is limited to the `needed-now core` areas:
 - run the next real landcore pipeline on HPCC and confirm the same
 - treat failures as concrete runtime-context, path-resolution, validation, or provenance defects before doing broader cleanup
 
+## Executor strategy
+
+- Use `hpcc_direct` first to debug remote runtime context, path resolution, pipeline asset resolution, and provenance quickly.
+- Once `hpcc_direct` is working for the target pipelines, move to `slurm` and fix any scheduler-specific issues.
+- Do not treat `hpcc_direct` and `slurm` as separate product tracks. The intent is for `hpcc_direct` to de-risk the same remote execution model that `slurm` will use.
+
 ## Recent progress
 
 ### 2026-03-14
