@@ -80,6 +80,7 @@ environments:
     ssh_user: weave151
     # programmatic: immutable remote ETL and pipeline-asset checkouts live under src/.
     remote_repo: "{basedir}/src"
+    source_root: "{basedir}/src"
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
     propagate_db_secret: false
     load_secrets_file: true
@@ -113,6 +114,7 @@ environments:
     ssh_user: weave151
     # programmatic: immutable remote ETL and pipeline-asset checkouts live under src/.
     remote_repo: "{basedir}/src"
+    source_root: "{basedir}/src"
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
 
     # ---- Template-only variables (kept at the end on purpose) ----

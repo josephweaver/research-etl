@@ -265,6 +265,9 @@ def resolve_runtime_text(
 
 
 def resolve_pipeline_assets_cache_root(*, global_vars: Dict[str, Any], exec_env: Dict[str, Any]) -> Optional[Path]:
+    env_override = str(os.environ.get("ETL_PIPELINE_ASSET_CACHE_ROOT") or "").strip()
+    if env_override:
+        return Path(env_override).expanduser().resolve()
     raw = (
         exec_env.get("pipeline_assets_cache_root")
         or exec_env.get("source_root")
