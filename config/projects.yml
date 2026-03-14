@@ -1,8 +1,10 @@
 projects:
   default:
     vars:
-      basedir: "{env.basedir}/default"
+      # programmatic: shared project owner label when no explicit project overrides it.
       owner: "core"
+
+      # programmatic: legacy single-source pipeline asset config. Kept for compatibility.
       pipeline_assets_repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
       pipeline_assets_local_repo_path: ""
       pipeline_assets_ref: "main"
@@ -10,14 +12,51 @@ projects:
       pipeline_assets_pipelines_dir: "pipelines"
       pipeline_assets_scripts_dir: "scripts"
 
+      # ---- Template-only variables (kept at the end on purpose) ----
+      basedir: "{env.basedir}/default"
+
   land_core:
     vars:
+      # programmatic: human/ownership label used by project-aware logic and templates.
+      owner: "land-core"
+
+      # programmatic: external catalog repo used by dictionary/catalog workflows.
+      data_dictionary_repo_url: "https://github.com/land-core/landcore-data-catalog.git"
+
+      # programmatic: workspace manifest path for query/dataset registration features.
+      # Note: this is an explicit path, not yet auto-bound to the immutable asset checkout root.
+      duckdb_workspace_config_path: "../landcore-etl-pipelines/db/duckdb/workspace.yml"
+
+      # programmatic: ordered asset repositories used to resolve bare pipeline names like sample.yml.
+      # local_repo_path is intentionally blank so execution resolves from immutable checkouts under {env.source_root}
+      # instead of reusing mutable sibling workspaces.
+      pipeline_asset_sources:
+        - project_key: "land_core"
+          repo_url: "https://github.com/josephweaver/landcore-etl-pipelines.git"
+          local_repo_path: ""
+          pipelines_dir: "pipelines"
+          scripts_dir: "scripts"
+          ref: "main"
+          priority: 100
+        - project_key: "shared"
+          repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
+          local_repo_path: ""
+          pipelines_dir: "pipelines"
+          scripts_dir: "scripts"
+          ref: "main"
+          priority: 200
+
+      # programmatic: legacy single-source defaults retained for compatibility with older callers.
+      pipeline_assets_repo_url: "https://github.com/josephweaver/landcore-etl-pipelines.git"
+      pipeline_assets_local_repo_path: ""
+      pipeline_assets_project_key: "land_core"
+      pipeline_assets_pipelines_dir: "pipelines"
+      pipeline_assets_scripts_dir: "scripts"
+
+      # ---- Template-only variables (kept at the end on purpose) ----
       basedir: "{env.basedir}/land_core"
       duckdb_path: "{basedir}/duckdb/land_core.duckdb"
-      duckdb_workspace_config_path: "../landcore-etl-pipelines/db/duckdb/workspace.yml"
-      owner: "land-core"
-      data_dictionary_repo_url: "https://github.com/land-core/landcore-data-catalog.git"
-      states_of_interest: [ 'IL', 'MN', 'WI', 'OH', 'SD', 'IA', 'IN', 'MI', 'MO' ]
+      states_of_interest: ['IL', 'MN', 'WI', 'OH', 'SD', 'IA', 'IN', 'MI', 'MO']
       tiles_of_interest: [
         'h12v04','h12v05','h12v06','h12v07','h13v04',
         'h13v05','h13v06','h13v07','h14v04','h14v05',
@@ -36,34 +75,23 @@ projects:
         'h22v08','h22v09','h22v10','h23v04','h23v05',
         'h23v06','h23v07','h23v08','h23v09','h23v10',
         'h24v06','h24v07','h24v08','h24v09','h24v10',
-        'h25v07','h25v08','h25v09']
-      pipeline_asset_sources:
-        - project_key: "land_core"
-          repo_url: "https://github.com/josephweaver/landcore-etl-pipelines.git"
-          local_repo_path: "../landcore-etl-pipelines"
-          pipelines_dir: "pipelines"
-          scripts_dir: "scripts"
-          ref: "main"
-          priority: 100
-        - project_key: "shared"
-          repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
-          local_repo_path: "../shared-etl-pipelines"
-          pipelines_dir: "pipelines"
-          scripts_dir: "scripts"
-          ref: "main"
-          priority: 200
-      pipeline_assets_repo_url: "https://github.com/josephweaver/landcore-etl-pipelines.git"
-      pipeline_assets_local_repo_path: "../landcore-etl-pipelines"
-      pipeline_assets_project_key: "land_core"
-      pipeline_assets_pipelines_dir: "pipelines"
-      pipeline_assets_scripts_dir: "scripts"
+        'h25v07','h25v08','h25v09'
+      ]
+
   crop_insurance:
     vars:
-      basedir: "{env.basedir}/crop-insurance"
-      duckdb_workspace_config_path: "../crop-insurance-etl-pipelines/db/duckdb/workspace.yml"
+      # programmatic: human/ownership label used by project-aware logic and templates.
       owner: "crop-insurance"
+
+      # programmatic: workspace manifest path for query/dataset registration features.
+      duckdb_workspace_config_path: "../crop-insurance-etl-pipelines/db/duckdb/workspace.yml"
+
+      # programmatic: legacy single-source pipeline asset config.
       pipeline_assets_repo_url: "git@github.com:josephweaver/crop-insurance-etl-pipelines.git"
-      pipeline_assets_local_repo_path: "../crop-insurance-etl-pipelines"
+      pipeline_assets_local_repo_path: ""
       pipeline_assets_project_key: "crop-insurance"
       pipeline_assets_pipelines_dir: "pipelines"
       pipeline_assets_scripts_dir: "scripts"
+
+      # ---- Template-only variables (kept at the end on purpose) ----
+      basedir: "{env.basedir}/crop-insurance"

@@ -149,6 +149,19 @@ def _apply_db_mode_from_exec_env(exec_env: dict) -> None:
             os.environ["ETL_DB_VERBOSE"] = "0"
 
 
+def _pipeline_assets_cache_root(*, global_vars: dict, exec_env: dict) -> Path | None:
+    raw = (
+        exec_env.get("pipeline_assets_cache_root")
+        or exec_env.get("source_root")
+        or global_vars.get("pipeline_assets_cache_root")
+        or global_vars.get("source_root")
+    )
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    return Path(text).expanduser()
+
+
 def load_context(path: Path) -> dict:
     if not path or not path.exists():
         return {}
@@ -351,6 +364,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
             pipeline_path_input,
             project_vars=project_vars,
             repo_root=Path(".").resolve(),
+            cache_root=_pipeline_assets_cache_root(global_vars=global_vars, exec_env=exec_env),
         )
     except PipelineAssetError as exc:
         logger.error("Pipeline asset resolution failed: %s", exc)

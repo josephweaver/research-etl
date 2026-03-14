@@ -87,6 +87,7 @@ def test_sync_pipeline_asset_source_falls_back_when_local_repo_path_missing(monk
 
     monkeypatch.setattr("etl.pipeline_assets._run_git", _fake_run_git)
     monkeypatch.setattr("etl.pipeline_assets._SYNCED_REPOS", set())
+    monkeypatch.setattr("etl.pipeline_assets._resolve_repo_commit", lambda **_: "abc123def4567890")
 
     src = PipelineAssetSource(
         repo_url="https://example.com/shared.git",
@@ -96,7 +97,8 @@ def test_sync_pipeline_asset_source_falls_back_when_local_repo_path_missing(monk
     out = sync_pipeline_asset_source(src, cache_root=tmp_path / "cache", repo_root=tmp_path / "repo_root")
 
     assert out.parent == (tmp_path / "cache").resolve()
-    assert any(cmd[:2] == ["clone", "https://example.com/shared.git"] for cmd in calls)
+    assert out.name == "shared-abc123def456"
+    assert any(cmd[:3] == ["clone", "--no-checkout", "https://example.com/shared.git"] for cmd in calls)
 
 
 def test_resolve_pipeline_path_from_project_sources_handles_missing_absolute_local_path(monkeypatch, tmp_path: Path) -> None:
@@ -158,8 +160,13 @@ def test_resolve_pipeline_path_from_project_sources_honors_env_cache_root(monkey
 
 def test_sync_pipeline_asset_source_cache_only_uses_existing_repo_without_git(monkeypatch, tmp_path: Path) -> None:
     cache_root = tmp_path / "cache"
-    repo_dir = pipeline_assets_mod._repo_cache_dir(cache_root, "https://example.com/shared-etl-pipelines.git")
+    repo_dir = cache_root / "shared-etl-pipelines-abc123def456"
     repo_dir.mkdir(parents=True, exist_ok=True)
+    index_path = cache_root / ".asset_ref_index.json"
+    index_path.write_text(
+        '{\n  "https://example.com/shared-etl-pipelines.git|main": "shared-etl-pipelines-abc123def456"\n}\n',
+        encoding="utf-8",
+    )
     monkeypatch.setenv("ETL_PIPELINE_ASSET_SYNC_MODE", "cache_only")
 
     calls: list[list[str]] = []
@@ -169,6 +176,7 @@ def test_sync_pipeline_asset_source_cache_only_uses_existing_repo_without_git(mo
         return ""
 
     monkeypatch.setattr("etl.pipeline_assets._run_git", _fake_run_git)
+    monkeypatch.setattr("etl.pipeline_assets._resolve_repo_commit", lambda **_: "abc123def4567890")
 
     src = PipelineAssetSource(repo_url="https://example.com/shared-etl-pipelines.git", ref="main")
     out = sync_pipeline_asset_source(src, cache_root=cache_root)

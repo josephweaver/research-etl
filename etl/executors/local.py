@@ -180,6 +180,22 @@ class LocalExecutor(Executor):
 
         preparse_workdir = _resolve_effective_workdir(None)
 
+        source_root_raw = (
+            commandline_vars.get("source_root")
+            or execution_env.get("source_root")
+            or global_vars.get("source_root")
+        )
+        source_root_text = str(source_root_raw or "").strip()
+        source_root = Path(source_root_text).expanduser() if source_root_text else (preparse_workdir / "_code")
+        pipeline_assets_root_raw = (
+            commandline_vars.get("pipeline_assets_cache_root")
+            or execution_env.get("pipeline_assets_cache_root")
+            or global_vars.get("pipeline_assets_cache_root")
+            or source_root_text
+        )
+        pipeline_assets_root_text = str(pipeline_assets_root_raw or "").strip()
+        pipeline_assets_root = Path(pipeline_assets_root_text).expanduser() if pipeline_assets_root_text else source_root
+
         if self.enforce_git_checkout:
             repo_root = Path(context.get("repo_root") or Path(".").resolve()).resolve()
             provenance = context.get("provenance") or {}
@@ -187,7 +203,11 @@ class LocalExecutor(Executor):
             bundle = context.get("source_bundle") or self.source_bundle
             snapshot = context.get("source_snapshot") or self.source_snapshot
             allow_workspace = bool(context.get("allow_workspace_source", self.allow_workspace_source))
-            git_remote_override = str(context.get("execution_env", {}).get("git_remote_url") or "").strip() or None
+            git_remote_override = (
+                str(context.get("execution_env", {}).get("git_remote_url") or "").strip()
+                or str(global_vars.get("etl_git_remote_url") or "").strip()
+                or None
+            )
 
             modes = self._resolve_mode_order(source_mode, allow_workspace)
             checkout_root = None
@@ -208,7 +228,7 @@ class LocalExecutor(Executor):
                         )
                         if git_remote_override:
                             spec = replace(spec, origin_url=git_remote_override)
-                        checkout_root = ensure_repo_checkout(preparse_workdir / "_code", spec)
+                        checkout_root = ensure_repo_checkout(source_root, spec)
                     elif mode == "git_bundle":
                         if not bundle:
                             raise GitCheckoutError("No source bundle configured.")
@@ -218,7 +238,7 @@ class LocalExecutor(Executor):
                             require_clean=self.require_clean_git,
                             require_origin=False,
                         )
-                        checkout_root = ensure_bundle_checkout(preparse_workdir / "_code", spec, Path(bundle))
+                        checkout_root = ensure_bundle_checkout(source_root, spec, Path(bundle))
                     elif mode == "snapshot":
                         if not snapshot:
                             raise GitCheckoutError("No source snapshot configured.")
@@ -228,7 +248,7 @@ class LocalExecutor(Executor):
                             require_clean=False,
                             require_origin=False,
                         )
-                        checkout_root = ensure_snapshot_checkout(preparse_workdir / "_code", spec, Path(snapshot))
+                        checkout_root = ensure_snapshot_checkout(source_root, spec, Path(snapshot))
                     else:
                         raise GitCheckoutError(f"Unsupported execution_source: {mode}")
                     if mode != "workspace":
@@ -236,7 +256,7 @@ class LocalExecutor(Executor):
                             pipeline_ref,
                             project_vars=project_vars,
                             repo_root=repo_root,
-                            cache_root=preparse_workdir / ".pipeline_assets",
+                            cache_root=pipeline_assets_root,
                         )
                         if pipeline_asset_match is not None:
                             overlay_pipeline_asset_checkout(checkout_root, pipeline_asset_match)

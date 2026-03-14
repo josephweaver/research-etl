@@ -229,6 +229,67 @@ def test_local_executor_workdir_prefers_commandline_vars_override(tmp_path: Path
     assert str(captured["store"]).replace("\\", "/") == "/cli/work/runs.jsonl"
 
 
+def test_local_executor_prefers_execution_env_source_root_for_checkout(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    source_pipeline = repo_root / "pipelines" / "sample.yml"
+    source_pipeline.parent.mkdir(parents=True, exist_ok=True)
+
+    checkout_root = tmp_path / "src" / "repo-abc123"
+    (checkout_root / "pipelines").mkdir(parents=True, exist_ok=True)
+    (checkout_root / "plugins").mkdir(parents=True, exist_ok=True)
+    (checkout_root / "pipelines" / "sample.yml").write_text(
+        "steps:\n  - name: echo\n    script: echo.py\n",
+        encoding="utf-8",
+    )
+    (checkout_root / "plugins" / "echo.py").write_text(
+        "\n".join(
+            [
+                "meta = {'name': 'echo', 'version': '0.1.0', 'description': 'test'}",
+                "def run(args, ctx):",
+                "    return {'ok': True}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        local_mod,
+        "resolve_execution_spec",
+        lambda **_: GitExecutionSpec(
+            commit_sha="abc123",
+            origin_url="https://github.com/org/repo.git",
+            repo_name="repo",
+            git_is_dirty=False,
+        ),
+    )
+    seen = {}
+
+    def _fake_checkout(base_dir, spec):
+        seen["base_dir"] = Path(base_dir)
+        return checkout_root
+
+    monkeypatch.setattr(local_mod, "ensure_repo_checkout", _fake_checkout)
+
+    ex = LocalExecutor(
+        plugin_dir=Path("plugins"),
+        workdir=tmp_path / ".runs",
+        dry_run=True,
+        enforce_git_checkout=True,
+        require_clean_git=False,
+    )
+    submit = ex.submit(
+        str(source_pipeline),
+        context={
+            "repo_root": repo_root,
+            "execution_env": {"source_root": str(tmp_path / "src")},
+            "global_vars": {},
+        },
+    )
+    assert submit.run_id
+    assert seen["base_dir"].resolve() == (tmp_path / "src").resolve()
+
+
 def test_local_executor_uses_matching_pipeline_asset_repo_for_external_pipeline(tmp_path: Path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True, exist_ok=True)

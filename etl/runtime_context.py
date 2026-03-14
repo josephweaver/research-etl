@@ -43,6 +43,19 @@ from .variable_solver import VariableSolver
 DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
 
 
+def _pipeline_assets_cache_root(*, global_vars: Dict[str, Any], exec_env: Dict[str, Any]) -> Optional[Path]:
+    raw = (
+        exec_env.get("pipeline_assets_cache_root")
+        or exec_env.get("source_root")
+        or global_vars.get("pipeline_assets_cache_root")
+        or global_vars.get("source_root")
+    )
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    return Path(text).expanduser()
+
+
 class RuntimeContextError(RuntimeError):
     """Raised when runtime context loading fails."""
 
@@ -416,6 +429,7 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
                 pipeline_path,
                 project_vars=project_vars,
                 repo_root=Path(".").resolve(),
+                cache_root=_pipeline_assets_cache_root(global_vars=global_vars, exec_env=exec_env),
             )
         except PipelineAssetError as exc:
             raise RuntimeContextError(f"Pipeline asset resolution error: {exc}") from exc

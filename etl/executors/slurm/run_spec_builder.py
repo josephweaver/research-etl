@@ -260,7 +260,12 @@ class SlurmRunSpecBuilder:
             default=executor.allow_workspace_source,
         )
         selected_source_mode = "workspace"
-        git_remote_override = str(env_ns.get("git_remote_url") or executor.env.git_remote_url or "").strip() or None
+        git_remote_override = (
+            str(env_ns.get("git_remote_url") or "").strip()
+            or str(global_ns.get("etl_git_remote_url") or "").strip()
+            or str(executor.env.git_remote_url or "").strip()
+            or None
+        )
         git_origin_url = None
         git_commit_sha = None
         git_repo_name = None

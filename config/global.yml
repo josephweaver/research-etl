@@ -1,11 +1,37 @@
+# Global config for all execution targets.
+#
+# Comment convention used below:
+# - programmatic: the application reads this key directly and changes behavior.
+# - template-only: this key is just a variable used by template/path resolution.
+
+# programmatic: maximum interpolation passes for recursive template resolution.
+resolve_max_passes: 10
+
+# programmatic: canonical git remote URL for the ETL engine source itself.
+# Executors use this when building immutable research-etl checkouts unless an
+# environment explicitly overrides `git_remote_url`.
+etl_git_remote_url: "https://github.com/josephweaver/research-etl.git"
+
+# programmatic: default execution policy for environments that do not override it.
+# `immutable` means run from a pinned clean checkout outside the live workspace.
+execution_mode: immutable
+
+# programmatic: root directory for immutable source checkouts.
+# Desired layout:
+#   ../.out/src/research-etl-<sha>
+#   ../.out/src/shared-etl-pipelines-<sha>
+#   ../.out/src/landcore-etl-pipelines-<sha>
+source_root: "../.out/src"
+
+# ---- Template-only variables (kept at the end on purpose) ----
+
+# template-only: shared root for all local output/state outside the checked-out code.
 basedir: ../.out
+
+# template-only: default derived directories used by environments/pipelines unless overridden.
 workdir: "../.out/work"
-bindir: .
 logdir: "../.out/logs"
 datadir: "../.out/data"
 tmpdir: "../.out/tmp"
 artifactsdir: "../.out/artifacts"
-resolve_max_passes: 10
-
-
-    
+bindir: .

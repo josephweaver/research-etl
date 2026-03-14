@@ -121,6 +121,12 @@ def register_run_args(
     )
     p_run.add_argument("--allow-dirty-git", action="store_true", help="Allow strict git checkout runs from a dirty local worktree")
     p_run.add_argument(
+        "--execution-mode",
+        choices=["immutable", "workspace"],
+        default=None,
+        help="High-level source policy: immutable runs from a pinned checkout, workspace runs from the live repo.",
+    )
+    p_run.add_argument(
         "--execution-source",
         choices=["auto", "git_remote", "git_bundle", "snapshot", "workspace"],
         default=None,
@@ -195,6 +201,31 @@ def _resolve_workdir_with_solver(
         pipeline_workdir=str(getattr(pipeline, "workdir", "") or ""),
         fallback=".runs",
     )
+
+
+def _resolve_execution_policy(
+    *,
+    global_vars: Dict[str, Any],
+    exec_env: Dict[str, Any],
+    execution_mode: str | None,
+    execution_source: str | None,
+    allow_workspace_source: bool,
+) -> tuple[str, bool]:
+    mode = str(
+        execution_mode
+        or exec_env.get("execution_mode")
+        or global_vars.get("execution_mode")
+        or ""
+    ).strip().lower()
+    if mode == "workspace":
+        resolved_source = str(execution_source or exec_env.get("execution_source") or "workspace").strip().lower() or "workspace"
+        return resolved_source, True
+    if mode == "immutable":
+        resolved_source = str(execution_source or exec_env.get("execution_source") or "git_remote").strip().lower() or "git_remote"
+        return resolved_source, False
+    resolved_source = str(execution_source or exec_env.get("execution_source") or "auto").strip().lower() or "auto"
+    resolved_allow_workspace = bool(allow_workspace_source or exec_env.get("allow_workspace_source", False))
+    return resolved_source, resolved_allow_workspace
 
 
 def _has_successful_run_for_pipeline(pipeline_path: Path, *, workdir: str) -> bool:
@@ -339,10 +370,15 @@ def _submit_pipeline_run(
         project_vars=project_vars,
         provenance=provenance,
     )
-    execution_source = args.execution_source or exec_env.get("execution_source", "auto")
+    execution_source, allow_workspace_source = _resolve_execution_policy(
+        global_vars=global_vars,
+        exec_env=exec_env,
+        execution_mode=getattr(args, "execution_mode", None),
+        execution_source=args.execution_source,
+        allow_workspace_source=bool(args.allow_workspace_source),
+    )
     source_bundle = args.source_bundle or exec_env.get("source_bundle")
     source_snapshot = args.source_snapshot or exec_env.get("source_snapshot")
-    allow_workspace_source = bool(args.allow_workspace_source or exec_env.get("allow_workspace_source", False))
     if args.executor in {"slurm", "hpcc_direct"} and not pipeline_inside_repo:
         print(
             "External pipeline asset paths are currently supported for local executor only. "

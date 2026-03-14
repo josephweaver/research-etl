@@ -15,6 +15,44 @@ from fastapi import HTTPException, Request
 from etl.source_control import merge_source_commandline_vars
 
 
+def _parse_bool_local(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _resolve_execution_policy(
+    *,
+    global_vars: dict[str, Any],
+    execution_env: dict[str, Any],
+    execution_mode: str | None,
+    execution_source: str | None,
+    allow_workspace_source: bool,
+) -> tuple[str, bool]:
+    mode = str(
+        execution_mode
+        or execution_env.get("execution_mode")
+        or global_vars.get("execution_mode")
+        or ""
+    ).strip().lower()
+    if mode == "workspace":
+        resolved_source = str(execution_source or execution_env.get("execution_source") or "workspace").strip().lower() or "workspace"
+        return resolved_source, True
+    if mode == "immutable":
+        resolved_source = str(execution_source or execution_env.get("execution_source") or "git_remote").strip().lower() or "git_remote"
+        return resolved_source, False
+    resolved_source = str(execution_source or execution_env.get("execution_source") or "auto").strip().lower() or "auto"
+    resolved_allow_workspace = allow_workspace_source or _parse_bool_local(execution_env.get("allow_workspace_source"), default=False)
+    return resolved_source, resolved_allow_workspace
+
+
 def parse_action_payload(payload: Optional[dict[str, Any]], deps: dict[str, Any]) -> dict[str, Any]:
     payload = payload or {}
     pipeline_raw = str(payload.get("pipeline") or "").strip()
@@ -60,6 +98,13 @@ def parse_action_payload(payload: Optional[dict[str, Any]], deps: dict[str, Any]
     if retry_delay_seconds is not None and retry_delay_seconds < 0:
         raise HTTPException(status_code=400, detail="Invalid retry_delay_seconds: must be >= 0.")
 
+    execution_mode = str(payload.get("execution_mode") or "").strip().lower() or None
+    if execution_mode and execution_mode not in {"immutable", "workspace"}:
+        raise HTTPException(
+            status_code=400,
+            detail="`execution_mode` must be one of: immutable, workspace.",
+        )
+
     execution_source = str(payload.get("execution_source") or "").strip().lower() or None
     if execution_source and execution_source not in {"auto", "git_remote", "git_bundle", "snapshot", "workspace"}:
         raise HTTPException(
@@ -86,6 +131,7 @@ def parse_action_payload(payload: Optional[dict[str, Any]], deps: dict[str, Any]
         "verbose": deps["parse_bool"](payload.get("verbose"), default=False),
         "max_retries": max_retries,
         "retry_delay_seconds": retry_delay_seconds,
+        "execution_mode": execution_mode,
         "execution_source": execution_source,
         "source_bundle": str(payload.get("source_bundle") or "").strip() or None,
         "source_snapshot": str(payload.get("source_snapshot") or "").strip() or None,
@@ -176,6 +222,15 @@ def resolve_action_pipeline_context(
                 pipeline_path,
                 project_vars=tentative_project_vars,
                 repo_root=Path(".").resolve(),
+                cache_root=Path(
+                    str(
+                        execution_env.get("pipeline_assets_cache_root")
+                        or execution_env.get("source_root")
+                        or ""
+                    ).strip()
+                ).expanduser()
+                if str(execution_env.get("pipeline_assets_cache_root") or execution_env.get("source_root") or "").strip()
+                else None,
             )
         except deps["PipelineAssetError"] as exc:
             raise HTTPException(status_code=400, detail=f"Pipeline asset resolution error: {exc}") from exc
@@ -286,13 +341,15 @@ def api_action_run(request: Request, payload: Optional[dict[str, Any]], deps: di
     )
     execution_env["step_max_retries"] = max_retries
     execution_env["step_retry_delay_seconds"] = retry_delay_seconds
-    execution_source = str(args["execution_source"] or execution_env.get("execution_source") or "auto").strip().lower()
+    execution_source, allow_workspace_source = _resolve_execution_policy(
+        global_vars=global_vars,
+        execution_env=execution_env,
+        execution_mode=args.get("execution_mode"),
+        execution_source=args["execution_source"],
+        allow_workspace_source=deps["parse_bool"](args["allow_workspace_source"], default=False),
+    )
     source_bundle = args["source_bundle"] or execution_env.get("source_bundle")
     source_snapshot = args["source_snapshot"] or execution_env.get("source_snapshot")
-    allow_workspace_source = deps["parse_bool"](
-        args["allow_workspace_source"],
-        default=deps["parse_bool"](execution_env.get("allow_workspace_source"), default=False),
-    )
     resolved_pipeline_path, project_id, project_vars, selected_projects_config = resolve_action_pipeline_context(
         pipeline_path=args["pipeline_path"],
         requested_project_id=requested_project_id,

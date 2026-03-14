@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -58,6 +59,47 @@ def _repo_cache_dir(cache_root: Path, repo_url: str) -> Path:
     repo_name = _slug(infer_repo_name(repo_url))
     digest = hashlib.sha1(str(repo_url).encode("utf-8")).hexdigest()[:10]
     return cache_root / f"{repo_name}-{digest}"
+
+
+def _ref_index_path(cache_root: Path) -> Path:
+    return Path(cache_root).resolve() / ".asset_ref_index.json"
+
+
+def _load_ref_index(cache_root: Path) -> Dict[str, str]:
+    path = _ref_index_path(cache_root)
+    if not path.exists():
+        return {}
+    try:
+        return dict(json.loads(path.read_text(encoding="utf-8")) or {})
+    except Exception:
+        return {}
+
+
+def _save_ref_index(cache_root: Path, index: Dict[str, str]) -> None:
+    path = _ref_index_path(cache_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _ref_index_key(repo_url: str, ref: str) -> str:
+    return f"{str(repo_url or '').strip()}|{str(ref or '').strip()}"
+
+
+def _resolve_repo_commit(*, repo_url: str, ref: str) -> str:
+    text = _run_git(["ls-remote", repo_url, ref])
+    for line in str(text or "").splitlines():
+        parts = [p for p in line.strip().split() if p]
+        if len(parts) >= 2 and parts[0]:
+            return str(parts[0]).strip()
+    raise PipelineAssetError(f"Could not resolve ref '{ref}' for repo_url={repo_url}")
+
+
+def _immutable_checkout_dir(cache_root: Path, repo_url: str, commit_sha: str) -> Path:
+    repo_name = _slug(infer_repo_name(repo_url))
+    short_sha = str(commit_sha or "").strip()[:12]
+    if not short_sha:
+        raise PipelineAssetError(f"Missing commit SHA for repo_url={repo_url}")
+    return Path(cache_root).resolve() / f"{repo_name}-{short_sha}"
 
 
 def _sync_mode() -> str:
@@ -164,24 +206,51 @@ def sync_pipeline_asset_source(source: PipelineAssetSource, *, cache_root: Path,
 
     cache_root = Path(cache_root).resolve()
     cache_root.mkdir(parents=True, exist_ok=True)
-    repo_dir = _repo_cache_dir(cache_root, source.repo_url)
     mode = _sync_mode()
+    ref_key = _ref_index_key(source.repo_url, source.ref)
+    ref_index = _load_ref_index(cache_root)
+    indexed_name = str(ref_index.get(ref_key) or "").strip()
     if mode in {"cache_only", "offline", "no_network"}:
-        if repo_dir.exists() and repo_dir.is_dir():
-            return repo_dir
+        if indexed_name:
+            repo_dir = (cache_root / indexed_name).resolve()
+            if repo_dir.exists() and repo_dir.is_dir():
+                return repo_dir
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", str(source.ref or "").strip()):
+            repo_dir = _immutable_checkout_dir(cache_root, source.repo_url, str(source.ref).strip())
+            if repo_dir.exists() and repo_dir.is_dir():
+                return repo_dir
+        fallback_repo_dir = _repo_cache_dir(cache_root, source.repo_url)
+        if fallback_repo_dir.exists() and fallback_repo_dir.is_dir():
+            return fallback_repo_dir
+        matches = sorted(cache_root.glob(f"{_slug(infer_repo_name(source.repo_url))}-*"))
+        if len(matches) == 1 and matches[0].is_dir():
+            return matches[0]
         raise PipelineAssetError(
-            f"Pipeline asset cache missing in {mode} mode: {repo_dir} "
-            f"(repo_url={source.repo_url}, ref={source.ref})"
+            f"Pipeline asset cache missing in {mode} mode for repo_url={source.repo_url}, ref={source.ref}"
         )
-    sync_key = (str(repo_dir), str(source.ref))
+    commit_sha = _resolve_repo_commit(repo_url=source.repo_url, ref=source.ref)
+    repo_dir = _immutable_checkout_dir(cache_root, source.repo_url, commit_sha)
+    sync_key = (str(repo_dir), str(commit_sha))
     if sync_key in _SYNCED_REPOS and repo_dir.exists():
+        ref_index[ref_key] = repo_dir.name
+        _save_ref_index(cache_root, ref_index)
         return repo_dir
     if not repo_dir.exists():
-        _run_git(["clone", source.repo_url, str(repo_dir)])
+        _run_git(["clone", "--no-checkout", source.repo_url, str(repo_dir)])
     else:
-        _run_git(["fetch", "--all", "--tags", "--prune"], cwd=repo_dir)
-    _run_git(["checkout", source.ref], cwd=repo_dir)
-    _run_git(["pull", "--ff-only", "origin", source.ref], cwd=repo_dir)
+        is_repo = run_logged_subprocess(
+            ["git", "-C", str(repo_dir), "rev-parse", "--is-inside-work-tree"],
+            logger=_LOG,
+            action="git",
+            check=False,
+        )
+        if is_repo.returncode != 0:
+            raise PipelineAssetError(f"Pipeline asset cache path exists but is not a git repo: {repo_dir}")
+    _run_git(["fetch", "--tags", "--prune", "origin"], cwd=repo_dir)
+    _run_git(["checkout", "--detach", commit_sha], cwd=repo_dir)
+    _run_git(["reset", "--hard", commit_sha], cwd=repo_dir)
+    ref_index[ref_key] = repo_dir.name
+    _save_ref_index(cache_root, ref_index)
     _SYNCED_REPOS.add(sync_key)
     return repo_dir
 

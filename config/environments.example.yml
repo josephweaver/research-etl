@@ -1,4 +1,18 @@
 environments:
+  local:
+    executor: local
+    path_style: windows
+    # Inherits the global default execution_mode=immutable.
+    basedir: ../.out
+    workdir: "{basedir}/work"
+
+  local-dev:
+    executor: local
+    path_style: windows
+    execution_mode: workspace
+    basedir: ../.out
+    workdir: "{basedir}/work"
+
   hpcc_msu:
     executor: slurm
     name: dev

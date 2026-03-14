@@ -720,7 +720,10 @@ class HpccDirectExecutor(Executor):
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Could not prepare git-pinned execution source: {exc}") from exc
 
-        git_remote_override = str(exec_env.get("git_remote_url") or "").strip()
+        git_remote_override = (
+            str(exec_env.get("git_remote_url") or "").strip()
+            or str(global_vars.get("etl_git_remote_url") or "").strip()
+        )
         if git_remote_override:
             spec = replace(spec, origin_url=git_remote_override, repo_name=infer_repo_name(git_remote_override))
         if not spec.origin_url:
