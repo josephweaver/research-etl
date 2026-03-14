@@ -23,6 +23,7 @@ from etl.cli_cmd.common import CommandHandler, emit_error_with_report, resolve_w
 from etl.executors import HpccDirectExecutor, LocalExecutor, SlurmExecutor
 from etl.executors.slurm import SlurmSubmitError
 from etl.pipeline import PipelineError, parse_pipeline
+from etl.pipeline_assets import infer_pipeline_asset_match
 from etl.projects import (
     ProjectConfigError,
     load_project_vars,
@@ -370,6 +371,7 @@ def _submit_pipeline_run(
         project_vars=project_vars,
         provenance=provenance,
     )
+    pipeline_remote_hint: str | None = None
     execution_source, allow_workspace_source = _resolve_execution_policy(
         global_vars=global_vars,
         exec_env=exec_env,
@@ -380,12 +382,29 @@ def _submit_pipeline_run(
     source_bundle = args.source_bundle or exec_env.get("source_bundle")
     source_snapshot = args.source_snapshot or exec_env.get("source_snapshot")
     if args.executor in {"slurm", "hpcc_direct"} and not pipeline_inside_repo:
-        print(
-            "External pipeline asset paths are currently supported for local executor only. "
-            "Use --executor local for external repos, or place pipeline inside this repo for remote executors.",
-            file=sys.stderr,
+        if execution_source == "workspace":
+            execution_source = str(exec_env.get("execution_source") or "auto").strip().lower() or "auto"
+            allow_workspace_source = False
+        source_root_text = str(
+            commandline_vars.get("source_root")
+            or exec_env.get("source_root")
+            or global_vars.get("source_root")
+            or ""
+        ).strip()
+        pipeline_asset_match = infer_pipeline_asset_match(
+            pipeline_path,
+            project_vars=project_vars,
+            repo_root=repo_root,
+            cache_root=Path(source_root_text).expanduser() if source_root_text else None,
         )
-        return 1
+        if pipeline_asset_match is None:
+            print(
+                "External pipeline path could not be mapped to any configured project pipeline asset source. "
+                "Check project pipeline_asset_sources/pipelines_dir config or run locally.",
+                file=sys.stderr,
+            )
+            return 1
+        pipeline_remote_hint = pipeline_asset_match.pipeline_remote_hint
     if args.executor == "slurm":
         executor = SlurmExecutor(
             env_config=exec_env,
@@ -451,6 +470,7 @@ def _submit_pipeline_run(
                 "allow_workspace_source": allow_workspace_source,
                 "allow_dirty_git": bool(args.allow_dirty_git),
                 "project_id": project_id,
+                "pipeline_remote_hint": pipeline_remote_hint,
                 "step_indices": str(args.step_indices or "").strip() or None,
                 "seed_context": (
                     load_latest_run_context_snapshot(str(args.state_run_id))
