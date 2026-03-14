@@ -203,6 +203,7 @@ def test_hpcc_direct_submit_syncs_pipeline_asset_cache_before_run_batch(monkeypa
     assert any("https://github.com/josephweaver/landcore-etl-pipelines.git" in s for s in seen_scripts)
     assert any("https://github.com/josephweaver/shared-etl-pipelines.git" in s for s in seen_scripts)
     assert any("git clone --no-checkout" in s and "ASSET_DIR_0" in s for s in seen_scripts)
+    assert any(".asset_ref_index.json" in s for s in seen_scripts)
     assert any("export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only" in s for s in seen_scripts)
 
 

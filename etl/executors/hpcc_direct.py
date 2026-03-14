@@ -864,6 +864,24 @@ class HpccDirectExecutor(Executor):
                     f"git -C \"$ASSET_DIR_{idx}\" checkout --detach \"$(git -C \"$ASSET_DIR_{idx}\" rev-parse \"origin/$ASSET_REF_{idx}\" 2>/dev/null || git -C \"$ASSET_DIR_{idx}\" rev-parse \"$ASSET_REF_{idx}\")\"",
                     f"git -C \"$ASSET_DIR_{idx}\" reset --hard \"$(git -C \"$ASSET_DIR_{idx}\" rev-parse \"origin/$ASSET_REF_{idx}\" 2>/dev/null || git -C \"$ASSET_DIR_{idx}\" rev-parse \"$ASSET_REF_{idx}\")\"",
                     f"git -C \"$ASSET_DIR_{idx}\" clean -fd",
+                    f"{shlex.quote(self.remote_python)} - <<'PY'\n"
+                    "import json\n"
+                    "import os\n"
+                    "from pathlib import Path\n"
+                    f"cache_root = Path(os.environ[{repr('ASSET_CACHE_ROOT')}]).resolve()\n"
+                    f"repo_url = os.environ[{repr(f'ASSET_URL_{idx}')}].strip()\n"
+                    f"ref = os.environ[{repr(f'ASSET_REF_{idx}')}].strip()\n"
+                    f"repo_dir = Path(os.environ[{repr(f'ASSET_DIR_{idx}')}]).resolve()\n"
+                    "index_path = cache_root / '.asset_ref_index.json'\n"
+                    "try:\n"
+                    "    index = json.loads(index_path.read_text(encoding='utf-8')) if index_path.exists() else {}\n"
+                    "    if not isinstance(index, dict):\n"
+                    "        index = {}\n"
+                    "except Exception:\n"
+                    "    index = {}\n"
+                    "index[f'{repo_url}|{ref}'] = repo_dir.name\n"
+                    "index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + '\\n', encoding='utf-8')\n"
+                    "PY",
                 ]
             )
         staged_secrets_remote: Optional[str] = None
