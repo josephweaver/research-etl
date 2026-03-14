@@ -1004,6 +1004,26 @@ class HpccDirectExecutor(Executor):
         )
         run_lines.append("export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only")
         run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
+        projects_debug = str(projects_remote or "").replace('"', '\\"')
+        run_lines.extend(
+            [
+                "echo \"[hpcc_direct][debug] pwd=$(pwd)\"",
+                "echo \"[hpcc_direct][debug] ETL_REPO_ROOT=${ETL_REPO_ROOT:-}\"",
+                "echo \"[hpcc_direct][debug] ETL_PIPELINE_ASSET_CACHE_ROOT=${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\"",
+                "echo \"[hpcc_direct][debug] ETL_PIPELINE_ASSET_SYNC_MODE=${ETL_PIPELINE_ASSET_SYNC_MODE:-}\"",
+                f"echo \"[hpcc_direct][debug] PROJECTS_CONFIG={projects_debug}\"",
+                "if [ -f \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}/.asset_ref_index.json\" ]; then",
+                "  echo \"[hpcc_direct][debug] asset_ref_index=present\"",
+                "  cat \"${ETL_PIPELINE_ASSET_CACHE_ROOT}/.asset_ref_index.json\"",
+                "else",
+                "  echo \"[hpcc_direct][debug] asset_ref_index=missing\"",
+                "fi",
+                "if [ -d \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then",
+                "  echo \"[hpcc_direct][debug] asset_cache_entries:\"",
+                "  ls -1 \"${ETL_PIPELINE_ASSET_CACHE_ROOT}\"",
+                "fi",
+            ]
+        )
         context_seed = context.get("seed_context")
         if context_file and isinstance(context_seed, dict):
             context_json = json.dumps(context_seed, separators=(",", ":"), default=str)
