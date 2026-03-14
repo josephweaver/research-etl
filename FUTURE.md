@@ -29,6 +29,9 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
   - parent-child run linkage
   - cancellation propagation
   - richer `foreach` mode, placement, and backend policy
+- Runtime environment reuse:
+  - avoid rebuilding `.venv` for every new immutable `research-etl-<sha>` checkout when dependencies are unchanged
+  - keep this deferred unless it becomes a direct blocker for crop-insurance or landcore execution
 - Transport-layer abstraction and cleanup:
   - transport lifecycle design
   - reusable command/file/session channels
