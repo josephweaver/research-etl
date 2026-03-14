@@ -76,7 +76,7 @@ environments:
     remote_retry_delay_seconds: 2
     ssh_connect_timeout: 20
     ssh_strict_host_key_checking: accept-new
-    ssh_host: dev-amd24.passwordless
+    ssh_host: dev-amd20.passwordless
     ssh_user: weave151
     # programmatic: immutable remote ETL and pipeline-asset checkouts live under src/.
     remote_repo: "{basedir}/src"
@@ -101,7 +101,9 @@ environments:
   hpcc_msu_direct:
     # programmatic: remote direct-execution executor type.
     executor: hpcc_direct
-    db_mode: offline
+    propagate_db_secret: false
+    load_secrets_file: true
+    db_mode: online
     db_verbose: true
     path_style: unix
     # programmatic: per-environment override for the ETL engine source remote.
@@ -116,6 +118,11 @@ environments:
     remote_repo: "{basedir}/src"
     source_root: "{basedir}/src"
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
+    db_tunnel_via_tmux: true
+    db_tunnel_session_prefix: "etl-db-tunnel"
+    db_tunnel_command: "ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_hpc -L 6543:ep-sweet-sunset-ai8t67lb-pooler.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
+    db_tunnel_host: 127.0.0.1
+    db_tunnel_port: 6543
 
     # ---- Template-only variables (kept at the end on purpose) ----
     basedir: /mnt/gs21/scratch/weave151/etl
