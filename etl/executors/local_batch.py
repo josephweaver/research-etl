@@ -13,12 +13,14 @@ from .local import (
     ensure_repo_checkout,
     ensure_snapshot_checkout,
     map_to_checkout,
+    overlay_pipeline_asset_checkout,
     parse_pipeline,
     resolve_execution_spec,
 )
 from .local_batch_adapter import LocalBatchAdapter
 from ..git_checkout import GitCheckoutError
 from ..job_specs import ResolvedPaths, RunSelection, RunSpec, SourceRef
+from ..pipeline_assets import PipelineAssetMatch, infer_pipeline_asset_match
 from ..pipeline import PipelineError
 from ..provisioners import LocalProvisioner, ProvisionState
 from ..tracking import upsert_run_status
@@ -129,6 +131,7 @@ class LocalBatchExecutor(LocalExecutor):
             checkout_root = None
             selected_mode = None
             last_error: Optional[Exception] = None
+            pipeline_asset_match: Optional[PipelineAssetMatch] = None
 
             for mode in modes:
                 try:
@@ -168,6 +171,15 @@ class LocalBatchExecutor(LocalExecutor):
                         checkout_root = ensure_snapshot_checkout(preparse_workdir / "_code", spec, Path(snapshot))
                     else:
                         raise GitCheckoutError(f"Unsupported execution_source: {mode}")
+                    if mode != "workspace":
+                        pipeline_asset_match = infer_pipeline_asset_match(
+                            pipeline_ref,
+                            project_vars=project_vars,
+                            repo_root=repo_root,
+                            cache_root=preparse_workdir / ".pipeline_assets",
+                        )
+                        if pipeline_asset_match is not None:
+                            overlay_pipeline_asset_checkout(checkout_root, pipeline_asset_match)
                 except Exception as exc:  # noqa: BLE001
                     last_error = exc
                     continue
@@ -176,7 +188,15 @@ class LocalBatchExecutor(LocalExecutor):
             if not checkout_root or not selected_mode:
                 raise RuntimeError(f"Could not prepare execution source ({source_mode}): {last_error}")
             provenance["source_mode"] = selected_mode
-            pipeline_ref = map_to_checkout(pipeline_ref, repo_root, checkout_root, "pipeline")
+            try:
+                pipeline_ref = map_to_checkout(pipeline_ref, repo_root, checkout_root, "pipeline")
+            except Exception:
+                if selected_mode == "workspace":
+                    pipeline_ref = pipeline_ref.resolve()
+                elif pipeline_asset_match is not None:
+                    pipeline_ref = checkout_root / Path(pipeline_asset_match.pipeline_remote_hint)
+                else:
+                    raise
             plugin_dir = map_to_checkout(self.plugin_dir, repo_root, checkout_root, "plugins_dir")
         else:
             checkout_root = Path(ctx.get("repo_root") or Path(".").resolve()).resolve()

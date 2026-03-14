@@ -12,12 +12,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from dataclasses import replace
+import os
 from pathlib import Path
+import shutil
 from typing import Any, Dict, Optional
 
 from .base import Executor, RunState, RunStatus, SubmissionResult
 from ..git_checkout import GitCheckoutError, GitExecutionSpec
 from ..pipeline import Pipeline, parse_pipeline, PipelineError
+from ..pipeline_assets import PipelineAssetMatch, infer_pipeline_asset_match
 from ..query.errors import QueryExecutionError
 from ..query.planner_duckdb import build_duckdb_query_plan
 from ..query.runners.duckdb_runner import run_duckdb_query_plan
@@ -62,6 +65,28 @@ def ensure_snapshot_checkout(base_dir: Path, spec: SourceExecutionSpec | GitExec
 def map_to_checkout(path: Path, repo_root: Path, checkout_root: Path, label: str) -> Path:
     rel = _SOURCE_PROVIDER.repo_relative_path(path, repo_root, label)
     return checkout_root / rel
+
+
+def _replace_path_with_link_or_copy(source_dir: Path, target_path: Path) -> None:
+    if target_path.exists() or target_path.is_symlink():
+        if target_path.is_symlink() or target_path.is_file():
+            target_path.unlink()
+        else:
+            shutil.rmtree(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(source_dir, target_path, target_is_directory=True)
+    except OSError:
+        shutil.copytree(source_dir, target_path)
+
+
+def overlay_pipeline_asset_checkout(checkout_root: Path, match: PipelineAssetMatch) -> None:
+    pipelines_root = match.pipelines_root
+    if pipelines_root.exists() and pipelines_root.is_dir():
+        _replace_path_with_link_or_copy(pipelines_root, checkout_root / "pipelines")
+    scripts_root = match.scripts_root
+    if scripts_root.exists() and scripts_root.is_dir():
+        _replace_path_with_link_or_copy(scripts_root, checkout_root / "scripts")
 
 
 class LocalExecutor(Executor):
@@ -168,6 +193,7 @@ class LocalExecutor(Executor):
             checkout_root = None
             selected_mode = None
             last_error: Optional[Exception] = None
+            pipeline_asset_match: Optional[PipelineAssetMatch] = None
 
             for mode in modes:
                 try:
@@ -205,6 +231,15 @@ class LocalExecutor(Executor):
                         checkout_root = ensure_snapshot_checkout(preparse_workdir / "_code", spec, Path(snapshot))
                     else:
                         raise GitCheckoutError(f"Unsupported execution_source: {mode}")
+                    if mode != "workspace":
+                        pipeline_asset_match = infer_pipeline_asset_match(
+                            pipeline_ref,
+                            project_vars=project_vars,
+                            repo_root=repo_root,
+                            cache_root=preparse_workdir / ".pipeline_assets",
+                        )
+                        if pipeline_asset_match is not None:
+                            overlay_pipeline_asset_checkout(checkout_root, pipeline_asset_match)
                 except Exception as exc:  # noqa: BLE001
                     last_error = exc
                     continue
@@ -221,7 +256,15 @@ class LocalExecutor(Executor):
                     provenance["source_uri"] = str(snapshot)
                 if selected_mode == "workspace":
                     provenance["source_uri"] = str(repo_root)
-            pipeline_ref = map_to_checkout(pipeline_ref, repo_root, checkout_root, "pipeline")
+            try:
+                pipeline_ref = map_to_checkout(pipeline_ref, repo_root, checkout_root, "pipeline")
+            except Exception:
+                if selected_mode == "workspace":
+                    pipeline_ref = pipeline_ref.resolve()
+                elif pipeline_asset_match is not None:
+                    pipeline_ref = checkout_root / Path(pipeline_asset_match.pipeline_remote_hint)
+                else:
+                    raise
             plugin_dir = map_to_checkout(self.plugin_dir, repo_root, checkout_root, "plugins_dir")
 
         try:

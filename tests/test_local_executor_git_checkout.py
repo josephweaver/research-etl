@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import etl.executors.local as local_mod
+import etl.pipeline_assets as pipeline_assets_mod
 from etl.executors.local import LocalExecutor
 from etl.git_checkout import GitExecutionSpec
 from etl.pipeline import Pipeline, Step
@@ -226,3 +227,70 @@ def test_local_executor_workdir_prefers_commandline_vars_override(tmp_path: Path
     assert submit.run_id
     assert str(captured["run_workdir"]).replace("\\", "/") == "/cli/work"
     assert str(captured["store"]).replace("\\", "/") == "/cli/work/runs.jsonl"
+
+
+def test_local_executor_uses_matching_pipeline_asset_repo_for_external_pipeline(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    external_repo = tmp_path / "shared-etl-pipelines"
+    external_pipeline = external_repo / "pipelines" / "sample.yml"
+    external_pipeline.parent.mkdir(parents=True, exist_ok=True)
+    external_pipeline.write_text(
+        "steps:\n  - name: echo\n    script: echo.py\n",
+        encoding="utf-8",
+    )
+
+    checkout_root = tmp_path / "checkout"
+    (checkout_root / "plugins").mkdir(parents=True, exist_ok=True)
+    (checkout_root / "plugins" / "echo.py").write_text(
+        "\n".join(
+            [
+                "meta = {'name': 'echo', 'version': '0.1.0', 'description': 'test'}",
+                "def run(args, ctx):",
+                "    return {'ok': True}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        local_mod,
+        "resolve_execution_spec",
+        lambda **_: GitExecutionSpec(
+            commit_sha="abc123",
+            origin_url="https://github.com/org/repo.git",
+            repo_name="repo",
+            git_is_dirty=False,
+        ),
+    )
+    monkeypatch.setattr(local_mod, "ensure_repo_checkout", lambda *a, **k: checkout_root)
+    monkeypatch.setattr(pipeline_assets_mod, "sync_pipeline_asset_source", lambda *a, **k: external_repo)
+
+    ex = LocalExecutor(
+        plugin_dir=Path("plugins"),
+        workdir=tmp_path / ".runs",
+        dry_run=True,
+        enforce_git_checkout=True,
+        require_clean_git=False,
+    )
+    submit = ex.submit(
+        str(external_pipeline),
+        context={
+            "repo_root": repo_root,
+            "project_vars": {
+                "pipeline_asset_sources": [
+                    {
+                        "repo_url": "https://github.com/josephweaver/shared-etl-pipelines.git",
+                        "local_repo_path": str(external_repo),
+                        "pipelines_dir": "pipelines",
+                        "scripts_dir": "scripts",
+                        "ref": "main",
+                    }
+                ]
+            },
+            "global_vars": {},
+        },
+    )
+    assert submit.run_id
+    assert (checkout_root / "pipelines" / "sample.yml").exists()
+    assert ex.status(submit.run_id).state.value == "succeeded"

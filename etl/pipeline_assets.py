@@ -36,6 +36,16 @@ class PipelineAssetSource:
     local_repo_path: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class PipelineAssetMatch:
+    source: PipelineAssetSource
+    repo_dir: Path
+    pipelines_root: Path
+    scripts_root: Path
+    pipeline_path: Path
+    pipeline_remote_hint: str
+
+
 _SYNCED_REPOS: set[Tuple[str, str]] = set()
 
 
@@ -239,9 +249,50 @@ def resolve_pipeline_path_from_project_sources(
     return original
 
 
+def infer_pipeline_asset_match(
+    pipeline_path: Path,
+    *,
+    project_vars: Dict[str, Any],
+    repo_root: Path,
+    cache_root: Optional[Path] = None,
+) -> Optional[PipelineAssetMatch]:
+    resolved = Path(pipeline_path).resolve()
+    sources = pipeline_asset_sources_from_project_vars(project_vars)
+    if not sources:
+        return None
+
+    env_cache_root = str(os.environ.get("ETL_PIPELINE_ASSET_CACHE_ROOT") or "").strip()
+    if cache_root is not None:
+        root = Path(cache_root)
+    elif env_cache_root:
+        root = Path(env_cache_root).expanduser()
+    else:
+        root = Path(repo_root).resolve() / ".pipeline_assets_cache"
+
+    for src in sources:
+        repo_dir = sync_pipeline_asset_source(src, cache_root=root, repo_root=repo_root)
+        pipelines_root = (repo_dir / src.pipelines_dir).resolve()
+        try:
+            rel = resolved.relative_to(pipelines_root)
+        except ValueError:
+            continue
+        scripts_root = (repo_dir / src.scripts_dir).resolve()
+        return PipelineAssetMatch(
+            source=src,
+            repo_dir=repo_dir.resolve(),
+            pipelines_root=pipelines_root,
+            scripts_root=scripts_root,
+            pipeline_path=resolved,
+            pipeline_remote_hint=(Path("pipelines") / rel).as_posix(),
+        )
+    return None
+
+
 __all__ = [
+    "PipelineAssetMatch",
     "PipelineAssetError",
     "PipelineAssetSource",
+    "infer_pipeline_asset_match",
     "pipeline_asset_sources_from_project_vars",
     "resolve_pipeline_path_from_project_sources",
     "sync_pipeline_asset_source",

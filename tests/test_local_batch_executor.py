@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import etl.executors.local_batch as local_batch_mod
+import etl.pipeline_assets as pipeline_assets_mod
 from etl.executors.local_batch import LocalBatchExecutor
+from etl.git_checkout import GitExecutionSpec
 from etl.provisioners import ProvisionHandle, ProvisionState, ProvisionStatus
 
 
@@ -110,3 +112,73 @@ def test_local_batch_executor_runs_real_batch_job(tmp_path: Path, monkeypatch) -
     assert marker.read_text(encoding="utf-8") == "ok"
     status = ex.status("runabc1234")
     assert status.state.value == "succeeded"
+
+
+def test_local_batch_executor_uses_matching_pipeline_asset_repo_for_external_pipeline(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    external_repo = tmp_path / "shared-etl-pipelines"
+    external_pipeline = external_repo / "pipelines" / "sample.yml"
+    external_pipeline.parent.mkdir(parents=True, exist_ok=True)
+    external_pipeline.write_text(
+        "steps:\n  - name: write\n    script: writer.py\n",
+        encoding="utf-8",
+    )
+
+    checkout_root = tmp_path / "checkout"
+    (checkout_root / "plugins").mkdir(parents=True, exist_ok=True)
+    marker = tmp_path / "marker_ext.txt"
+    (checkout_root / "plugins" / "writer.py").write_text(
+        "\n".join(
+            [
+                "meta = {'name': 'writer', 'version': '0.1.0', 'description': 'test'}",
+                "def run(args, ctx):",
+                f"    from pathlib import Path; Path(r'{marker}').write_text('ok', encoding='utf-8')",
+                "    return {'ok': True}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        local_batch_mod,
+        "resolve_execution_spec",
+        lambda **_: GitExecutionSpec(
+            commit_sha="abc123",
+            origin_url="https://github.com/org/repo.git",
+            repo_name="repo",
+            git_is_dirty=False,
+        ),
+    )
+    monkeypatch.setattr(local_batch_mod, "ensure_repo_checkout", lambda *a, **k: checkout_root)
+    monkeypatch.setattr(pipeline_assets_mod, "sync_pipeline_asset_source", lambda *a, **k: external_repo)
+    monkeypatch.setattr(local_batch_mod, "upsert_run_status", lambda **_: None)
+
+    ex = LocalBatchExecutor(
+        plugin_dir=Path("plugins"),
+        workdir=tmp_path / ".runs",
+        python_bin="python",
+        enforce_git_checkout=True,
+        require_clean_git=False,
+    )
+    res = ex.submit(
+        str(external_pipeline),
+        {
+            "run_id": "runabc1234",
+            "repo_root": repo_root,
+            "project_vars": {
+                "pipeline_asset_sources": [
+                    {
+                        "repo_url": "https://github.com/josephweaver/shared-etl-pipelines.git",
+                        "local_repo_path": str(external_repo),
+                        "pipelines_dir": "pipelines",
+                        "scripts_dir": "scripts",
+                        "ref": "main",
+                    }
+                ]
+            },
+        },
+    )
+
+    assert res.run_id == "runabc1234"
+    assert marker.read_text(encoding="utf-8") == "ok"
