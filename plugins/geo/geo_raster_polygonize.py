@@ -9,7 +9,7 @@ from __future__ import annotations
 import csv
 import math
 from pathlib import Path
-from typing import Any, Iterable, List
+from typing import Any
 
 try:
     import geopandas as gpd  # type: ignore

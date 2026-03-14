@@ -19,7 +19,6 @@ single-file plugins without inheriting heavy classes.
 from __future__ import annotations
 
 import importlib.util
-import inspect
 import types
 from dataclasses import dataclass, field
 from pathlib import Path

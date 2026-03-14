@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import os
 import tempfile
-import shutil
 import json
 import shlex
 import re
 
 import logging
-import subprocess
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -47,7 +45,6 @@ from .query.errors import QueryError
 from .pipeline import (
     DEFAULT_RESOLVE_MAX_PASSES,
     Pipeline,
-    Step,
     parse_pipeline,
     PipelineError,
     resolve_max_passes_setting,

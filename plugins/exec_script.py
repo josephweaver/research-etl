@@ -82,9 +82,9 @@ def run(args, ctx):
     if (proc.stderr or "").strip():
         ctx.log(f"[exec_script] stderr: {(proc.stderr or '').strip()[:4000]}")
     if verbose and (proc.stdout or "").strip():
-        ctx.log(f"[exec_script] verbose stdout echoed")
+        ctx.log("[exec_script] verbose stdout echoed")
     if verbose and (proc.stderr or "").strip():
-        ctx.log(f"[exec_script] verbose stderr echoed")
+        ctx.log("[exec_script] verbose stderr echoed")
     if proc.returncode != 0:
         raise RuntimeError(
             f"script failed rc={proc.returncode}: {(proc.stderr or proc.stdout or '').strip()[:1000]}"

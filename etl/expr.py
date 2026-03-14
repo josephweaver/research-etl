@@ -11,7 +11,7 @@ import calendar
 import copy
 from datetime import date, datetime, timedelta
 import itertools
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 
 class ExprEvalError(ValueError):

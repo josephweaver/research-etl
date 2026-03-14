@@ -9,7 +9,6 @@ from __future__ import annotations
 import csv
 import glob
 import json
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List
 import xml.etree.ElementTree as ET

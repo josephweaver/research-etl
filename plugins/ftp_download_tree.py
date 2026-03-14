@@ -13,7 +13,7 @@ import os
 import posixpath
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Tuple
 from urllib import parse
 
 

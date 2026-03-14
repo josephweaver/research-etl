@@ -9,10 +9,16 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Optional
 
-from ..common.parsing import parse_bool
+from ..common.parsing import parse_bool as _parse_bool
 from ..variable_solver import VariableSolver
 
 _TPL_RE = re.compile(r"\{([^{}]+)\}")
+
+
+def parse_bool(value: Any, *, default: bool = False) -> bool:
+    return _parse_bool(value, default=default)
+
+
 def extract_unresolved_tokens(value: Any) -> list[str]:
     if not isinstance(value, str):
         return []

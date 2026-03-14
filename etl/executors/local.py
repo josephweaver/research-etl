@@ -175,7 +175,6 @@ class LocalExecutor(Executor):
             workdir_default=self.workdir,
             execution_cwd_default=Path.home(),
         )
-        preparse_workdir = preparse_settings.paths.workdir
         source_root = preparse_settings.paths.source_root
         pipeline_assets_root = preparse_settings.paths.pipeline_assets_cache_root
 

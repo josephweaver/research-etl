@@ -44,7 +44,7 @@ I noticed that twe provide both a executor and an enviroment,  I belive the envi
 - [x] `P0` Updated builder default dirs to non-recursive templates.
 
 ## Future cleanup (path resolution)
-- Future cleanup items are tracked in `future.todo.md`.
+- Future cleanup items are tracked in `FUTURE.md`.
 
 ## Current status snapshot
 - [x] `P0` Core engine + retry/resume/provenance + SLURM event tracking.
@@ -168,4 +168,4 @@ I noticed that twe provide both a executor and an enviroment,  I belive the envi
 - [ ] `P0` Runs should check code into github, deploy code to working location, then run with explicit github version always. This will enable rerunning code at a specific version.
 
 # things to fix later
-- Future items are tracked in `future.todo.md`.
+- Future items are tracked in `FUTURE.md`.

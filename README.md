@@ -2,158 +2,85 @@
 
 [![Tests](https://github.com/<OWNER>/<REPO>/actions/workflows/tests.yml/badge.svg)](https://github.com/<OWNER>/<REPO>/actions/workflows/tests.yml)
 
-A lightweight ETL tool to construct new pipelines from modular Python "plugin" scripts and to track runs and validation. In the future this may also call ChatGPT to write data dictionary entries.
+A lightweight ETL tool to construct pipelines from modular Python plugins and to track runs, validation, artifacts, and provenance.
 
-## Latest updates (2026-03-13)
+## Document roles
 
-- Crop insurance dataset registration + query workspace integration:
-  - `dataset_store` now performs best-effort schema/profile inference (DuckDB) during registration and persists:
-    - `etl_dataset_profiles` rows (new migration `db/ddl/019_dataset_profiles.sql`)
-    - `etl_dataset_versions.schema_hash` when inferred
-  - Query workspace API/UI now supports:
-    - DB-backed workspace overrides (`etl_query_workspaces`, migration `db/ddl/018_query_workspaces.sql`)
-    - source discovery across all local `pipeline_asset_sources`
-    - merged table catalog from base workspace + partial manifests (`db/duckdb/workspaces/*.yml`)
-  - `dataset_store` workspace auto-registration:
-    - writes per-dataset partial manifests by default (`db/duckdb/workspaces/<dataset>.yml`)
-    - optional git commit/push support for workspace updates
-    - commit safety hardening: `git commit --only -- <workspace_path>` to avoid committing unrelated staged files
-    - relative workspace paths now resolve against `ETL_REPO_ROOT` (important for HPCC step workdirs)
-- USDA-RMA pipeline efficiency:
-  - `web_download_list` now supports conditional HTTP checks (`conditional_get`) using ETag/Last-Modified validator state.
-  - Crop insurance USDA-RMA pipelines now enable `conditional_get: true` to avoid repeat 250MB downloads when source files are unchanged.
-- Known in-progress issue (HPCC runtime pathing):
-  - observed workspace auto-commit path mismatch (`.../crop-insurance-etl-pipelines` vs expected hashed checkout `.../crop-insurance-etl-pipelines-<sha>`) and occasional stale pipeline asset checkout; path/ref sync debugging is queued next.
+Use the top-level docs this way:
 
-## Earlier updates (2026-02-19)
+- `README.md`: what this project is, the operating rules, and the current scope boundary
+- `PROJECT_STATUS.md`: what is being worked now, current blockers, recent progress, and next execution steps
+- `FUTURE.md`: explicitly deferred work and out-of-scope ideas
 
-- Pipeline asset source resolution is now integrated end-to-end for run/validate paths:
-  - Added `etl/pipeline_assets.py` to support ordered `pipeline_asset_sources` plus backward-compatible single-source keys.
-  - CLI run/validate now resolves missing local pipeline paths from configured project asset repos.
-  - Web API run/validate now uses the same resolver flow (project-aware resolution + parse with project vars).
-  - Remote executors (`slurm`, `hpcc_direct`) now explicitly reject external resolved pipeline paths; external asset execution is currently local-only.
-  - Added tests:
-    - `tests/test_pipeline_assets.py`
-    - web API coverage for resolved external pipeline validation/run guard paths in `tests/test_web_api.py`.
+## Scope control
 
-- Added `expr.daterange(...)` to expression evaluation for date-list generation in templates/vars.
-  - Supports `step`, `unit` (`Y|M|W|D|H|MIN|S`), format (`fmt`), and inclusive bounds.
-  - Enables day-list patterns like:
-    - `"{expr.daterange(expr.date(year,1,1),expr.date(year,12,31))}"`
+Before making architectural changes, classify the work as either:
 
-- Extended county raster aggregation plugin for PRISM summaries:
-  - `plugins/geo/geo_county_raster_aggregate.py` now supports:
-    - `min,p5,q1,med,avg,q3,p95,max`
-  - Existing stats remain available (`sum,mean,median,std,count`).
+- `needed-now core`
+- `future-bucket`
 
-- Added PRISM county aggregation pipeline set:
-  - `pipelines/prism/county_daily_aggregate_child.yml`
-    - uses `sequential_foreach: days` with `expr.daterange(...)`
-    - processes `prism_ppt_us_30s_{YYYYMMDD}.tif` day-by-day
-    - writes per-day county CSVs + combined yearly CSV
-  - `pipelines/prism/county_daily_aggregate_parent.yml`
-    - fans out years
-    - calls child pipeline per year via `pipeline_execute.py`
+`needed-now core` is limited to:
 
-- Added child pipeline execution plugin:
-  - `plugins/pipeline_execute.py`
-  - Modes:
-    - `synchronized` (wait for child completion)
-    - `fire_and_forget` (submit and return)
-  - Designed to be parallelizable under parent `foreach` fanout.
+- pipeline definition
+- runtime context
+- resource resolution
+- step execution contract
+- artifact tracking
+- validation
+- logging/provenance
 
-- Added data location alias registry for datasets:
-  - `config/data_locations.yml` and `config/data_locations.example.yml`
-  - supports aliases like `LC_GDrive`, `LC_HPCC`, `LC_Local`
-  - wired to:
-    - CLI: `etl datasets store|get --location-alias ... [--locations-config ...]`
-    - plugins: `dataset_store.py`, `dataset_get.py`
-    - service: alias resolution/merge in `store_data` and `get_data`
+If the task is outside that list, stop and label it `FUTURE BUCKET` unless the user explicitly overrides.
 
-- Source-control abstraction work started:
-  - Added provider scaffold:
-    - `etl/source_control/base.py`
-    - `etl/source_control/git_provider.py`
-  - Executors (`local`, `slurm`, `hpcc_direct`) now route source-resolution/path mapping via `GitSourceProvider` compatibility shims.
-  - Provenance now emits provider-neutral source fields while keeping existing git fields:
-    - `source_provider`, `source_revision`, `source_origin_url`, `source_repo_name`, `source_is_dirty`
+Working rule:
 
-- SLURM workspace-path correction:
-  - fixed workspace-mode checkout root/path resolution to avoid incorrect doubled repo-name paths and to honor configured `remote_repo` root consistently in script path mapping.
+- Prefer shipping stable execution behavior in the core areas above over refactors, abstractions, cleanup, or feature expansion outside that scope.
+- Treat convenience improvements, broad framework cleanup, speculative architecture, and nice-to-have tooling as `FUTURE BUCKET` by default.
+- When in doubt, ask: "Does this directly improve one of the seven core areas for the current execution path?" If not, defer it.
 
-- Added reusable geospatial attribute filter plugin: `plugins/geo_vector_filter.py`.
-  - Purpose: select polygons/features from a vector file into a new output file (for example TIGER states by `STUSPS`).
-  - Supports:
-    - explicit args: `key` + `op` (`eq|ne|in|not_in`) + `value`/`values`,
-    - lightweight `where` expressions: `COL in (...)`, `COL == ...`, `COL != ...`.
-  - Example:
-    - `where: STUSPS in (MI, WI, IA, IL, IN, OH, MN, MO, KS)`
-  - Companion tests added in `tests/test_plugin_geo_vector_filter.py` (runs when `geopandas`/`shapely` are present in env).
+## Delivery focus
 
-- `hpcc_direct` executor hardening and diagnostics:
-  - always performs a fresh remote git checkout (`rm -rf` + clone + pinned SHA checkout),
-  - uses UTF-8 output decoding with replacement to avoid Windows cp1252 decode crashes,
-  - failure message now includes both remote `stdout` and `stderr` for clearer root-cause visibility,
-  - streamed SSH stage output now prints line-by-line while remote commands are still running (uses `subprocess.Popen` for streaming stages),
-  - remote `run_batch` now runs unbuffered (`python -u` + `PYTHONUNBUFFERED=1`) to improve real-time log visibility,
-  - runtime now verifies `etl.run_batch` import and auto-installs repo package remotely (`pip install --no-deps -e .`) when missing,
-  - execution env DB toggles (`db_mode`, `db_verbose`) are exported as process env (`ETL_DB_MODE`, `ETL_DB_VERBOSE`) before remote `run_batch`.
-- Updated `pipelines/yanroy/tiles_of_interest.yml` execution path on HPCC:
-  - fixed step-2 parser robustness in `scripts/yanroy/build_tiles_of_interest_from_facts.py` for simple one-value-per-line `states.of.interest.csv` inputs (Sniffer fallback).
-- Requirements updates for HPCC geospatial runs:
-  - added `geopandas`, explicit `python-dateutil`, and `requests` in `requirements.txt`.
-- `hpcc_direct` dependency install now uses `python -m pip install --ignore-installed -r requirements.txt` to prevent partial resolution against cluster-global packages.
-- Future TODO items are tracked in `future.todo.md`.
+The immediate goal of this project is not platform elegance. The goal is to reliably produce:
 
-- Added `plugins/combine_files.py` to merge `csv`, `json`, `yaml/yml`, `xml`, or `text` outputs from fan-out steps.
-- Added generic script/plugin utilities:
-  - `plugins/exec_script.py` (run Python scripts as pipeline steps),
-  - `plugins/gdrive_upload.py` (upload artifacts to Google Drive via `rclone`).
-- Added Yanroy stage pipeline `pipelines/yanroy/tiles_of_interest.yml` and moved tile script to `scripts/yanroy/build_tiles_of_interest.py`.
-- Updated `pipelines/yanroy/extract_fields.yml`:
-  - step `02_facts` now uses native `foreach: tiles` with `raster_facts.py` directly,
-  - post-facts combine steps can run in parallel (`parallel_with: step03`).
-- Added engine-side step resource telemetry fallback in runner:
-  - captures CPU time/estimated cores and memory RSS when plugin outputs do not provide metrics.
-- Added plugins UI route and navigation:
-  - `/plugins` page,
-  - `/api/plugins/stats` integration in UI.
-- SLURM execution improvements:
-  - setup job default time is now `00:10:00` (override with `setup_time`),
-  - generated scripts emit safe verbose stage logs (no secret values),
-  - `run_batch` supports `--verbose` and SLURM verbose mode passes it through,
-  - pipeline `dirs.logdir` now overrides env `logdir` for SLURM log paths.
+- crop-insurance datasets
+- landcore datasets
 
-- Variable resolution now has a configurable recursion/pass guard via `resolve_max_passes` (default `20`, clamped `1..100`).
-  - Configure in `config/global.yml` (or environment config override).
-  - Applied consistently in parser, builder preview, builder step-test, and runtime step resolution.
-- Builder namespace now reports resolver depth metadata:
-  - `resolution.max_passes`
-  - `resolution.passes_used`
-  - `resolution.stable`
-- Fixed recursive/self-referential path expansion issues (for example `workdir: "{workdir}/..."` growth).
-- Fixed directory precedence resolution so sibling `dirs.*` values resolve correctly (for example `cachedir` now binds to resolved `dirs.workdir`).
-- Fixed builder/run workdir fallbacks:
-  - unresolved template workdirs no longer create literal `{env.workdir}` directories;
-  - unresolved workdir payloads are ignored in favor of resolved precedence.
-- Step logs now honor `dirs.logdir` (when defined) rather than always writing under step workdir.
-- Builder validation/preview now understands prior-step output variables (for example `{staged_raw.output_dir}`) so step inputs resolve more accurately in UI checks.
-- `archive_extract.py` was hardened for archive lookup and diagnostics:
-  - clearer `7z` error reporting (stdout/stderr in step log),
-  - better archive path/glob handling,
-  - optional selective extraction via `include_glob`.
-- Added transformation plugins:
-  - `file_copy_regex.py` (copy regex-matched files while preserving relative subdirectories; optional source delete on success),
-  - `file_delete_regex.py` (delete regex-matched files with optional empty-directory cleanup).
+Use that as the tie-breaker when choosing work.
+
+- If a change directly helps define, run, validate, or track those pipelines, it is in scope.
+- If a change mainly improves architecture, abstraction, developer ergonomics, UI breadth, or speculative future capability, it is `FUTURE BUCKET` unless explicitly approved.
+- Prefer small fixes that unblock execution over broad refactors that improve the codebase in theory.
+
+## In-scope now
+
+The current scope is limited to work that directly helps produce crop-insurance and landcore datasets through one of the seven `needed-now core` areas.
+
+- local and HPCC execution reliability for real project pipelines
+- correct immutable source checkout and pipeline asset resolution
+- validation that final dataset outputs landed in the intended artifact/data locations
+- logging and provenance strong enough to explain what code, config, and assets produced a dataset version
+- only the minimum plugin or pipeline changes required to get trusted outputs
+
+Status, blockers, and next execution steps live in `PROJECT_STATUS.md`.
+
+The following note files are generally `FUTURE BUCKET` material unless a specific item becomes a direct blocker:
+
+- `FUTURE/parallel.todo.md`
+- `FUTURE/pipe.plug.notes.md`
+- `FUTURE/portable.todo.md`
+- `FUTURE/query.todo.md`
+- `FUTURE/source_control.todo.md`
+- `FUTURE/stepper.todo.md`
+- `FUTURE/TRANSPORT.md`
+- `FUTURE/PROVISIONER.md`
+- `FUTURE/JOB_SPEC.md`
+- `FUTURE/geo.plugins.todo.md`
+- `FUTURE/data.notes.md`
+- `FUTURE/notes.md`
 
 ### Runtime note (Windows)
 
 - Use the project virtual environment (`.venv`) for plugin/runtime execution.
 - `py7zr` is installed and working in `.venv`; system/anaconda Python may have package conflicts.
-
-## Current direction
-
-This project has moved from a local prototype toward an operational research runner:
 
 ## Logging and error-handling objectives
 
@@ -169,28 +96,11 @@ This project has moved from a local prototype toward an operational research run
 
 ## Pre-1.0 Stability
 
-This project is currently in a high-flux pre-1.0 phase.
+This project is currently in a pre-1.0 stabilization phase.
 
 - Backward compatibility for older pipelines/scripts is not guaranteed between updates.
-- Interfaces and behavior may change aggressively while architecture and execution flows are being finalized.
+- Interfaces and behavior may still change while execution flows are being finalized.
 - Compatibility and interface guarantees begin at `1.0`.
-
-- Execution: local + remote SLURM (setup + dependent batch/array jobs).
-- Completion tracking: event-driven from `etl/run_batch.py` (`batch_started`, `batch_completed`, `batch_failed`, `run_completed`), without scheduler polling.
-- Persistence: JSONL (`.runs/runs.jsonl`) plus Postgres tables when `ETL_DATABASE_URL` is configured:
-  - `etl_runs`
-  - `etl_run_steps`
-  - `etl_run_step_attempts` (retry-ready)
-  - `etl_run_events`
-- Project partitioning: run/validation/artifact metadata is tagged with `project_id`; project/user membership tables are available for multi-project service operation.
-- Provenance: run records capture Git and snapshot context (commit/branch/tag/dirty state, CLI command, and checksums for pipeline/config/plugins).
-- Strict source pinning: run paths execute from explicit source selection (git checkout / bundle / snapshot / workspace override), with git-pinned mode as default.
-- Git is the source of truth for pipeline/config content; DB stores checksums and run provenance only (no full pipeline/config text blobs).
-- Schema management: migration bootstrap from `db/ddl/*.sql` with checksum/version tracking (`etl_schema_versions`, `etl_schema_state`).
-- Artifacts: timestamp-first run paths for easier debugging:
-  - `.runs/<YYMMDD>/<HHMMSS-<run_id_short>>/<step_name>/`
-- Quality: pytest suite + GitHub Actions test workflow.
-- Web UX: compact nav with Operations, Pipelines, New Pipeline, and Live Run jump; builder and live run routes are active, with a top-nav user selector (`admin`, `land-core`, `crop-insurance`) for scoped views.
 
 ## Plugin Script
 
@@ -778,9 +688,9 @@ Additional architecture notes now live next to the code for the newer execution 
 
 Repo-root design notes:
 
-- `TRANSPORT.md`
-- `PROVISIONER.md`
-- `JOB_SPEC.md`
+- `FUTURE/TRANSPORT.md`
+- `FUTURE/PROVISIONER.md`
+- `FUTURE/JOB_SPEC.md`
 
 ## Execution Backends (pluggable)
 
@@ -800,7 +710,7 @@ Goal: submit pipelines through interchangeable "executors" (local, SLURM/HPCC, K
 
 ## Future Work
 
-Future items (including CI -> SLURM handoff) are tracked in `future.todo.md`.
+Future items (including CI -> SLURM handoff) are tracked in `FUTURE.md`.
 Add new future ideas there so the backlog stays centralized in one file.
 
 

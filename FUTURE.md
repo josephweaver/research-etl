@@ -1,6 +1,81 @@
-# Future TODO
+# FUTURE
 
-Last updated: 2026-02-21
+Items in this file are explicitly out of current delivery scope unless they are promoted back into `needed-now core`.
+
+Last updated: 2026-03-14
+
+## What this file is for
+
+Use this file as the parking lot for:
+
+- architecture ideas that are not needed to unblock current dataset delivery
+- product/UI expansion
+- framework cleanup and abstractions
+- future pipeline/plugin programs that are not part of the current crop-insurance and landcore execution push
+
+`README.md` defines scope.
+`PROJECT_STATUS.md` tracks active work.
+`FUTURE.md` tracks deferred work.
+
+## Backlog classification from working notes
+
+The files under `FUTURE/` are backlog/reference documents, not the active delivery plan.
+
+Unless an item is promoted because it is blocking crop-insurance or landcore execution in one of the seven `needed-now core` areas, treat it as deferred here.
+
+## Deferred architecture and platform tracks
+
+- Parallel execution model expansion:
+  - parent-child run linkage
+  - cancellation propagation
+  - richer `foreach` mode, placement, and backend policy
+- Transport-layer abstraction and cleanup:
+  - transport lifecycle design
+  - reusable command/file/session channels
+  - executor transport decoupling
+- Job-spec and provisioner architecture work:
+  - `FUTURE/JOB_SPEC.md`
+  - `FUTURE/PROVISIONER.md`
+  - run/job/workload spec separation beyond the current execution needs
+- Source-control abstraction beyond current Git behavior:
+  - provider registry/factory
+  - second provider proof
+  - provider UX/config surfacing
+- Portability program:
+  - diagnostics command for dependencies
+  - plugin capability metadata
+  - optional extras cleanup
+  - container-first runtime images and CI
+- Query platform expansion:
+  - additional query endpoints
+  - UI integration
+  - governance, allowlists, and audit hardening
+- Dataset-platform redesign from `FUTURE/data.notes.md`:
+  - dataset-first registry model
+  - dictionary/DB split evolution
+  - dataset service/routing/transport surface expansion
+  - broader datasets UX and CLI additions beyond immediate delivery needs
+- Builder step-test session system:
+  - persisted session state
+  - shared context across steps
+  - builder session APIs/UI
+
+## Deferred pipeline/plugin expansion
+
+- YanRoy and PRISM migration backlog from `FUTURE/pipe.plug.notes.md`
+- YanRoy geo plugin and pipeline backlog from `FUTURE/geo.plugins.todo.md`
+- generalized data-zone redesign (`work`, `cache`, `publish`) beyond immediate delivery needs
+- generic validation-plugin templates, retention policy automation, checksum manifest systems, and similar framework work unless needed for current dataset publication
+
+## Deferred product and UX backlog
+
+- broad web/UI expansion from `FUTURE/notes.md`
+- first-class project management UI and repo binding workflows
+- installer/preflight wizard flows
+- metrics/KPI framework
+- CI-to-SLURM handoff automation
+- AI/data-dictionary workflow expansion
+- dataset-level dashboard and operational analytics work
 
 ## New Feature Request
 - [ ] Add a first-class "Create New Project" feature with dedicated Project UI and selector.
@@ -137,7 +212,7 @@ Acceptance criteria:
 - [ ] Resolved dynamic execution plans materialized before run start.
 - [ ] Adaptive SLURM execution packing using historical runtime telemetry.
 
-## From notes.md
+## From FUTURE/notes.md
 ### Future cleanup (path resolution)
 - [ ] Centralize path/glob normalization in shared runtime utilities (post-resolution), instead of per-plugin ad hoc handling.
 - [ ] Keep plugin traversal logic, but move common `path`/`*_glob` handling to one resolver shared by runner + builder test paths.

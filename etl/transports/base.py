@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional, Protocol
+from typing import Mapping, Optional, Protocol
 
 from ..runners import CancelToken, LogCallback, Runner
 

@@ -409,7 +409,6 @@ def _collect_archive_records(path: Path, max_files: int) -> List[Dict[str, Any]]
 
 
 def _extract_archive_raster_details(archive_path: Path, archive_records: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
-    records: List[Dict[str, Any]] = []
     out: List[Dict[str, Any]] = []
     member_set = {str(r.get("rel_path") or "") for r in archive_records}
     archive_type = archive_path.suffix.lower().lstrip(".")

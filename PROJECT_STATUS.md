@@ -1,294 +1,97 @@
-﻿# Project Status (2026-03-13)
+# Project Status (2026-03-14)
 
-## Update (2026-03-13)
-- Crop insurance query workspace + dataset registration integration is active:
-  - added DB table for query workspace overrides (`etl_query_workspaces`, migration `018_query_workspaces.sql`)
-  - added DB table for dataset inferred profile metadata (`etl_dataset_profiles`, migration `019_dataset_profiles.sql`)
+## What this file is for
+
+Use this file for active execution status:
+
+- what we are working on now
+- what is currently working
+- what is currently blocked
+- what the next execution steps are
+
+`README.md` defines scope and operating rules.
+`FUTURE.md` holds deferred work.
+
+## Current delivery goal
+
+Produce crop-insurance datasets and landcore datasets reliably enough to trust and repeat the runs.
+
+Current engineering focus is limited to the `needed-now core` areas:
+
+- pipeline definition
+- runtime context
+- resource resolution
+- step execution contract
+- artifact tracking
+- validation
+- logging/provenance
+
+## Current focus
+
+- `sample.yml` is running in both `local` and `local-dev`
+- next execution target is HPCC and `hpcc_direct`
+- active stabilization work is immutable source checkout layout, pipeline asset resolution, runtime path correctness, validation, and logging/provenance
+
+## What is currently working
+
+- local execution modes are working for shared pipeline asset resolution
+- immutable source layout is working locally with sibling checkouts under `.out/src`
+- runtime context and execution-mode cleanup has improved consistency between local modes
+- project pipeline assets can resolve through configured project sources instead of only repo-local paths
+
+## Current blockers / risks
+
+- HPCC runtime pathing and pipeline asset checkout freshness still need direct verification on real runs
+- remote workspace auto-commit/push behavior may still resolve the wrong repo path or a stale checkout in crop-insurance flows
+- remote execution is not yet proven end-to-end for the actual crop-insurance and landcore dataset pipelines
+- there is still risk of drifting into architecture cleanup unless the change clearly serves one of the seven core areas
+
+## Next execution steps
+
+- run `sample.yml` on `hpcc_msu` and `hpcc_msu_direct` and verify source checkout, working paths, and logs
+- run the next real crop-insurance pipeline on HPCC and confirm artifacts land in the intended output locations
+- run the next real landcore pipeline on HPCC and confirm the same
+- treat failures as concrete runtime-context, path-resolution, validation, or provenance defects before doing broader cleanup
+
+## Recent progress
+
+### 2026-03-14
+
+- clarified project document roles:
+  - `README.md` = scope and operating rules
+  - `PROJECT_STATUS.md` = active work and blockers
+  - `FUTURE.md` = deferred work
+- moved deferred planning and architecture notes into `FUTURE/`
+- tightened the root docs so active delivery work is easier to distinguish from future backlog
+
+### 2026-03-13
+
+- crop-insurance query workspace and dataset registration integration advanced:
   - `dataset_store` now captures inferred schema/profile and updates `schema_hash` on dataset versions
-  - query workspace API/UI can discover and merge tables across all configured local `pipeline_asset_sources`
-  - workspace partial manifest model is active: `db/duckdb/workspaces/*.yml`
-  - `dataset_store` can auto-register workspace entries and optionally auto-commit/push those manifest updates
-  - commit hardening implemented (`git commit --only -- <workspace_path>`) to avoid accidental inclusion of unrelated staged files
-- Crop insurance USDA-RMA pipeline updates:
-  - download steps use conditional HTTP checks (`conditional_get: true`) to skip unchanged files
+  - query workspace API/UI can discover and merge tables across configured local `pipeline_asset_sources`
+  - workspace partial manifest model is active under `db/duckdb/workspaces/*.yml`
+- crop-insurance USDA-RMA pipeline updates:
+  - download steps use conditional HTTP checks
   - registration steps pass `project_id: crop_insurance`
-  - registration steps configured for workspace auto-register + git commit/push controls
-  - relative workspace paths now resolve against `ETL_REPO_ROOT` so HPCC step runs write to repo checkout, not step workdir
-- Operational check to run next:
-  - verify remote job can push commits to `origin/main` (credentials/branch protection); if blocked, switch to branch + PR flow.
-- New blocker observed (2026-03-13 late):
-  - workspace git commit/push failed because runtime resolved repo path as `/mnt/scratch/weave151/etl/crop-insurance-etl-pipelines` instead of hashed checkout path (`/mnt/scratch/weave151/etl/crop-insurance-etl-pipelines-<sha>`).
-  - pipeline asset checkout appears stale (job used a version behind latest pipeline updates).
-  - next debug focus:
-    - trace `pipeline_assets_local_repo_path` and `ETL_REPO_ROOT` resolution in runtime logs for setup + step jobs
-    - verify source checkout/update order (setup job) and path passed into step execution
-    - confirm `git fetch/checkout/pull` behavior against expected branch/ref before step starts
-## Update (2026-02-23)
-- SSURGO + YanRoy integration advanced in `landcore-etl-pipelines`:
-  - `scripts/ssurgo/build_field_mukey_map.py` now supports:
-    - fallback from missing `--fields-path` to `--fields-glob`,
-    - `tile_field_id` derivation from `tile_id+field_id` or `source_name+field_id`,
-    - many-to-many field<->mukey outputs with overlap metrics (`overlap_area`, `field_area`, `pct_field_overlap`),
-    - fallback from missing `--ssurgo-path` to `--ssurgo-glob`,
-    - multi-pattern globs (comma/semicolon),
-    - SSURGO layer probing and case-insensitive `mukey` column handling (`MUKEY`/`mukey`).
-  - `pipelines/ssurgo/yanroy_nccpi_sda.yml` updated to pass field/ssurgo glob fallbacks and broader SSURGO extract patterns.
-- SSURGO download pipelines reintroduced:
-  - `pipelines/ssurgo/state_download.yml` (URL-list driven state archive download + extract).
-  - `pipelines/ssurgo/conus_download.yml` (single HTTP CONUS archive download + extract).
-  - `scripts/ssurgo/download_urls.py` added for deterministic URL-file downloads.
-- HTTP download plugin enhancement:
-  - `plugins/web_download_list.py` now supports `out_file` for explicit single-file naming (used for Box download URLs where path-derived names are unstable).
+  - workspace auto-register and git commit/push controls were added
+- new blocker was observed:
+  - workspace git commit/push resolved a repo path without the expected hashed checkout suffix
+  - pipeline asset checkout appeared stale relative to the expected pipeline revision
 
-## Current state
+### 2026-02-23
 
-## Current state
-- CLI/package baseline is in place (`pyproject.toml`, `etl` entrypoint, editable install flow, GitHub Actions tests).
-- Core pipeline engine supports `when`, `foreach`, `parallel_with`, retries, and resume.
-- Execution backends:
-  - `local` executor (`etl/executors/local.py`)
-  - `slurm` executor (`etl/executors/slurm.py`) with setup + dependent batch/array planning and SSH submission support.
-  - `hpcc_direct` executor (`etl/executors/hpcc_direct.py`) for direct SSH dev-node execution of `etl.run_batch`.
-- Strict git-pinned execution is implemented for both local and slurm execution paths.
-- Pipeline dependencies are supported via `requires_pipelines` with auto-run of missing successful prerequisites and cycle detection.
-- Hierarchical iterative variable resolution is active in pipeline parsing:
-  - `global.*` + flat globals
-  - `env.*` + flat env overrides (from execution config env)
-  - `project.*` + flat project vars (from `config/projects.yml`, selected by resolved `project_id`)
-  - `pipe.*` + flat pipeline overrides
-- Resolver depth guard is configurable and unified:
-  - `resolve_max_passes` supported from global/env config (default `20`, clamped `1..100`)
-  - used by parser, builder preview/test-step, and runtime runner resolution
-  - builder namespace now exposes `resolution.max_passes`, `resolution.passes_used`, `resolution.stable`
-- Directory resolution hardening:
-  - fixed self-recursive `dirs.workdir` growth (`{workdir}/...`)
-  - fixed sibling `dirs.*` precedence so derived dirs (for example `cachedir`) bind to resolved `dirs.workdir`
-- Workdir/logging path correctness:
-  - builder step-test no longer creates unresolved template directories like `{env.workdir}/...`
-  - unresolved run payload workdir values are ignored in favor of resolved precedence
-  - step logs now write under configured `dirs.logdir` (when present)
-- Builder variable/validation improvements:
-  - builder validation now supports unresolved references to prior step outputs via `output_var` placeholders
-  - builder namespace includes output-var placeholders for resolve/preview behavior
-- Archive extraction hardening:
-  - `archive_extract` now supports `include_glob` for selective extraction
-  - improved archive discovery for exact-path and glob inputs
-  - improved failure diagnostics in step logs (missing `7z`, command stderr/stdout)
-- New filesystem transform plugins:
-  - `plugins/file_copy_regex.py`
-  - `plugins/file_delete_regex.py`
-- New orchestration/util plugins:
-  - `plugins/combine_files.py` (csv/json/yaml/xml/text merge)
-  - `plugins/exec_script.py`
-  - `plugins/gdrive_upload.py`
-- Yanroy pipeline updates:
-  - Added `pipelines/yanroy/tiles_of_interest.yml` as a separate stage pipeline.
-  - Moved tile builder script to `scripts/yanroy/build_tiles_of_interest.py`.
-  - `pipelines/yanroy/extract_fields.yml` now runs `raster_facts.py` via `foreach: tiles` and supports parallel combine steps.
-  - Debugged HPCC step-2 failures in `tiles_of_interest`:
-    - fixed `states.of.interest.csv` parsing for simple one-value-per-line files in `scripts/yanroy/build_tiles_of_interest_from_facts.py`,
-    - confirmed HPCC run success through steps 01-03 after parser/dependency fixes.
-- HPCC direct execution hardening:
-  - fresh remote checkout each run (no reuse of stale checkout directories),
-  - UTF-8 subprocess decode with replacement for Windows launcher stability,
-  - richer failure diagnostics by surfacing both remote stdout and stderr,
-  - streamed SSH stage output now emits line-by-line logs during execution (Popen-based streaming path),
-  - remote `run_batch` now runs unbuffered (`python -u`, `PYTHONUNBUFFERED=1`) for faster live log flush,
-  - runtime checks `import etl.run_batch` and installs editable package remotely when missing (`pip install --no-deps -e .`),
-  - execution env DB mode/verbosity are exported as `ETL_DB_MODE`/`ETL_DB_VERBOSE` before invoking `run_batch` (prevents unintended DB connection hangs when secrets file defines `ETL_DATABASE_URL`).
-- Dependency stabilization for HPCC geospatial steps:
-  - `requirements.txt` includes `geopandas`, `python-dateutil`, and `requests`,
-  - `hpcc_direct` requirement install now uses `--ignore-installed` to avoid cluster site-package leakage.
-- Runner telemetry update:
-  - per-attempt fallback resource metrics now capture CPU/memory usage even when plugins do not emit them.
-- SLURM/web execution updates:
-  - setup job default walltime is `00:10:00` (new `setup_time` override),
-  - verbose SLURM scripts now emit safe stage logs without exposing secrets,
-  - `run_batch.py` gained `--verbose` and is wired from SLURM verbose mode,
-  - SLURM log path precedence now honors pipeline `dirs.logdir` over env `logdir`.
-- Web UI updates:
-  - Added Plugins page/navigation and plugin stats route integration.
-- SLURM batch execution uses `etl/run_batch.py` and emits event-driven status transitions (`batch_started`, `batch_completed`, `batch_failed`, `run_completed`).
-- DB migration bootstrap is active (`etl/db.py`, `db/ddl/*.sql`) with checksum/version enforcement.
-- Artifact policy/registry baseline is active:
-  - metadata-only artifact tables (`etl_artifacts`, `etl_artifact_locations`)
-  - policy config support via `config/artifacts.yml` (starter: `config/artifacts.example.yml`)
-  - CLI enforcement command: `etl artifacts enforce [--dry-run]`
-  - auto-registration from run artifacts and step outputs (local + slurm run_batch), including explicit publish descriptors via `_artifacts`.
-  - root-bound registration checks (`locations.*.root_uri` / `root_path`) and class `allowed_location_types`, with violations recorded as `policy_violation`.
-- Tracking is persisted to JSONL and DB (when `ETL_DATABASE_URL` is set):
-  - `etl_runs`
-  - `etl_run_steps`
-  - `etl_run_step_attempts`
-  - `etl_run_events`
-- Project partitioning + access scaffolding is active:
-  - `project_id` stamped on runs/validations/artifacts.
-  - New DB objects: `etl_projects`, `etl_user_projects`, `etl_users`.
-  - Current project set:
-    - `land_core` (LandCore)
-    - `default` (shared)
-    - `crop_insurance`
-  - Seeded memberships:
-    - `land-core` -> `land_core`
-    - `crop-insurance` -> `crop_insurance`
-    - `admin` -> `land_core`, `default` (shared), `crop_insurance`
-- Provenance is persisted on all run paths (local/slurm/run_batch/resume):
-  - git fields, including `git_origin_url` and `git_repo_name`
-  - CLI command
-  - pipeline/config/plugin checksums.
-- Diagnostics:
-  - failure reports written to `.runs/error_reports/*.json`
-  - `etl diagnostics latest [--show]` available.
-- New plugin: `plugins/gdrive_download.py` wraps `tools/gdrv/download.R` for pipeline-based Google Drive staging.
-- YanRoy pipeline split is scaffolded:
-  - `pipelines/yanroy_base.yml` (dependency stage: gdrive raw staging)
-  - `pipelines/yanroy.yml` (main pipeline requiring base)
-- New geospatial filter plugin:
-  - `plugins/geo_vector_filter.py` filters vector features by attribute and writes a new vector output.
-  - Supports either:
-    - explicit args: `key` + `op` (`eq|ne|in|not_in`) + `value/values`,
-    - lightweight `where` expressions: `COL in (...)`, `COL == ...`, `COL != ...`.
-  - Designed for TIGER state filtering use cases (for example `STUSPS in (...)`) as a reusable pre-step.
-- Expression engine update:
-  - added `expr.daterange(...)` for date list expansion in vars/templates (`step`, `unit`, `fmt`, `inclusive`).
-- Geo aggregation update:
-  - `plugins/geo/geo_county_raster_aggregate.py` now supports `min,p5,q1,med,avg,q3,p95,max` aggregations.
-- New PRISM county pipeline pair:
-  - `pipelines/prism/county_daily_aggregate_child.yml`:
-    - `sequential_foreach: days` with `expr.daterange(expr.date(year,1,1),expr.date(year,12,31))`
-    - daily input pattern `prism_ppt_us_30s_{YYYYMMDD}.tif`
-    - yearly combined county CSV output
-  - `pipelines/prism/county_daily_aggregate_parent.yml`:
-    - year-level fanout
-    - child pipeline call per year via `pipeline_execute.py`
-- New orchestration plugin:
-  - `plugins/pipeline_execute.py` supports:
-    - `mode=synchronized`
-    - `mode=fire_and_forget`
-  - intended for parent/child pipeline orchestration and foreach-parallel child submission patterns.
-- Dataset location aliases:
-  - added `config/data_locations.yml` (+ example file) with aliases such as `LC_GDrive`.
-  - wired through dataset service, dataset plugins, and CLI (`datasets store/get --location-alias`).
-- Source control abstraction progress:
-  - added provider scaffold:
-    - `etl/source_control/base.py`
-    - `etl/source_control/git_provider.py`
-  - executors now use provider-backed compatibility shims for source resolution/path mapping.
-  - provenance now includes provider-neutral source fields while preserving existing `git_*` keys.
-- Pipeline asset source resolution (2026-02-19 update):
-  - added `etl/pipeline_assets.py` with ordered multi-source support via `pipeline_asset_sources` and backward-compatible legacy keys.
-  - CLI run/validate now resolve pipeline YAML from configured project asset repos when the local path is missing.
-  - Web API run/validate now follows the same project-aware resolution flow and parses with resolved `project_vars`.
-  - remote executors (`slurm`, `hpcc_direct`) currently enforce repo-local pipeline paths; externally resolved asset paths are allowed for local executor only.
-- SLURM path fix:
-  - workspace-mode checkout root/path resolution corrected to prevent doubled repo-name path joins and to consistently honor configured `remote_repo`.
+- landcore SSURGO and YanRoy integration advanced in `landcore-etl-pipelines`
+- SSURGO download pipelines were reintroduced
+- HTTP download plugin gained explicit `out_file` support for unstable source filenames
 
-## Web UI/API status
-- Web server: `etl web --host 127.0.0.1 --port 8000 --reload`
-- Compact navigation bar with primary routes:
-  - `Operations` (`/`)
-  - `Pipelines` (`/pipelines`)
-  - `New Pipeline` (`/pipelines/new`)
-  - quick Live Run jump (`/runs/{run_id}/live`)
-- Operations dashboard (`/`): failed/running triage + quick resume/view.
-- Pipeline catalog (`/pipelines`) and pipeline detail (`/pipelines/{pipeline_id}`) are live.
-- Live run view (`/runs/{run_id}/live`) is live with event timeline/active attempt summary.
-- Artifact tree + file viewer are live (`/api/runs/{run_id}/files`, `/api/runs/{run_id}/file`).
-- Builder routes are live:
-  - `/pipelines/new`
-  - `/pipelines/{pipeline_id}/edit`
-- Builder APIs are live:
-  - `GET /api/builder/source`
-  - `POST /api/builder/validate`
-  - `POST /api/builder/test-step`
-  - `POST /api/builder/generate` (OpenAI-backed with one-pass auto-repair)
-- Pipeline draft persistence APIs are live:
-  - `POST /api/pipelines`
-  - `PUT /api/pipelines/{pipeline_id}`
-- API access scoping is active (service-mode scaffold):
-  - user scope via `X-ETL-User` header or `as_user` query param
-  - project checks enforced on run/pipeline list/detail/action routes
-  - optional `project_id` query filtering for runs/pipelines/validations
-- Top-nav user selector is live in web UI:
-  - `admin`
-  - `land-core`
-  - `crop-insurance`
-  - selection persists in browser local storage and auto-applies to API calls.
+## Background system status
 
-## Test status
-- Current focused regression runs (2026-02-13):
-  - `tests/test_web_api.py -k "builder_namespace or builder_test_step"` -> `10 passed`
-  - `tests/test_pipeline_resolution.py tests/test_runner_sys_vars.py` -> `18 passed`
-  - `tests/test_plugin_archive_extract.py` -> passed
-  - `tests/test_plugin_file_copy_regex.py` -> passed
-  - `tests/test_plugin_file_delete_regex.py` -> passed
-  - additional targeted resolver/workdir/logging suites passed during this update cycle.
-  - New plugin tests added: `tests/test_plugin_geo_vector_filter.py` (attribute filter behavior and validation).
-    - Note: currently skips in local `.venv` if `geopandas`/`shapely` are unavailable.
-  - pipeline asset/source-resolution regressions:
-    - `tests/test_pipeline_assets.py`
-    - targeted web API action tests for external pipeline resolution + remote-executor guard behavior.
-- Coverage includes:
-  - DB migration bootstrap
-  - tracking write paths
-  - SLURM event transitions (success + failed)
-  - resume from partial success
-  - retry attempts with `attempt_no > 1`
-  - run_batch event payload checks
-  - web route/API coverage for operations, pipeline detail, live run, builder, and draft save/update flows.
-  - new targeted coverage:
-    - `tests/test_plugin_pipeline_execute.py`
-    - `tests/test_datasets_locations.py`
-    - dataset alias integration updates in CLI/service/plugin tests
-    - `tests/test_source_control_git_provider.py`
-    - provenance source-provider field coverage.
+- core pipeline engine supports `when`, `foreach`, `parallel_with`, retries, and resume
+- execution backends include `local`, `slurm`, and `hpcc_direct`
+- provenance, artifact registration, and validation/tracking are implemented at a usable baseline
+- web UI/API exists, but wider UI expansion is not current priority
+- this codebase is still pre-1.0 and should be treated as stabilizing
 
-## Known gaps / risks
-- Web resume currently supports `local` executor only (SLURM resume still via CLI).
-- SLURM artifact browsing supports only local-visible paths; remote-only cluster paths still need SSH-based retrieval.
-- No central reconciliation loop for missing/late SLURM events.
-- Current access model is a lightweight scaffold (`X-ETL-User`/`as_user`); no real authentication provider/session/JWT yet.
-- Builder persistence is file-backed; DB-backed draft/version history is not implemented.
-- AI draft generation currently uses a single repair pass and no schema-constrained decoding.
-- Config/pipeline/plugin catalog tables are not yet populated by runtime snapshots.
-- Artifact class/location inference is heuristic when plugins do not emit explicit `_artifacts` descriptors.
-- `--allow-dirty-git` behavior for remote executors is not complete yet:
-  - current remote runs are commit-pinned; dirty local workspace changes are not propagated to remote checkout.
+## Working rule
 
-## Design objectives (logging/error model)
-- Log intent before action:
-  - emit `INFO` right before every meaningful action (step execution, command execution, file operations, network calls, status transitions).
-- Capture subprocess output uniformly:
-  - when invoking child processes (`git`, `rclone`, etc.), capture and route both `stdout` and `stderr` into the ETL logger/step log.
-- Add generic entry-point exception traps:
-  - every top-level entry point should catch unhandled exceptions, log the error and full traceback, then fail with consistent diagnostics.
-- Eliminate process-chain "dark corners":
-  - when process A starts process B (and nested children), child process logs must continue flowing through the same logging pipeline with no silent gaps.
-- Centralize logging configuration:
-  - use a configurable logging engine/adapter that writes to both stdout and step/run log files by default.
-- Durable logs for UI:
-  - persist logs to durable storage/index so UI views can load historical logs and resume live tails across service/process restarts.
-
-## Future Work
-
-Suggested next steps and future features are tracked in `future.todo.md`.
-
-Additional platform TODO:
-- Add a configuration management UI/API for project/environment/config maintenance (for example `projects.yml`, environment mappings, and project registry sync) so new projects can be added without manual DB inserts or direct file edits.
-- Add a first-run installer/preflight command (`etl install` / `etl doctor --fix`) to automate SSH key validation, secrets bootstrap, DB tunnel checks, and HPCC environment readiness (tracked in `future.todo.md`).
-
-## Quick commands
-- Install/editable dev env: `python -m pip install -e ".[dev]"`
-- Validate pipeline: `etl validate pipelines/sample.yml`
-- Run local success: `etl run pipelines/sample.yml --executor local`
-- Run local failure: `etl run pipelines/sample_fail.yml --executor local`
-- Run SLURM dry-run: `etl run pipelines/sample_parallel.yml --executor slurm --dry-run`
-- List runs: `etl runs list`
-- Show run: `etl runs show <run_id>`
-- Latest diagnostics: `etl diagnostics latest --show`
-- Enforce artifact policy (dry-run): `etl artifacts enforce --dry-run --config config/artifacts.yml`
-- Start web UI: `etl web --host 127.0.0.1 --port 8000 --reload`
-- Open builder: `http://127.0.0.1:8000/pipelines/new`
-- Test suite: `python -m pytest -q`
-
-
+If a task does not directly improve crop-insurance or landcore delivery through one of the seven `needed-now core` areas, move it to `FUTURE.md` instead of doing it now.

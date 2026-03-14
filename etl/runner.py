@@ -39,7 +39,6 @@ from .pipeline import Pipeline, Step
 from .logging import CallbackLogSink, CompositeLogSink, ConsoleLogSink, FileLogSink, RedactingLogSink, StepLogger
 from .plugins.base import (
     PluginContext,
-    PluginDefinition,
     PluginLoadError,
     load_plugin,
 )

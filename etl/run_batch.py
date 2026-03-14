@@ -23,7 +23,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from etl.app_logging import configure_app_logger, get_app_logger
+from etl.app_logging import configure_app_logger
 from etl.db_sync_queue import queue_tracking_update
 from etl.config import load_global_config, resolve_global_config_path, ConfigError
 from etl.execution_config import (

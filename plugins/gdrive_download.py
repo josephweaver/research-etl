@@ -10,7 +10,6 @@ import os
 import re
 import shlex
 from pathlib import Path
-from typing import Optional
 
 from etl.subprocess_logging import run_logged_subprocess
 
