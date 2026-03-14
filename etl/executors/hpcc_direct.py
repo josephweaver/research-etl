@@ -32,6 +32,7 @@ from ..git_checkout import (
     GitExecutionSpec,
     infer_repo_name,
 )
+from ..pipeline_assets import pipeline_asset_sources_from_project_vars
 from ..pipeline import parse_pipeline, PipelineError
 from ..query.errors import QueryExecutionError, QueryPlannerError, QueryTransportError
 from ..runtime_context import resolve_runtime_text
@@ -66,6 +67,55 @@ def repo_relative_path(path: Path, repo_root: Path, label: str) -> Path:
 
 
 DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
+
+
+def _git_current_branch(repo_path: Path) -> Optional[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    branch = str(proc.stdout or "").strip()
+    if not branch or branch == "HEAD":
+        return None
+    return branch
+
+
+def _resolve_pipeline_asset_cache_specs(project_vars: Dict[str, Any], repo_root: Path) -> list[dict[str, str]]:
+    try:
+        sources = pipeline_asset_sources_from_project_vars(project_vars)
+    except Exception:
+        return []
+
+    cache_specs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    base_root = Path(repo_root).resolve()
+    for src in sources:
+        repo_url = str(getattr(src, "repo_url", "") or "").strip()
+        if not repo_url:
+            continue
+        ref = str(getattr(src, "ref", "") or "main").strip() or "main"
+        local_repo_path = str(getattr(src, "local_repo_path", "") or "").strip()
+        if local_repo_path:
+            local = Path(local_repo_path).expanduser()
+            if not local.is_absolute():
+                local = (base_root / local).resolve()
+            if local.exists() and local.is_dir():
+                local_branch = _git_current_branch(local)
+                if local_branch:
+                    ref = local_branch
+        key = (repo_url, ref)
+        if key in seen:
+            continue
+        seen.add(key)
+        cache_specs.append({"repo_url": repo_url, "ref": ref})
+    return cache_specs
 
 
 def _flatten_scalar_vars(prefix: str, obj: Dict[str, Any]) -> Dict[str, str]:
@@ -650,6 +700,10 @@ class HpccDirectExecutor(Executor):
         project_vars = dict(context.get("project_vars") or {})
         global_vars = dict(context.get("global_vars") or {})
         provenance = dict(context.get("provenance") or {})
+        project_id = str(context.get("project_id") or "").strip()
+
+        if project_id and not project_vars:
+            raise RuntimeError("hpcc_direct requires resolved project_vars in submit context when project_id is set.")
 
         try:
             pipeline = parse_pipeline(
@@ -742,7 +796,6 @@ class HpccDirectExecutor(Executor):
         # hpcc_direct may run against older remote checkouts where the local
         # environment name does not exist. Pass resolved env values as --var
         # overrides instead of requiring remote environments config parity.
-        project_id = str(context.get("project_id") or "").strip()
         if project_id:
             batch_cmd += ["--project-id", shlex.quote(project_id)]
 
@@ -785,6 +838,34 @@ class HpccDirectExecutor(Executor):
             "git reset --hard \"$REPO_SHA\"",
             "git clean -fd",
         ]
+        asset_cache_specs = _resolve_pipeline_asset_cache_specs(project_vars, self.repo_root)
+        asset_cache_lines: list[str] = [
+            f"CHECKOUT_ROOT={shlex.quote(repo_root_remote)}",
+            "ASSET_CACHE_ROOT=${ETL_PIPELINE_ASSET_CACHE_ROOT:-$(dirname \"$CHECKOUT_ROOT\")}",
+            "mkdir -p \"$ASSET_CACHE_ROOT\"",
+        ]
+        for idx, asset in enumerate(asset_cache_specs):
+            repo_url = str(asset.get("repo_url") or "").strip()
+            if not repo_url:
+                continue
+            ref = str(asset.get("ref") or "main").strip() or "main"
+            asset_cache_lines.extend(
+                [
+                    f"ASSET_URL_{idx}={shlex.quote(repo_url)}",
+                    f"ASSET_REF_{idx}={shlex.quote(ref)}",
+                    f"ASSET_REPO_NAME_{idx}=\"$(basename \"$ASSET_URL_{idx}\")\"",
+                    f"ASSET_REPO_NAME_{idx}=\"${{ASSET_REPO_NAME_{idx}%.git}}\"",
+                    f"ASSET_REPO_NAME_{idx}=\"$(printf '%s' \"$ASSET_REPO_NAME_{idx}\" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')\"",
+                    f"ASSET_REPO_HASH_{idx}=\"$(printf '%s' \"$ASSET_URL_{idx}\" | sha1sum | awk '{{print $1}}' | cut -c1-10)\"",
+                    f"ASSET_DIR_{idx}=\"$ASSET_CACHE_ROOT/${{ASSET_REPO_NAME_{idx}}}-${{ASSET_REPO_HASH_{idx}}}\"",
+                    f"if [ ! -d \"$ASSET_DIR_{idx}/.git\" ]; then git clone --no-checkout \"$ASSET_URL_{idx}\" \"$ASSET_DIR_{idx}\"; fi",
+                    f"git -C \"$ASSET_DIR_{idx}\" remote set-url origin \"$ASSET_URL_{idx}\" || true",
+                    f"git -C \"$ASSET_DIR_{idx}\" fetch --tags --prune origin",
+                    f"git -C \"$ASSET_DIR_{idx}\" checkout --detach \"$(git -C \"$ASSET_DIR_{idx}\" rev-parse \"origin/$ASSET_REF_{idx}\" 2>/dev/null || git -C \"$ASSET_DIR_{idx}\" rev-parse \"$ASSET_REF_{idx}\")\"",
+                    f"git -C \"$ASSET_DIR_{idx}\" reset --hard \"$(git -C \"$ASSET_DIR_{idx}\" rev-parse \"origin/$ASSET_REF_{idx}\" 2>/dev/null || git -C \"$ASSET_DIR_{idx}\" rev-parse \"$ASSET_REF_{idx}\")\"",
+                    f"git -C \"$ASSET_DIR_{idx}\" clean -fd",
+                ]
+            )
         staged_secrets_remote: Optional[str] = None
         if self.propagate_secrets and not self.dry_run:
             secret_exports = self._collect_secret_exports(context)
@@ -926,6 +1007,13 @@ class HpccDirectExecutor(Executor):
                 lines=checkout_lines,
                 stream_output=(self.verbose or self.stream_setup_output),
             )
+            if len(asset_cache_lines) > 3:
+                self._run_stage(
+                    target=target,
+                    stage_name="sync_pipeline_assets",
+                    lines=asset_cache_lines,
+                    stream_output=(self.verbose or self.stream_setup_output),
+                )
             if secrets_lines:
                 self._run_stage(
                     target=target,

@@ -89,6 +89,7 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
             },
             "commandline_vars": {"foo": "bar"},
             "project_id": "land_core",
+            "project_vars": {"project_key": "land_core"},
         },
     )
     assert res.run_id == "runabc"
@@ -153,6 +154,56 @@ def test_hpcc_direct_submit_uses_pipeline_remote_hint_for_external_pipeline(monk
     )
     remote_script = str(seen_scripts[-1])
     assert "pipelines/prism/download.yml" in remote_script
+
+
+def test_hpcc_direct_submit_syncs_pipeline_asset_cache_before_run_batch(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "pipelines").mkdir(parents=True, exist_ok=True)
+    (repo / "plugins").mkdir(parents=True, exist_ok=True)
+    pipeline_path = repo / "pipelines" / "sample.yml"
+    pipeline_path.write_text("steps: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        hpcc_mod,
+        "parse_pipeline",
+        lambda *_a, **_k: Pipeline(steps=[Step(name="s1", script="echo.py")]),
+    )
+    monkeypatch.setattr(
+        hpcc_mod,
+        "resolve_execution_spec",
+        lambda **_k: GitExecutionSpec(
+            commit_sha="32adb6b10db9aaaa111122223333444455556666",
+            origin_url="git@github.com:org/research-etl.git",
+            repo_name="research-etl",
+            git_is_dirty=False,
+        ),
+    )
+    seen_scripts: list[str] = []
+    monkeypatch.setattr(HpccDirectExecutor, "_run_ssh_script", _fake_ssh_runner(seen_scripts))
+
+    ex = HpccDirectExecutor(
+        env_config={"ssh_host": "dev.hpcc.local", "remote_repo": "/scratch/alice/research-etl", "propagate_secrets": False},
+        repo_root=repo,
+        plugins_dir=repo / "plugins",
+        dry_run=False,
+    )
+    _ = ex.submit(
+        str(pipeline_path),
+        {
+            "run_id": "assetcache1",
+            "project_vars": {
+                "pipeline_asset_sources": [
+                    {"repo_url": "https://github.com/josephweaver/landcore-etl-pipelines.git", "ref": "main"},
+                    {"repo_url": "https://github.com/josephweaver/shared-etl-pipelines.git", "ref": "main"},
+                ]
+            },
+        },
+    )
+
+    assert any("https://github.com/josephweaver/landcore-etl-pipelines.git" in s for s in seen_scripts)
+    assert any("https://github.com/josephweaver/shared-etl-pipelines.git" in s for s in seen_scripts)
+    assert any("git clone --no-checkout" in s and "ASSET_DIR_0" in s for s in seen_scripts)
+    assert any("export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only" in s for s in seen_scripts)
 
 
 def test_hpcc_direct_submit_records_failed_status(monkeypatch, tmp_path: Path) -> None:
@@ -249,6 +300,29 @@ def test_hpcc_direct_requires_ssh_host(tmp_path: Path) -> None:
         assert False, "expected missing ssh_host error"
     except RuntimeError as exc:
         assert "ssh_host" in str(exc)
+
+
+def test_hpcc_direct_requires_project_vars_when_project_id_is_set(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "pipelines").mkdir(parents=True, exist_ok=True)
+    pipeline_path = repo / "pipelines" / "sample.yml"
+    pipeline_path.write_text("steps: []\n", encoding="utf-8")
+    monkeypatch.setattr(
+        hpcc_mod,
+        "parse_pipeline",
+        lambda *_a, **_k: Pipeline(steps=[Step(name="s1", script="echo.py")]),
+    )
+
+    ex = HpccDirectExecutor(
+        env_config={"ssh_host": "dev.hpcc.local", "propagate_secrets": False},
+        repo_root=repo,
+        dry_run=False,
+    )
+    try:
+        ex.submit(str(pipeline_path), {"project_id": "land_core"})
+        assert False, "expected missing project_vars error"
+    except RuntimeError as exc:
+        assert "project_vars" in str(exc)
 
 
 def test_hpcc_direct_allow_dirty_git_overlays_local_changes(monkeypatch, tmp_path: Path) -> None:
