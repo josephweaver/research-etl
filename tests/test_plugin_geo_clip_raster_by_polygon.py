@@ -103,3 +103,34 @@ def test_geo_clip_raster_by_polygon_supports_where_filter(tmp_path: Path) -> Non
     with rasterio.open(output_path) as ds:
         assert ds.width == 4
         assert ds.height == 3
+
+
+def test_geo_clip_raster_by_polygon_supports_directory_mode(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo/geo_clip_raster_by_polygon.py"))
+    input_dir = tmp_path / "inputs" / "2000"
+    state_path = tmp_path / "states.gpkg"
+    output_dir = tmp_path / "out" / "2000"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    _write_raster(input_dir / "ppt_20000101.tif")
+    _write_raster(input_dir / "ppt_20000102.tif")
+    _write_states(state_path)
+
+    outputs = plugin.run(
+        {
+            "input_dir": str(input_dir),
+            "output_dir": str(output_dir),
+            "filename_glob": "*.tif",
+            "selector_path": str(state_path),
+            "key": "STUSPS",
+            "value": "MI",
+            "overwrite": True,
+        },
+        _ctx(tmp_path),
+    )
+
+    assert outputs["input_count"] == 2
+    assert outputs["generated_count"] == 2
+    assert outputs["skipped_count"] == 0
+    assert output_dir.exists()
+    assert (output_dir / "ppt_20000101.tif").exists()
+    assert (output_dir / "ppt_20000102.tif").exists()

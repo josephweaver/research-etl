@@ -26,12 +26,16 @@ except Exception:  # noqa: BLE001
 meta = {
     "name": "geo_clip_raster_by_polygon",
     "version": "0.1.0",
-    "description": "Clip a raster to one or more polygons selected from a vector layer and write a cropped raster.",
+    "description": "Clip one raster or a raster directory to one or more polygons selected from a vector layer and write cropped raster output.",
     "inputs": [],
     "outputs": [
         "input_raster_path",
         "selector_path",
         "output_path",
+        "input_count",
+        "generated_count",
+        "skipped_count",
+        "output_dir",
         "feature_count",
         "selector_crs",
         "raster_crs",
@@ -43,8 +47,11 @@ meta = {
     ],
     "params": {
         "raster_path": {"type": "str", "default": ""},
+        "input_dir": {"type": "str", "default": ""},
+        "filename_glob": {"type": "str", "default": "*.tif"},
         "selector_path": {"type": "str", "default": ""},
         "output_path": {"type": "str", "default": ""},
+        "output_dir": {"type": "str", "default": ""},
         "key": {"type": "str", "default": ""},
         "value": {"type": "str", "default": ""},
         "values": {"type": "str", "default": ""},
@@ -116,83 +123,52 @@ def _filter_features(selector, *, key: str, values: list[str]):
     return selected
 
 
-def run(args, ctx):
-    if gpd is None:
-        raise RuntimeError(
-            "geo_clip_raster_by_polygon requires geopandas and shapely. Install requirements.txt in the active environment."
-        )
-    if rasterio is None or mask is None:
-        raise RuntimeError(
-            "geo_clip_raster_by_polygon requires rasterio. Install requirements.txt in the active environment."
-        )
-
-    raster_text = str(args.get("raster_path") or "").strip()
-    selector_text = str(args.get("selector_path") or "").strip()
-    output_text = str(args.get("output_path") or "").strip()
+def _resolve_filter(args) -> tuple[str, list[str]]:
     key = str(args.get("key") or "").strip()
     value = str(args.get("value") or "").strip()
     values = _coerce_list(args.get("values"))
     where = str(args.get("where") or "").strip()
-    crop = bool(args.get("crop", True))
-    all_touched = bool(args.get("all_touched", False))
-    overwrite = bool(args.get("overwrite", False))
-    compress = str(args.get("compress") or "LZW").strip() or "LZW"
+    if where:
+        if key or value or values:
+            raise ValueError("where may not be combined with key/value/values")
+        return _parse_where(where)
+    if key:
+        if value:
+            values = [value]
+        if not values:
+            raise ValueError("key requires value or values")
+        return key, values
+    raise ValueError("one of where or key+value(s) is required")
 
-    if not raster_text:
-        raise ValueError("raster_path is required")
-    if not selector_text:
-        raise ValueError("selector_path is required")
-    if not output_text:
-        raise ValueError("output_path is required")
 
-    raster_path = _resolve_path(raster_text, ctx)
-    selector_path = _resolve_path(selector_text, ctx)
-    output_path = _resolve_path(output_text, ctx)
-
-    if not raster_path.exists():
-        raise FileNotFoundError(f"raster_path not found: {raster_path}")
-    if not selector_path.exists():
-        raise FileNotFoundError(f"selector_path not found: {selector_path}")
+def _clip_one_raster(
+    *,
+    raster_path: Path,
+    output_path: Path,
+    selected,
+    crop: bool,
+    all_touched: bool,
+    overwrite: bool,
+    compress: str,
+    key: str,
+    values: list[str],
+    ctx,
+) -> dict[str, Any]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists() and not overwrite:
         ctx.log(f"[geo_clip_raster_by_polygon] skip existing {output_path.as_posix()}")
         with rasterio.open(output_path) as existing:
             return {
                 "input_raster_path": raster_path.resolve().as_posix(),
-                "selector_path": selector_path.resolve().as_posix(),
                 "output_path": output_path.resolve().as_posix(),
                 "feature_count": 0,
-                "selector_crs": "",
                 "raster_crs": str(existing.crs or ""),
-                "filter_key": key,
-                "filter_value": value or ",".join(values),
                 "band_count": int(existing.count),
                 "height": int(existing.height),
                 "width": int(existing.width),
+                "generated": False,
+                "skipped": True,
             }
-
-    if where:
-        if key or value or values:
-            raise ValueError("where may not be combined with key/value/values")
-        key, values = _parse_where(where)
-    elif key:
-        if value:
-            values = [value]
-        if not values:
-            raise ValueError("key requires value or values")
-    else:
-        raise ValueError("one of where or key+value(s) is required")
-
-    selector = gpd.read_file(selector_path)
-    if selector.empty:
-        raise ValueError("selector_path contains no features")
-    if selector.crs is None:
-        raise ValueError("selector_path CRS is required")
-
-    selected = _filter_features(selector, key=key, values=values)
-    selected = selected[selected.geometry.notna() & ~selected.geometry.is_empty].copy()
-    if selected.empty:
-        raise ValueError("selector filter left no valid geometries")
 
     with rasterio.open(raster_path) as ds:
         if ds.crs is None:
@@ -220,32 +196,171 @@ def run(args, ctx):
         with rasterio.open(output_path, "w", **meta_out) as dst:
             dst.write(clipped)
 
-        selector_crs = str(selector.crs or "")
         raster_crs = str(ds.crs or "")
 
     ctx.log(
         f"[geo_clip_raster_by_polygon] raster={raster_path.as_posix()} output={output_path.as_posix()} "
         f"features={len(selected)} key={key} values={values}"
     )
-
     return {
         "input_raster_path": raster_path.resolve().as_posix(),
-        "selector_path": selector_path.resolve().as_posix(),
         "output_path": output_path.resolve().as_posix(),
         "feature_count": int(len(selected)),
-        "selector_crs": selector_crs,
         "raster_crs": raster_crs,
-        "filter_key": key,
-        "filter_value": ",".join(values),
         "band_count": int(clipped.shape[0]),
         "height": int(clipped.shape[1]),
         "width": int(clipped.shape[2]),
-        "_artifacts": [
+        "generated": True,
+        "skipped": False,
+    }
+
+
+def run(args, ctx):
+    if gpd is None:
+        raise RuntimeError(
+            "geo_clip_raster_by_polygon requires geopandas and shapely. Install requirements.txt in the active environment."
+        )
+    if rasterio is None or mask is None:
+        raise RuntimeError(
+            "geo_clip_raster_by_polygon requires rasterio. Install requirements.txt in the active environment."
+        )
+
+    raster_text = str(args.get("raster_path") or "").strip()
+    input_dir_text = str(args.get("input_dir") or "").strip()
+    filename_glob = str(args.get("filename_glob") or "*.tif").strip() or "*.tif"
+    selector_text = str(args.get("selector_path") or "").strip()
+    output_text = str(args.get("output_path") or "").strip()
+    output_dir_text = str(args.get("output_dir") or "").strip()
+    crop = bool(args.get("crop", True))
+    all_touched = bool(args.get("all_touched", False))
+    overwrite = bool(args.get("overwrite", False))
+    compress = str(args.get("compress") or "LZW").strip() or "LZW"
+
+    if bool(raster_text) == bool(input_dir_text):
+        raise ValueError("exactly one of raster_path or input_dir is required")
+    if not selector_text:
+        raise ValueError("selector_path is required")
+    if raster_text and not output_text:
+        raise ValueError("output_path is required when raster_path is used")
+    if input_dir_text and not output_dir_text:
+        raise ValueError("output_dir is required when input_dir is used")
+
+    selector_path = _resolve_path(selector_text, ctx)
+    if not selector_path.exists():
+        raise FileNotFoundError(f"selector_path not found: {selector_path}")
+    key, values = _resolve_filter(args)
+
+    selector = gpd.read_file(selector_path)
+    if selector.empty:
+        raise ValueError("selector_path contains no features")
+    if selector.crs is None:
+        raise ValueError("selector_path CRS is required")
+
+    selected = _filter_features(selector, key=key, values=values)
+    selected = selected[selected.geometry.notna() & ~selected.geometry.is_empty].copy()
+    if selected.empty:
+        raise ValueError("selector filter left no valid geometries")
+    selector_crs = str(selector.crs or "")
+
+    if raster_text:
+        raster_path = _resolve_path(raster_text, ctx)
+        output_path = _resolve_path(output_text, ctx)
+        if not raster_path.exists():
+            raise FileNotFoundError(f"raster_path not found: {raster_path}")
+        result = _clip_one_raster(
+            raster_path=raster_path,
+            output_path=output_path,
+            selected=selected,
+            crop=crop,
+            all_touched=all_touched,
+            overwrite=overwrite,
+            compress=compress,
+            key=key,
+            values=values,
+            ctx=ctx,
+        )
+        return {
+            "input_raster_path": result["input_raster_path"],
+            "selector_path": selector_path.resolve().as_posix(),
+            "output_path": result["output_path"],
+            "input_count": 1,
+            "generated_count": 0 if result["skipped"] else 1,
+            "skipped_count": 1 if result["skipped"] else 0,
+            "output_dir": output_path.parent.resolve().as_posix(),
+            "feature_count": result["feature_count"],
+            "selector_crs": selector_crs,
+            "raster_crs": result["raster_crs"],
+            "filter_key": key,
+            "filter_value": ",".join(values),
+            "band_count": result["band_count"],
+            "height": result["height"],
+            "width": result["width"],
+            "_artifacts": [
+                {
+                    "uri": output_path.resolve().as_posix(),
+                    "class": "published",
+                    "location_type": "run_artifact",
+                    "canonical": True,
+                }
+            ],
+        }
+
+    input_dir = _resolve_path(input_dir_text, ctx)
+    output_dir = _resolve_path(output_dir_text, ctx)
+    if not input_dir.exists():
+        raise FileNotFoundError(f"input_dir not found: {input_dir}")
+    raster_paths = sorted(p for p in input_dir.rglob(filename_glob) if p.is_file())
+    if not raster_paths:
+        raise ValueError(f"no rasters matched under {input_dir} with filename_glob={filename_glob}")
+
+    generated_count = 0
+    skipped_count = 0
+    artifacts: list[dict[str, Any]] = []
+    last_result: dict[str, Any] | None = None
+    for raster_path in raster_paths:
+        out_path = output_dir / raster_path.name
+        result = _clip_one_raster(
+            raster_path=raster_path,
+            output_path=out_path,
+            selected=selected,
+            crop=crop,
+            all_touched=all_touched,
+            overwrite=overwrite,
+            compress=compress,
+            key=key,
+            values=values,
+            ctx=ctx,
+        )
+        last_result = result
+        if result["skipped"]:
+            skipped_count += 1
+        else:
+            generated_count += 1
+        artifacts.append(
             {
-                "uri": output_path.resolve().as_posix(),
+                "uri": out_path.resolve().as_posix(),
                 "class": "published",
                 "location_type": "run_artifact",
-                "canonical": True,
+                "canonical": False,
             }
-        ],
+        )
+
+    assert last_result is not None
+    return {
+        "input_raster_path": "",
+        "selector_path": selector_path.resolve().as_posix(),
+        "output_path": "",
+        "input_count": int(len(raster_paths)),
+        "generated_count": int(generated_count),
+        "skipped_count": int(skipped_count),
+        "output_dir": output_dir.resolve().as_posix(),
+        "feature_count": int(len(selected)),
+        "selector_crs": selector_crs,
+        "raster_crs": str(last_result["raster_crs"] or ""),
+        "filter_key": key,
+        "filter_value": ",".join(values),
+        "band_count": int(last_result["band_count"]),
+        "height": int(last_result["height"]),
+        "width": int(last_result["width"]),
+        "_artifacts": artifacts,
     }
