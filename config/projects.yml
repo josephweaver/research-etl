@@ -92,6 +92,7 @@ projects:
       pipeline_assets_project_key: "crop-insurance"
       pipeline_assets_pipelines_dir: "pipelines"
       pipeline_assets_scripts_dir: "scripts"
+      states_of_interest: ['MI']
 
       # ---- Template-only variables (kept at the end on purpose) ----
       basedir: "{env.basedir}/crop-insurance"
