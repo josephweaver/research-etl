@@ -86,10 +86,27 @@ projects:
       # programmatic: workspace manifest path for query/dataset registration features.
       duckdb_workspace_config_path: "../crop-insurance-etl-pipelines/db/duckdb/workspace.yml"
 
-      # programmatic: legacy single-source pipeline asset config.
-      pipeline_assets_repo_url: "git@github.com:josephweaver/crop-insurance-etl-pipelines.git"
-      pipeline_assets_local_repo_path: ""
-      pipeline_assets_project_key: "crop-insurance"
+      # programmatic: ordered asset repositories used to resolve pipeline names.
+      pipeline_asset_sources:
+        - project_key: "shared"
+          repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
+          local_repo_path: "../shared-etl-pipelines"
+          pipelines_dir: "pipelines"
+          scripts_dir: "scripts"
+          ref: "main"
+          priority: 100
+        - project_key: "crop_insurance"
+          repo_url: "git@github.com:josephweaver/crop-insurance-etl-pipelines.git"
+          local_repo_path: "../crop-insurance-etl-pipelines"
+          pipelines_dir: "pipelines"
+          scripts_dir: "scripts"
+          ref: "main"
+          priority: 200
+
+      # programmatic: shared pipeline asset config.
+      pipeline_assets_repo_url: "https://github.com/josephweaver/shared-etl-pipelines.git"
+      pipeline_assets_local_repo_path: "../shared-etl-pipelines"
+      pipeline_assets_project_key: "shared"
       pipeline_assets_pipelines_dir: "pipelines"
       pipeline_assets_scripts_dir: "scripts"
       states_of_interest: ['MI']
