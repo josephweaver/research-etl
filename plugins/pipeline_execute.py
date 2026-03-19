@@ -129,19 +129,36 @@ def _extract_child_run_id(text: str) -> str:
 
 def _build_cmd(args: Dict[str, Any], pipeline_path: Path) -> List[str]:
     cmd: List[str] = [sys.executable, "-m", "cli", "run", pipeline_path.as_posix()]
+    repo_root_env = str(os.environ.get("ETL_REPO_ROOT") or "").strip()
+    repo_root = Path(repo_root_env).expanduser().resolve() if repo_root_env else None
 
     def _add_opt(flag: str, value: Any) -> None:
         text = str(value or "").strip()
         if text:
             cmd.extend([flag, text])
 
+    def _default_config_path(file_name: str) -> str:
+        if not repo_root:
+            return ""
+        candidate = (repo_root / "config" / file_name).resolve()
+        return candidate.as_posix() if candidate.exists() else ""
+
     _add_opt("--executor", args.get("executor"))
-    _add_opt("--plugins-dir", args.get("plugins_dir") or "plugins")
+    plugins_dir = str(args.get("plugins_dir") or "").strip()
+    if not plugins_dir:
+        if repo_root:
+            plugins_dir = (repo_root / "plugins").resolve().as_posix()
+        else:
+            plugins_dir = "plugins"
+    _add_opt("--plugins-dir", plugins_dir)
     _add_opt("--workdir", args.get("workdir"))
-    _add_opt("--global-config", args.get("global_config"))
-    _add_opt("--projects-config", args.get("projects_config"))
-    _add_opt("--environments-config", args.get("environments_config"))
-    _add_opt("--env", args.get("env"))
+    _add_opt("--global-config", args.get("global_config") or os.environ.get("ETL_GLOBAL_CONFIG") or _default_config_path("global.yml"))
+    _add_opt("--projects-config", args.get("projects_config") or os.environ.get("ETL_PROJECTS_CONFIG") or _default_config_path("projects.yml"))
+    _add_opt(
+        "--environments-config",
+        args.get("environments_config") or os.environ.get("ETL_ENVIRONMENTS_CONFIG") or _default_config_path("environments.yml"),
+    )
+    _add_opt("--env", args.get("env") or os.environ.get("ETL_ENV_NAME"))
     _add_opt("--project-id", args.get("project_id"))
     if bool(args.get("allow_dirty_git", False)):
         cmd.append("--allow-dirty-git")
@@ -178,9 +195,10 @@ def run(args, ctx):
     cmd_text = " ".join(shlex.quote(part) for part in cmd)
     ctx.log(f"[pipeline_execute] mode={mode} pipeline={pipeline_path.as_posix()}")
     ctx.log(f"[pipeline_execute] cmd={cmd_text}")
+    cwd = Path(str(os.environ.get("ETL_REPO_ROOT") or "").strip() or ".").resolve()
 
     if mode == "synchronized":
-        proc = run_logged_subprocess(cmd, action="plugin.pipeline_execute.sync", check=False)
+        proc = run_logged_subprocess(cmd, action="plugin.pipeline_execute.sync", check=False, cwd=cwd)
         if (proc.stdout or "").strip():
             ctx.log(f"[pipeline_execute] child stdout: {(proc.stdout or '').strip()[:4000]}")
         if (proc.stderr or "").strip():
@@ -209,6 +227,7 @@ def run(args, ctx):
     proc2 = spawn_logged_subprocess(
         cmd,
         action="plugin.pipeline_execute.fire_and_forget",
+        cwd=cwd,
         stdout=log_f,
         stderr=subprocess.STDOUT,
         text=True,

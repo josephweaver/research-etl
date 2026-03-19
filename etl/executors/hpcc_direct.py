@@ -991,6 +991,13 @@ class HpccDirectExecutor(Executor):
         else:
             run_lines.append("source \"$CHECKOUT_ROOT/.venv/bin/activate\"")
         run_lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
+        if global_remote:
+            run_lines.append(f"export ETL_GLOBAL_CONFIG={shlex.quote(global_remote)}")
+        if projects_remote:
+            run_lines.append(f"export ETL_PROJECTS_CONFIG={shlex.quote(projects_remote)}")
+        if environments_remote and self.env_name:
+            run_lines.append(f"export ETL_ENVIRONMENTS_CONFIG={shlex.quote(environments_remote)}")
+            run_lines.append(f"export ETL_ENV_NAME={shlex.quote(self.env_name)}")
         run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
         self._append_db_tunnel_lines(run_lines)
         if self.load_secrets_file:

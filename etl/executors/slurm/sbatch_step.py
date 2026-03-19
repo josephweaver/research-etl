@@ -196,10 +196,14 @@ def render_step_script(
     cmd += ["--max-retries", str(executor.step_max_retries)]
     cmd += ["--retry-delay-seconds", str(executor.step_retry_delay_seconds)]
     if global_config_path:
+        chunk_runtime_bootstrap.append(f"export ETL_GLOBAL_CONFIG={global_config_path}")
         cmd += ["--global-config", global_config_path]
     if projects_config_path:
+        chunk_runtime_bootstrap.append(f"export ETL_PROJECTS_CONFIG={projects_config_path}")
         cmd += ["--projects-config", projects_config_path]
     if environments_config_path and executor.env_name:
+        chunk_runtime_bootstrap.append(f"export ETL_ENVIRONMENTS_CONFIG={environments_config_path}")
+        chunk_runtime_bootstrap.append(f"export ETL_ENV_NAME={executor.env_name}")
         cmd += ["--environments-config", environments_config_path, "--env", executor.env_name]
     if foreach_arg:
         cmd += ["--foreach-item-index", foreach_arg]
