@@ -205,6 +205,8 @@ def render_step_script(
         chunk_runtime_bootstrap.append(f"export ETL_ENVIRONMENTS_CONFIG={environments_config_path}")
         chunk_runtime_bootstrap.append(f"export ETL_ENV_NAME={executor.env_name}")
         cmd += ["--environments-config", environments_config_path, "--env", executor.env_name]
+    if project_id:
+        chunk_runtime_bootstrap.append(f"export ETL_PROJECT_ID={project_id}")
     if foreach_arg:
         cmd += ["--foreach-item-index", foreach_arg]
     flatten_fn = flatten_vars_for_cli

@@ -998,6 +998,8 @@ class HpccDirectExecutor(Executor):
         if environments_remote and self.env_name:
             run_lines.append(f"export ETL_ENVIRONMENTS_CONFIG={shlex.quote(environments_remote)}")
             run_lines.append(f"export ETL_ENV_NAME={shlex.quote(self.env_name)}")
+        if project_id:
+            run_lines.append(f"export ETL_PROJECT_ID={shlex.quote(str(project_id))}")
         run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
         self._append_db_tunnel_lines(run_lines)
         if self.load_secrets_file:

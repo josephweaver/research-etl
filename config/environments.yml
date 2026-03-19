@@ -129,3 +129,17 @@ environments:
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
+
+  hpcc_msu_local:
+    executor: local
+    path_style: unix
+    execution_mode: workspace
+    allow_workspace_source: true
+    propagate_db_secret: false
+    load_secrets_file: true
+    db_mode: online
+
+    basedir: /mnt/gs21/scratch/weave151/etl
+    workdir: "{basedir}/work"
+    logdir: "{basedir}/logs"
+    datadir: "{basedir}/data"

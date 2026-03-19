@@ -159,7 +159,7 @@ def _build_cmd(args: Dict[str, Any], pipeline_path: Path) -> List[str]:
         args.get("environments_config") or os.environ.get("ETL_ENVIRONMENTS_CONFIG") or _default_config_path("environments.yml"),
     )
     _add_opt("--env", args.get("env") or os.environ.get("ETL_ENV_NAME"))
-    _add_opt("--project-id", args.get("project_id"))
+    _add_opt("--project-id", args.get("project_id") or os.environ.get("ETL_PROJECT_ID"))
     if bool(args.get("allow_dirty_git", False)):
         cmd.append("--allow-dirty-git")
     if bool(args.get("dry_run", False)):
