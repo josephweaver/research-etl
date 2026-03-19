@@ -174,3 +174,35 @@ def test_geo_raster_running_window_supports_input_day_filter(tmp_path: Path) -> 
     with rasterio.open(out_day1) as ds:
         arr_day1 = ds.read(1)
     assert np.allclose(arr_day1, np.full((2, 2), 60.0, dtype=np.float32))
+
+
+def test_geo_raster_running_window_can_derive_windows_from_target_year(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo/geo_raster_running_window.py"))
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    for day, value in (
+        ("20011230", 10.0),
+        ("20011231", 20.0),
+        ("20020101", 30.0),
+        ("20020102", 40.0),
+    ):
+        _write_daily_raster(input_dir / f"ppt_{day}.tif", value)
+
+    outputs = plugin.run(
+        {
+            "input_glob": str(input_dir / "*.tif"),
+            "output_dir": str(output_dir),
+            "metric": "sum",
+            "windows": "3",
+            "target_year": 2002,
+            "overwrite": True,
+        },
+        _ctx(tmp_path),
+    )
+
+    assert outputs["input_count"] == 4
+    out_day1 = output_dir / "sum_03d" / "ppt_20020101.tif"
+    out_day2 = output_dir / "sum_03d" / "ppt_20020102.tif"
+    assert out_day1.exists()
+    assert out_day2.exists()
+    assert not (output_dir / "sum_03d" / "ppt_20011231.tif").exists()

@@ -4,6 +4,7 @@ import ast
 import csv
 import re
 from collections import deque
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ meta = {
         "band": {"type": "int", "default": 1},
         "day_from_filename_regex": {"type": "str", "default": "(\\d{8})"},
         "day_from_filename_group": {"type": "int", "default": 1},
+        "target_year": {"type": "int", "default": 0},
         "input_start_day": {"type": "str", "default": ""},
         "input_end_day": {"type": "str", "default": ""},
         "output_start_day": {"type": "str", "default": ""},
@@ -158,6 +160,31 @@ def _day_in_output_range(day: str, *, start_day: str, end_day: str) -> bool:
     return True
 
 
+def _derive_day_windows(
+    *,
+    target_year: int,
+    windows: list[int],
+    input_start_day: str,
+    input_end_day: str,
+    output_start_day: str,
+    output_end_day: str,
+) -> tuple[str, str, str, str]:
+    if target_year <= 0:
+        return input_start_day, input_end_day, output_start_day, output_end_day
+    year_start = datetime(int(target_year), 1, 1)
+    year_end = datetime(int(target_year), 12, 31)
+    if not output_start_day:
+        output_start_day = year_start.strftime("%Y%m%d")
+    if not output_end_day:
+        output_end_day = year_end.strftime("%Y%m%d")
+    if not input_start_day:
+        lookback_days = max(0, max(windows or [1]) - 1)
+        input_start_day = (year_start - timedelta(days=lookback_days)).strftime("%Y%m%d")
+    if not input_end_day:
+        input_end_day = output_end_day
+    return input_start_day, input_end_day, output_start_day, output_end_day
+
+
 def _read_masked_raster(path: Path, *, band: int):
     with rasterio.open(path) as ds:
         if band < 1 or band > int(ds.count):
@@ -226,10 +253,20 @@ def run(args, ctx):
     compress = str(args.get("compress") or "LZW").strip() or "LZW"
     day_pattern = str(args.get("day_from_filename_regex") or "(\\d{8})").strip()
     day_group = int(args.get("day_from_filename_group", 1) or 1)
+    target_year = int(args.get("target_year") or 0)
     input_start_day = str(args.get("input_start_day") or "").strip()
     input_end_day = str(args.get("input_end_day") or "").strip()
     output_start_day = str(args.get("output_start_day") or "").strip()
     output_end_day = str(args.get("output_end_day") or "").strip()
+
+    input_start_day, input_end_day, output_start_day, output_end_day = _derive_day_windows(
+        target_year=target_year,
+        windows=windows,
+        input_start_day=input_start_day,
+        input_end_day=input_end_day,
+        output_start_day=output_start_day,
+        output_end_day=output_end_day,
+    )
 
     if input_start_day and input_end_day and input_start_day > input_end_day:
         raise ValueError("input_start_day must be <= input_end_day")
