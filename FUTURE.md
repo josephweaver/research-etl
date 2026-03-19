@@ -132,10 +132,15 @@ Goal: avoid re-running prerequisite pipelines unless relevant inputs/logic chang
   - referenced plugin/script checksums
   - effective config checksums (`global`, `env`, `project`)
   - execution identity fields (`executor`, selected env name)
+- [ ] Fix remote prerequisite reuse for `slurm`/`hpcc_direct`:
+  - current dependency auto-run checks only local `runs.jsonl` under the resolved workdir,
+  - remote successful prerequisite runs recorded in the DB are therefore invisible and get rerun,
+  - dependency skip should prefer DB-backed run history for remote executors and fall back to local JSONL only when DB is unavailable.
 - [ ] Persist `pipeline_fingerprint` (and fingerprint components) with run metadata/events.
 - [ ] Update dependency auto-run logic:
   - if latest successful prerequisite run has matching `pipeline_fingerprint`, skip reexecution
   - otherwise reexecute prerequisite
+  - support recurring daily pipelines where prerequisites may also be daily and reuse decisions must distinguish "same dependency already satisfied for this date/input window" from "rerun required for a new day"
 - [ ] Add CLI controls:
   - `--force` (force target + dependencies)
   - `--force-deps` (force prerequisite reexecution only)
