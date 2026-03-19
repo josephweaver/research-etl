@@ -984,6 +984,8 @@ class HpccDirectExecutor(Executor):
             run_lines.append(f"source {shlex.quote(self.remote_venv)}/bin/activate")
         else:
             run_lines.append("source \"$CHECKOUT_ROOT/.venv/bin/activate\"")
+        run_lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
+        run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
         self._append_db_tunnel_lines(run_lines)
         if self.load_secrets_file:
             run_lines.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
@@ -994,12 +996,10 @@ class HpccDirectExecutor(Executor):
         if exec_env.get("db_verbose") is not None:
             run_lines.append(f"export ETL_DB_VERBOSE={'1' if parse_bool(exec_env.get('db_verbose')) else '0'}")
         run_lines.append("export PYTHONUNBUFFERED=1")
-        run_lines.append("export ETL_REPO_ROOT=\"$CHECKOUT_ROOT\"")
         run_lines.append(
             "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \"$ETL_REPO_ROOT\")\"; fi"
         )
         run_lines.append("export ETL_PIPELINE_ASSET_SYNC_MODE=cache_only")
-        run_lines.append("export PYTHONPATH=\"$CHECKOUT_ROOT:${PYTHONPATH:-}\"")
         projects_debug = str(projects_remote or "").replace('"', '\\"')
         run_lines.extend(
             [
