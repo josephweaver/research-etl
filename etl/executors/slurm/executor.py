@@ -460,7 +460,7 @@ class SlurmExecutor(Executor):
                     "ETL_DB_TUNNEL_SESSION_SUFFIX=\"${SLURM_JOB_ID:-$$}-${SLURM_ARRAY_TASK_ID:-na}-${ETL_DB_TUNNEL_PORT}\"",
                     "ETL_DB_TUNNEL_SESSION=\"${ETL_DB_TUNNEL_SESSION_PREFIX}-${ETL_DB_TUNNEL_SESSION_SUFFIX}\"",
                     "tmux has-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 && tmux kill-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 || true",
-                    f"ETL_DB_TUNNEL_COMMAND_RAW={shlex.quote(self.db_tunnel_command)}",
+                    f"export ETL_DB_TUNNEL_COMMAND_RAW={shlex.quote(self.db_tunnel_command)}",
                     "ETL_DB_TUNNEL_COMMAND=$(python3 - <<'PY'\n"
                     "import os\n"
                     "cmd = str(os.environ.get('ETL_DB_TUNNEL_COMMAND_RAW') or '').strip()\n"
