@@ -206,17 +206,39 @@ def render_setup_script(
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"$(basename \"$ASSET_URL_{idx}\")\"")
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"${{ASSET_REPO_NAME_{idx}%.git}}\"")
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"$(printf '%s' \"$ASSET_REPO_NAME_{idx}\" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')\"")
-        chunk_asset_overlays.append(f"ASSET_REPO_HASH_{idx}=\"$(printf '%s' \"$ASSET_URL_{idx}\" | sha1sum | awk '{{print $1}}' | cut -c1-10)\"")
-        chunk_asset_overlays.append(f"{asset_dir_var}=\"$ASSET_CACHE_ROOT/${{ASSET_REPO_NAME_{idx}}}-${{ASSET_REPO_HASH_{idx}}}\"")
+        chunk_asset_overlays.append(f"ASSET_COMMIT_{idx}=\"$(git ls-remote \"$ASSET_URL_{idx}\" \"$ASSET_REF_{idx}\" | awk 'NR==1 {{print $1}}')\"")
+        chunk_asset_overlays.append(f"if [ -z \"$ASSET_COMMIT_{idx}\" ]; then echo \"[etl][setup][assets] could not resolve commit for $ASSET_URL_{idx} ref=$ASSET_REF_{idx}\" >&2; exit 1; fi")
+        chunk_asset_overlays.append(f"ASSET_SHORT_SHA_{idx}=\"$(printf '%s' \"$ASSET_COMMIT_{idx}\" | cut -c1-12)\"")
+        chunk_asset_overlays.append(f"{asset_dir_var}=\"$ASSET_CACHE_ROOT/${{ASSET_REPO_NAME_{idx}}}-${{ASSET_SHORT_SHA_{idx}}}\"")
         chunk_asset_overlays.extend(
             checkout(
                 CheckoutSpec(
                     repo_url=f"$ASSET_URL_{idx}",
-                    revision=f"$ASSET_REF_{idx}",
+                    revision=f"$ASSET_COMMIT_{idx}",
                     checkout_root=f"${asset_dir_var}",
-                    mode="branch",
+                    mode="detached",
+                    clean=True,
                 )
             )
+        )
+        chunk_asset_overlays.append(
+            "python3 - <<PY\n"
+            "import json\n"
+            "from pathlib import Path\n"
+            "cache_root = Path(\"${ASSET_CACHE_ROOT}\").resolve()\n"
+            f"repo_url = \"${{ASSET_URL_{idx}}}\".strip()\n"
+            f"ref = \"${{ASSET_REF_{idx}}}\".strip()\n"
+            f"repo_dir = Path(\"${{{asset_dir_var}}}\").resolve()\n"
+            "index_path = cache_root / '.asset_ref_index.json'\n"
+            "try:\n"
+            "    index = json.loads(index_path.read_text(encoding='utf-8')) if index_path.exists() else {}\n"
+            "    if not isinstance(index, dict):\n"
+            "        index = {}\n"
+            "except Exception:\n"
+            "    index = {}\n"
+            "index[f'{repo_url}|{ref}'] = repo_dir.name\n"
+            "index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + '\\n', encoding='utf-8')\n"
+            "PY"
         )
         chunk_asset_overlays.append(
             f"if [ \"$ASSET_PIPELINES_LINKED\" = \"0\" ] && [ -d \"${asset_dir_var}/{pipelines_dir}\" ]; then "
