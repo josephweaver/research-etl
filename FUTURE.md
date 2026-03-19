@@ -220,6 +220,22 @@ Acceptance criteria:
 - [ ] Dynamic chained fan-out from prior fan-out outputs with deterministic persisted expansion manifests.
 - [ ] Resolved dynamic execution plans materialized before run start.
 - [ ] Adaptive SLURM execution packing using historical runtime telemetry.
+- [ ] Revisit nested child-pipeline execution on HPCC/SLURM.
+  - Current PRISM state-stage attempt exposed a multi-part failure chain when a parent SLURM batch step used `pipeline_execute.py` to launch a child pipeline.
+  - Fixed pieces already identified:
+    - child relative pipeline paths must resolve from `ETL_REPO_ROOT`, not the step scratch workdir
+    - child CLI runs must inherit `global/projects/environments` config paths and current `project_id`
+    - pinned asset refs that are already commit SHAs must not be re-resolved through `git ls-remote <sha>`
+  - Remaining design issue:
+    - child runs launched with `--env hpcc_msu` recursively attempted SLURM submission from inside an active SLURM job
+    - switching to an on-node local env (`hpcc_msu_local`) is the right direction, but this path should be revalidated end-to-end before restoring multi-state/state-year fanout
+  - Resume point:
+    - parent pipeline: `shared-etl-pipelines/pipelines/prism/stage-ts-ppt-day-state.yml`
+    - child pipeline: `shared-etl-pipelines/pipelines/prism/stage-ts-ppt-day-state-child.yml`
+    - parent HPCC run inspected: `/mnt/scratch/weave151/etl/work/prism_stage_ts_ppt_day_state/260319/215945-8804ae6f`
+    - representative failure logs:
+      - `logs/01_run_state_year_child/etl-8804ae6f4b4f419fae314212d09471f2-3827109.0.out`
+      - `logs/01_run_state_year_child_18/2647ae67f96341b8ad298ea7587c03f8/logs/step.log`
 
 ## From FUTURE/notes.md
 ### Future cleanup (path resolution)
