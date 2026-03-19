@@ -89,6 +89,15 @@ def _lookup_path(ctx: Dict[str, Any], path: str) -> tuple[Any, bool]:
         if isinstance(current, dict) and part in current:
             current = current[part]
             continue
+        if isinstance(current, (list, tuple)):
+            try:
+                idx = int(part)
+            except (TypeError, ValueError):
+                return None, False
+            if idx < 0 or idx >= len(current):
+                return None, False
+            current = current[idx]
+            continue
         return None, False
     return current, True
 
