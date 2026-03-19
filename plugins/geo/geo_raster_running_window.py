@@ -41,6 +41,10 @@ meta = {
         "band": {"type": "int", "default": 1},
         "day_from_filename_regex": {"type": "str", "default": "(\\d{8})"},
         "day_from_filename_group": {"type": "int", "default": 1},
+        "input_start_day": {"type": "str", "default": ""},
+        "input_end_day": {"type": "str", "default": ""},
+        "output_start_day": {"type": "str", "default": ""},
+        "output_end_day": {"type": "str", "default": ""},
         "overwrite": {"type": "bool", "default": False},
         "compress": {"type": "str", "default": "LZW"},
     },
@@ -146,6 +150,14 @@ def _extract_day(path: Path, pattern: str, group_idx: int) -> str:
     return value
 
 
+def _day_in_output_range(day: str, *, start_day: str, end_day: str) -> bool:
+    if start_day and day < start_day:
+        return False
+    if end_day and day > end_day:
+        return False
+    return True
+
+
 def _read_masked_raster(path: Path, *, band: int):
     with rasterio.open(path) as ds:
         if band < 1 or band > int(ds.count):
@@ -214,6 +226,15 @@ def run(args, ctx):
     compress = str(args.get("compress") or "LZW").strip() or "LZW"
     day_pattern = str(args.get("day_from_filename_regex") or "(\\d{8})").strip()
     day_group = int(args.get("day_from_filename_group", 1) or 1)
+    input_start_day = str(args.get("input_start_day") or "").strip()
+    input_end_day = str(args.get("input_end_day") or "").strip()
+    output_start_day = str(args.get("output_start_day") or "").strip()
+    output_end_day = str(args.get("output_end_day") or "").strip()
+
+    if input_start_day and input_end_day and input_start_day > input_end_day:
+        raise ValueError("input_start_day must be <= input_end_day")
+    if output_start_day and output_end_day and output_start_day > output_end_day:
+        raise ValueError("output_start_day must be <= output_end_day")
 
     input_paths = _collect_input_paths(args, ctx)
     for path in input_paths:
@@ -227,6 +248,8 @@ def run(args, ctx):
     seen_days: set[str] = set()
     for path in input_paths:
         day = _extract_day(path, day_pattern, day_group)
+        if not _day_in_output_range(day, start_day=input_start_day, end_day=input_end_day):
+            continue
         if day in seen_days:
             raise ValueError(f"Duplicate day '{day}' detected in raster series")
         seen_days.add(day)
@@ -241,6 +264,8 @@ def run(args, ctx):
                 "signature": signature,
             }
         )
+    if not items:
+        raise ValueError("no rasters remained after applying input day filters")
     items.sort(key=lambda item: item["day"])
     _ensure_same_grid(items)
 
@@ -257,6 +282,12 @@ def run(args, ctx):
                 continue
             trailing = list(buffer)[-window:]
             source_item = item
+            if not _day_in_output_range(
+                source_item["day"],
+                start_day=output_start_day,
+                end_day=output_end_day,
+            ):
+                continue
             output_path = output_dir / f"{metric}_{window:02d}d" / source_item["path"].name
             if output_path.exists() and not overwrite:
                 skipped_count += 1

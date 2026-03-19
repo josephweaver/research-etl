@@ -29,6 +29,7 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
   - parent-child run linkage
   - cancellation propagation
   - richer `foreach` mode, placement, and backend policy
+  - `foreach_glob` is convenient for local file fan-out but is not the right primitive for explicit dataset partitioning / remote batch parallelism; add a first-class partitioned fan-out mode that can drive parallel work from declared keys like `years`, `states`, or date windows without relying on filesystem discovery as the expansion mechanism
 - Runtime environment reuse:
   - avoid rebuilding `.venv` for every new immutable `research-etl-<sha>` checkout when dependencies are unchanged
   - keep this deferred unless it becomes a direct blocker for crop-insurance or landcore execution
@@ -218,6 +219,9 @@ Acceptance criteria:
 
 ### Possible future features
 - [ ] Dynamic chained fan-out from prior fan-out outputs with deterministic persisted expansion manifests.
+- [ ] Add a first-class partitioned fan-out mode for pipeline datasets that should parallelize by declared partitions rather than `foreach_glob` path discovery.
+  - Current pain point: PRISM rolling-window datasets should parallelize by `years` with explicit overlap windows; using `foreach_glob` for this is operationally awkward and not a true backend-parallel partition model.
+  - Desired behavior: let pipeline authors declare partition keys and overlap policy directly, with deterministic expansion manifests and clean step-level logging.
 - [ ] Resolved dynamic execution plans materialized before run start.
 - [ ] Adaptive SLURM execution packing using historical runtime telemetry.
 - [ ] Revisit nested child-pipeline execution on HPCC/SLURM.

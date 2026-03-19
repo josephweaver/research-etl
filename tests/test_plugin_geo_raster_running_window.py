@@ -98,3 +98,79 @@ def test_geo_raster_running_window_rejects_unknown_metric(tmp_path: Path) -> Non
             },
             _ctx(tmp_path),
         )
+
+
+def test_geo_raster_running_window_supports_output_day_filter(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo/geo_raster_running_window.py"))
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    for day, value in (
+        ("20231230", 10.0),
+        ("20231231", 20.0),
+        ("20240101", 30.0),
+        ("20240102", 40.0),
+    ):
+        _write_daily_raster(input_dir / f"ppt_{day}.tif", value)
+
+    outputs = plugin.run(
+        {
+            "input_glob": str(input_dir / "*.tif"),
+            "output_dir": str(output_dir),
+            "metric": "sum",
+            "windows": "3",
+            "output_start_day": "20240101",
+            "output_end_day": "20240131",
+            "overwrite": True,
+        },
+        _ctx(tmp_path),
+    )
+
+    assert outputs["generated_count"] == 2
+    assert not (output_dir / "sum_03d" / "ppt_20231231.tif").exists()
+    out_day1 = output_dir / "sum_03d" / "ppt_20240101.tif"
+    out_day2 = output_dir / "sum_03d" / "ppt_20240102.tif"
+    assert out_day1.exists()
+    assert out_day2.exists()
+    with rasterio.open(out_day1) as ds:
+        arr_day1 = ds.read(1)
+    with rasterio.open(out_day2) as ds:
+        arr_day2 = ds.read(1)
+    assert np.allclose(arr_day1, np.full((2, 2), 60.0, dtype=np.float32))
+    assert np.allclose(arr_day2, np.full((2, 2), 90.0, dtype=np.float32))
+
+
+def test_geo_raster_running_window_supports_input_day_filter(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo/geo_raster_running_window.py"))
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    for day, value in (
+        ("20231229", 5.0),
+        ("20231230", 10.0),
+        ("20231231", 20.0),
+        ("20240101", 30.0),
+        ("20240102", 40.0),
+    ):
+        _write_daily_raster(input_dir / f"ppt_{day}.tif", value)
+
+    outputs = plugin.run(
+        {
+            "input_glob": str(input_dir / "*.tif"),
+            "output_dir": str(output_dir),
+            "metric": "sum",
+            "windows": "3",
+            "input_start_day": "20231230",
+            "input_end_day": "20240102",
+            "output_start_day": "20240101",
+            "output_end_day": "20240131",
+            "overwrite": True,
+        },
+        _ctx(tmp_path),
+    )
+
+    assert outputs["input_count"] == 4
+    assert not (output_dir / "sum_03d" / "ppt_20231229.tif").exists()
+    out_day1 = output_dir / "sum_03d" / "ppt_20240101.tif"
+    assert out_day1.exists()
+    with rasterio.open(out_day1) as ds:
+        arr_day1 = ds.read(1)
+    assert np.allclose(arr_day1, np.full((2, 2), 60.0, dtype=np.float32))
