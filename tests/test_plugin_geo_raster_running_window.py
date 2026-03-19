@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from etl.plugins.base import PluginContext, load_plugin
+
+
+rasterio = pytest.importorskip("rasterio")
+from rasterio.transform import from_origin  # type: ignore  # noqa: E402
+
+
+def _ctx(tmp_path: Path) -> PluginContext:
+    return PluginContext(run_id="r1", workdir=tmp_path, log=lambda *a, **k: None)
+
+
+def _write_daily_raster(path: Path, value: float) -> None:
+    data = np.full((1, 2, 2), value, dtype=np.float32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=2,
+        width=2,
+        count=1,
+        dtype=data.dtype,
+        crs="EPSG:4326",
+        transform=from_origin(-85.0, 48.0, 1.0, 1.0),
+        nodata=-9999.0,
+    ) as dst:
+        dst.write(data)
+
+
+def test_geo_raster_running_window_writes_trailing_sum_outputs(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo/geo_raster_running_window.py"))
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    for day, value in (
+        ("20240101", 1.0),
+        ("20240102", 2.0),
+        ("20240103", 3.0),
+        ("20240104", 4.0),
+    ):
+        _write_daily_raster(input_dir / f"ppt_{day}.tif", value)
+
+    outputs = plugin.run(
+        {
+            "input_glob": str(input_dir / "*.tif"),
+            "output_dir": str(output_dir),
+            "metric": "sum",
+            "windows": "3",
+            "overwrite": True,
+        },
+        _ctx(tmp_path),
+    )
+
+    assert outputs["input_count"] == 4
+    assert outputs["generated_count"] == 2
+    assert outputs["metric"] == "sum"
+    assert outputs["windows"] == [3]
+
+    out_day3 = output_dir / "sum_03d" / "ppt_20240103.tif"
+    out_day4 = output_dir / "sum_03d" / "ppt_20240104.tif"
+    assert out_day3.exists()
+    assert out_day4.exists()
+
+    with rasterio.open(out_day3) as ds:
+        arr_day3 = ds.read(1)
+    with rasterio.open(out_day4) as ds:
+        arr_day4 = ds.read(1)
+
+    assert np.allclose(arr_day3, np.full((2, 2), 6.0, dtype=np.float32))
+    assert np.allclose(arr_day4, np.full((2, 2), 9.0, dtype=np.float32))
+
+    manifest_path = Path(outputs["manifest_path"])
+    assert manifest_path.exists()
+    with manifest_path.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert [row["day"] for row in rows] == ["20240103", "20240104"]
+    assert [row["window_days"] for row in rows] == ["3", "3"]
+
+
+def test_geo_raster_running_window_rejects_unknown_metric(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo/geo_raster_running_window.py"))
+    _write_daily_raster(tmp_path / "inputs" / "ppt_20240101.tif", 1.0)
+
+    with pytest.raises(ValueError, match="Unsupported metric"):
+        plugin.run(
+            {
+                "input_glob": str(tmp_path / "inputs" / "*.tif"),
+                "output_dir": str(tmp_path / "outputs"),
+                "metric": "mean",
+                "windows": "3",
+            },
+            _ctx(tmp_path),
+        )
