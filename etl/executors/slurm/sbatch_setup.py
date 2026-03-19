@@ -221,6 +221,7 @@ def render_setup_script(
                 )
             )
         )
+        chunk_asset_overlays.append(f"CHECKOUT_ROOT={shlex.quote(checkout_root)}")
         chunk_asset_overlays.append(
             "python3 - <<PY\n"
             "import json\n"
