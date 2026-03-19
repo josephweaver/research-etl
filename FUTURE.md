@@ -106,7 +106,8 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
 - [ ] DB tunnel preflight:
   - validate tunnel command reaches configured gateway,
   - verify local forwarded port opens (`127.0.0.1:6543` by default),
-  - validate rewritten DB URL can run a smoke query (`select 1` / `select now()`).
+  - validate rewritten DB URL can run a smoke query (`select 1` / `select now()`),
+  - fix local schema bootstrap error handling in `etl/db.py` so an SSL/tunnel disconnect during migration checks preserves the original psycopg error and does not mask it with a secondary `the connection is closed` failure from advisory-unlock cleanup.
 - [ ] Environment config bootstrap/validation:
   - validate required keys in `config/environments.yml` for selected env,
   - provide safe defaults for tunnel rewrite options (`db_tunnel_rewrite_database_url`, host/port),
