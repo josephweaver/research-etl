@@ -447,10 +447,31 @@ class SlurmExecutor(Executor):
             lines.extend(
                 [
                     "if ! command -v tmux >/dev/null 2>&1; then echo '[etl][db_tunnel] tmux is required when db_tunnel_via_tmux=true' >&2; exit 1; fi",
+                    f"export ETL_DB_TUNNEL_HOST={shlex.quote(str(self.db_tunnel_host or '127.0.0.1'))}",
+                    f"export ETL_DB_TUNNEL_PORT_BASE={int(self.db_tunnel_port or 6543)}",
+                    "if [ -n \"${SLURM_ARRAY_TASK_ID:-}\" ]; then",
+                    "  export ETL_DB_TUNNEL_PORT=$((ETL_DB_TUNNEL_PORT_BASE + SLURM_ARRAY_TASK_ID))",
+                    "elif [ -n \"${SLURM_PROCID:-}\" ]; then",
+                    "  export ETL_DB_TUNNEL_PORT=$((ETL_DB_TUNNEL_PORT_BASE + SLURM_PROCID))",
+                    "else",
+                    "  export ETL_DB_TUNNEL_PORT=${ETL_DB_TUNNEL_PORT_BASE}",
+                    "fi",
                     f"ETL_DB_TUNNEL_SESSION_PREFIX={shlex.quote(self.db_tunnel_session_prefix)}",
-                    "ETL_DB_TUNNEL_SESSION=\"${ETL_DB_TUNNEL_SESSION_PREFIX}-${SLURM_JOB_ID:-$$}\"",
+                    "ETL_DB_TUNNEL_SESSION_SUFFIX=\"${SLURM_JOB_ID:-$$}-${SLURM_ARRAY_TASK_ID:-na}-${ETL_DB_TUNNEL_PORT}\"",
+                    "ETL_DB_TUNNEL_SESSION=\"${ETL_DB_TUNNEL_SESSION_PREFIX}-${ETL_DB_TUNNEL_SESSION_SUFFIX}\"",
                     "tmux has-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 && tmux kill-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1 || true",
-                    f"tmux new-session -d -s \"$ETL_DB_TUNNEL_SESSION\" \"bash -lc {shlex.quote(self.db_tunnel_command)}\"",
+                    f"ETL_DB_TUNNEL_COMMAND_RAW={shlex.quote(self.db_tunnel_command)}",
+                    "ETL_DB_TUNNEL_COMMAND=$(python3 - <<'PY'\n"
+                    "import os\n"
+                    "cmd = str(os.environ.get('ETL_DB_TUNNEL_COMMAND_RAW') or '').strip()\n"
+                    "port = str(os.environ.get('ETL_DB_TUNNEL_PORT') or '6543').strip() or '6543'\n"
+                    "needle = '-L 6543:'\n"
+                    "if needle in cmd:\n"
+                    "    cmd = cmd.replace(needle, f'-L {port}:', 1)\n"
+                    "print(cmd)\n"
+                    "PY\n"
+                    ")",
+                    "tmux new-session -d -s \"$ETL_DB_TUNNEL_SESSION\" \"bash -lc \\\"$ETL_DB_TUNNEL_COMMAND\\\"\"",
                     "sleep 1",
                     "if ! tmux has-session -t \"$ETL_DB_TUNNEL_SESSION\" >/dev/null 2>&1; then echo '[etl][db_tunnel] tmux tunnel session failed to start' >&2; exit 1; fi",
                     "ETL_DB_TUNNEL_READY=0",
@@ -495,8 +516,8 @@ class SlurmExecutor(Executor):
             return
         lines.extend(
             [
-                f"export ETL_DB_TUNNEL_HOST={shlex.quote(str(self.db_tunnel_host or '127.0.0.1'))}",
-                f"export ETL_DB_TUNNEL_PORT={int(self.db_tunnel_port or 6543)}",
+                f"export ETL_DB_TUNNEL_HOST=${{ETL_DB_TUNNEL_HOST:-{shlex.quote(str(self.db_tunnel_host or '127.0.0.1'))}}}",
+                f"export ETL_DB_TUNNEL_PORT=${{ETL_DB_TUNNEL_PORT:-{int(self.db_tunnel_port or 6543)}}}",
                 "if [ -n \"${ETL_DATABASE_URL:-}\" ]; then",
                 f"  ETL_DATABASE_URL=\"$({python_expr} - <<'PY'\n"
                 "import os\n"

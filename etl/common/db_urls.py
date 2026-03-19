@@ -7,6 +7,9 @@ def _infer_neon_endpoint(hostname: str) -> str | None:
     host = str(hostname or "").strip().lower()
     if not host:
         return None
+    first_label = host.split(".", 1)[0].strip()
+    if first_label.startswith("ep-"):
+        return first_label
     if host.startswith("ep-"):
         return host
     return None
