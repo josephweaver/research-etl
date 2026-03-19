@@ -47,6 +47,7 @@ class PipelineAssetMatch:
 
 
 _SYNCED_REPOS: set[Tuple[str, str]] = set()
+_COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 def _slug(text: str) -> str:
@@ -85,6 +86,9 @@ def _ref_index_key(repo_url: str, ref: str) -> str:
 
 
 def _resolve_repo_commit(*, repo_url: str, ref: str) -> str:
+    ref_text = str(ref or "").strip()
+    if _COMMIT_SHA_RE.fullmatch(ref_text):
+        return ref_text
     text = _run_git(["ls-remote", repo_url, ref])
     for line in str(text or "").splitlines():
         parts = [p for p in line.strip().split() if p]

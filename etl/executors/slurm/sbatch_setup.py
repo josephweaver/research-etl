@@ -206,7 +206,15 @@ def render_setup_script(
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"$(basename \"$ASSET_URL_{idx}\")\"")
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"${{ASSET_REPO_NAME_{idx}%.git}}\"")
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"$(printf '%s' \"$ASSET_REPO_NAME_{idx}\" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')\"")
-        chunk_asset_overlays.append(f"ASSET_COMMIT_{idx}=\"$(git ls-remote \"$ASSET_URL_{idx}\" \"$ASSET_REF_{idx}\" | awk 'NR==1 {{print $1}}')\"")
+        chunk_asset_overlays.extend(
+            [
+                f"if printf '%s' \"$ASSET_REF_{idx}\" | grep -Eq '^[0-9a-fA-F]{{7,40}}$'; then",
+                f"  ASSET_COMMIT_{idx}=\"$ASSET_REF_{idx}\"",
+                "else",
+                f"  ASSET_COMMIT_{idx}=\"$(git ls-remote \"$ASSET_URL_{idx}\" \"$ASSET_REF_{idx}\" | awk 'NR==1 {{print $1}}')\"",
+                "fi",
+            ]
+        )
         chunk_asset_overlays.append(f"if [ -z \"$ASSET_COMMIT_{idx}\" ]; then echo \"[etl][setup][assets] could not resolve commit for $ASSET_URL_{idx} ref=$ASSET_REF_{idx}\" >&2; exit 1; fi")
         chunk_asset_overlays.append(f"ASSET_SHORT_SHA_{idx}=\"$(printf '%s' \"$ASSET_COMMIT_{idx}\" | cut -c1-12)\"")
         chunk_asset_overlays.append(f"{asset_dir_var}=\"$ASSET_CACHE_ROOT/${{ASSET_REPO_NAME_{idx}}}-${{ASSET_SHORT_SHA_{idx}}}\"")
