@@ -222,6 +222,7 @@ Acceptance criteria:
 - [ ] Adaptive SLURM execution packing using historical runtime telemetry.
 - [ ] Revisit nested child-pipeline execution on HPCC/SLURM.
   - Current PRISM state-stage attempt exposed a multi-part failure chain when a parent SLURM batch step used `pipeline_execute.py` to launch a child pipeline.
+  - Treat `pipeline_execute.py` as defective for nested HPCC/SLURM child execution until this is redesigned and revalidated; prefer direct plugins/`foreach` pipelines instead.
   - Fixed pieces already identified:
     - child relative pipeline paths must resolve from `ETL_REPO_ROOT`, not the step scratch workdir
     - child CLI runs must inherit `global/projects/environments` config paths and current `project_id`
