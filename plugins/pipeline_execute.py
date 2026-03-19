@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -60,9 +61,17 @@ def _resolve_path(path_text: str, ctx) -> Path:
     p = Path(str(path_text or "")).expanduser()
     if p.is_absolute():
         return p
-    repo_rel = (Path(".").resolve() / p).resolve()
-    if repo_rel.exists():
-        return repo_rel
+    search_roots: list[Path] = []
+    repo_root_env = str(os.environ.get("ETL_REPO_ROOT") or "").strip()
+    if repo_root_env:
+        search_roots.append(Path(repo_root_env).expanduser().resolve())
+    search_roots.append(Path(".").resolve())
+    for root in search_roots:
+        repo_rel = (root / p).resolve()
+        if repo_rel.exists():
+            return repo_rel
+    if repo_root_env:
+        return (Path(repo_root_env).expanduser().resolve() / p).resolve()
     return (ctx.workdir / p).resolve()
 
 
