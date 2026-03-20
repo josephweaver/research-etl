@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 
 import numpy as np
@@ -61,10 +60,10 @@ def test_geo_raster_running_window_writes_trailing_sum_outputs(tmp_path: Path) -
     assert outputs["input_count"] == 4
     assert outputs["generated_count"] == 2
     assert outputs["metric"] == "sum"
-    assert outputs["windows"] == [3]
+    assert outputs["window"] == 3
 
-    out_day3 = output_dir / "sum_03d" / "ppt_20240103.tif"
-    out_day4 = output_dir / "sum_03d" / "ppt_20240104.tif"
+    out_day3 = output_dir / "ppt_20240103.tif"
+    out_day4 = output_dir / "ppt_20240104.tif"
     assert out_day3.exists()
     assert out_day4.exists()
 
@@ -75,13 +74,6 @@ def test_geo_raster_running_window_writes_trailing_sum_outputs(tmp_path: Path) -
 
     assert np.allclose(arr_day3, np.full((2, 2), 6.0, dtype=np.float32))
     assert np.allclose(arr_day4, np.full((2, 2), 9.0, dtype=np.float32))
-
-    manifest_path = Path(outputs["manifest_path"])
-    assert manifest_path.exists()
-    with manifest_path.open("r", encoding="utf-8", newline="") as f:
-        rows = list(csv.DictReader(f))
-    assert [row["day"] for row in rows] == ["20240103", "20240104"]
-    assert [row["window_days"] for row in rows] == ["3", "3"]
 
 
 def test_geo_raster_running_window_rejects_unknown_metric(tmp_path: Path) -> None:
@@ -126,9 +118,9 @@ def test_geo_raster_running_window_supports_output_day_filter(tmp_path: Path) ->
     )
 
     assert outputs["generated_count"] == 2
-    assert not (output_dir / "sum_03d" / "ppt_20231231.tif").exists()
-    out_day1 = output_dir / "sum_03d" / "ppt_20240101.tif"
-    out_day2 = output_dir / "sum_03d" / "ppt_20240102.tif"
+    assert not (output_dir / "ppt_20231231.tif").exists()
+    out_day1 = output_dir / "ppt_20240101.tif"
+    out_day2 = output_dir / "ppt_20240102.tif"
     assert out_day1.exists()
     assert out_day2.exists()
     with rasterio.open(out_day1) as ds:
@@ -168,8 +160,8 @@ def test_geo_raster_running_window_supports_input_day_filter(tmp_path: Path) -> 
     )
 
     assert outputs["input_count"] == 4
-    assert not (output_dir / "sum_03d" / "ppt_20231229.tif").exists()
-    out_day1 = output_dir / "sum_03d" / "ppt_20240101.tif"
+    assert not (output_dir / "ppt_20231229.tif").exists()
+    out_day1 = output_dir / "ppt_20240101.tif"
     assert out_day1.exists()
     with rasterio.open(out_day1) as ds:
         arr_day1 = ds.read(1)
@@ -201,8 +193,8 @@ def test_geo_raster_running_window_can_derive_windows_from_target_year(tmp_path:
     )
 
     assert outputs["input_count"] == 4
-    out_day1 = output_dir / "sum_03d" / "ppt_20020101.tif"
-    out_day2 = output_dir / "sum_03d" / "ppt_20020102.tif"
+    out_day1 = output_dir / "ppt_20020101.tif"
+    out_day2 = output_dir / "ppt_20020102.tif"
     assert out_day1.exists()
     assert out_day2.exists()
-    assert not (output_dir / "sum_03d" / "ppt_20011231.tif").exists()
+    assert not (output_dir / "ppt_20011231.tif").exists()

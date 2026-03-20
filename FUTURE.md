@@ -124,6 +124,31 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
   - ask minimal questions once,
   - persist answers to env/project config and mark install state.
 
+## High Priority: Shared Asset Runtime Pathing
+- [ ] Make shared pipeline asset repos first-class runtime roots instead of treating them only as YAML lookup locations.
+  - Current issue: shared scripts under `shared-etl-pipelines/scripts/...` are path-fragile in HPCC/SLURM runs because runtime path resolution is biased toward the main `research-etl` checkout (`ETL_REPO_ROOT`) rather than the repo that the current pipeline actually came from.
+  - This showed up while building PRISM rolling-window and SPI datasets:
+    - shared pipelines resolve correctly from `pipeline_asset_sources`
+    - shared scripts are not yet as reliable as plugins during remote execution
+    - to avoid another round of HPCC pathing failures, SPI is temporarily implemented as an `etl` plugin instead of a shared-repo script
+  - Required runtime concepts:
+    - `ETL_MAIN_REPO_ROOT`
+    - `ETL_PIPELINE_REPO_ROOT`
+    - `ETL_PIPELINE_PATH`
+    - `ETL_PIPELINE_DIR`
+    - `ETL_PIPELINE_ASSET_REPO_ROOT` when the pipeline comes from an external/shared asset source
+  - Required behavior changes:
+    - `exec_script.py` should resolve repo-relative scripts against the current pipeline repo by default, not the main checkout root
+    - plugins and helper utilities should use a shared path resolver that can target `main_repo`, `pipeline_repo`, or `workdir`
+    - runtime context should persist resolved asset-source provenance (repo URL, pinned SHA/ref, checkout path, pipelines dir, scripts dir)
+  - Required tests:
+    - shared pipeline executing shared script locally
+    - shared pipeline executing shared script on HPCC/SLURM
+    - main repo pipeline invoking shared asset scripts intentionally
+    - pinned asset checkouts with scripts and pipelines resolved from the same external repo root
+  - Follow-up implementation option:
+    - add a dedicated plugin such as `exec_pipeline_repo_script.py` rather than overloading generic `exec_script.py`
+
 ## Incremental Reuse / Skip Reexecution Plan
 Goal: avoid re-running prerequisite pipelines unless relevant inputs/logic changed, with explicit force overrides.
 

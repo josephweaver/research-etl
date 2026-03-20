@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import csv
 import glob
 import re
 from collections import deque
@@ -28,11 +27,10 @@ meta = {
     "outputs": [
         "input_count",
         "output_dir",
-        "manifest_path",
         "generated_count",
         "skipped_count",
         "metric",
-        "windows",
+        "window",
     ],
     "params": {
         "input_glob": {"type": "str", "default": ""},
@@ -101,6 +99,8 @@ def _parse_windows(raw: Any) -> list[int]:
         out.append(value)
     if not out:
         raise ValueError("windows must include at least one positive integer")
+    if len(out) != 1:
+        raise ValueError("geo_raster_running_window currently supports exactly one window per run")
     return sorted(out)
 
 
@@ -307,72 +307,47 @@ def run(args, ctx):
     items.sort(key=lambda item: item["day"])
     _ensure_same_grid(items)
 
-    buffer = deque(maxlen=max(windows))
+    window = int(windows[0])
+    buffer = deque(maxlen=window)
     generated_count = 0
     skipped_count = 0
-    manifest_path = output_dir / "manifest.csv"
-    manifest_rows: list[dict[str, Any]] = []
 
     for item in items:
         buffer.append(item)
-        for window in windows:
-            if len(buffer) < window:
-                continue
-            trailing = list(buffer)[-window:]
-            source_item = item
-            if not _day_in_output_range(
-                source_item["day"],
-                start_day=output_start_day,
-                end_day=output_end_day,
-            ):
-                continue
-            output_path = output_dir / f"{metric}_{window:02d}d" / source_item["path"].name
-            if output_path.exists() and not overwrite:
-                skipped_count += 1
-            else:
-                result = _compute_metric(metric, [entry["array"] for entry in trailing])
-                _write_output(
-                    output_path,
-                    data=result,
-                    profile=source_item["profile"],
-                    nodata=source_item["nodata"],
-                    compress=compress,
-                )
-                generated_count += 1
-            manifest_rows.append(
-                {
-                    "day": source_item["day"],
-                    "window_days": window,
-                    "metric": metric,
-                    "input_count": window,
-                    "output_path": output_path.resolve().as_posix(),
-                }
+        if len(buffer) < window:
+            continue
+        trailing = list(buffer)[-window:]
+        source_item = item
+        if not _day_in_output_range(
+            source_item["day"],
+            start_day=output_start_day,
+            end_day=output_end_day,
+        ):
+            continue
+        output_path = output_dir / source_item["path"].name
+        if output_path.exists() and not overwrite:
+            skipped_count += 1
+        else:
+            result = _compute_metric(metric, [entry["array"] for entry in trailing])
+            _write_output(
+                output_path,
+                data=result,
+                profile=source_item["profile"],
+                nodata=source_item["nodata"],
+                compress=compress,
             )
-
-    with manifest_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["day", "window_days", "metric", "input_count", "output_path"])
-        writer.writeheader()
-        writer.writerows(manifest_rows)
+            generated_count += 1
 
     ctx.log(
-        f"[geo_raster_running_window] inputs={len(items)} metric={metric} windows={windows} "
+        f"[geo_raster_running_window] inputs={len(items)} metric={metric} window={window} "
         f"generated={generated_count} skipped={skipped_count} output_dir={output_dir.as_posix()}"
     )
 
     return {
         "input_count": int(len(items)),
         "output_dir": output_dir.resolve().as_posix(),
-        "manifest_path": manifest_path.resolve().as_posix(),
         "generated_count": int(generated_count),
         "skipped_count": int(skipped_count),
         "metric": metric,
-        "windows": list(windows),
-        "_artifacts": [
-            {
-                "uri": manifest_path.resolve().as_posix(),
-                "class": "published",
-                "location_type": "run_artifact",
-                "canonical": True,
-            }
-        ],
+        "window": int(window),
     }
