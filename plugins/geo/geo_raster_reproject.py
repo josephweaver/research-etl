@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import glob
 from pathlib import Path
 
 try:
@@ -37,6 +38,8 @@ meta = {
         "input_path": {"type": "str", "default": ""},
         "output_path": {"type": "str", "default": ""},
         "target_crs": {"type": "str", "default": ""},
+        "template_path": {"type": "str", "default": ""},
+        "template_glob": {"type": "str", "default": ""},
         "source_crs": {"type": "str", "default": ""},
         "resampling": {"type": "str", "default": "nearest"},
         "resolution": {"type": "str", "default": ""},
@@ -83,6 +86,32 @@ def _parse_resolution(raw: str):
     raise ValueError("resolution must be '<xres>' or '<xres>,<yres>'")
 
 
+def _expand_glob(pattern: str, ctx) -> list[Path]:
+    text = str(pattern or "").strip()
+    if not text:
+        return []
+    p = Path(text).expanduser()
+    patterns: list[str] = []
+    if p.is_absolute():
+        patterns.append(str(p))
+    else:
+        patterns.append(str(Path(text)))
+        patterns.append(str(ctx.workdir / text))
+    out: list[Path] = []
+    seen: set[str] = set()
+    for pat in patterns:
+        for item in glob.glob(pat, recursive=True):
+            path = Path(item)
+            if not path.exists() or not path.is_file():
+                continue
+            key = path.resolve().as_posix()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(path)
+    return sorted(out)
+
+
 def _normalize_resampling(name: str):
     if Resampling is None:
         raise RuntimeError("rasterio is not available")
@@ -102,13 +131,17 @@ def run(args, ctx):
     input_text = str(args.get("input_path") or "").strip()
     output_text = str(args.get("output_path") or "").strip()
     target_crs = str(args.get("target_crs") or "").strip()
+    template_text = str(args.get("template_path") or "").strip()
+    template_glob = str(args.get("template_glob") or "").strip()
     source_crs_arg = str(args.get("source_crs") or "").strip()
     if not input_text:
         raise ValueError("input_path is required")
     if not output_text:
         raise ValueError("output_path is required")
-    if not target_crs:
-        raise ValueError("target_crs is required")
+    if template_text and template_glob:
+        raise ValueError("template_path and template_glob may not both be set")
+    if not target_crs and not template_text and not template_glob:
+        raise ValueError("one of target_crs, template_path, or template_glob is required")
 
     input_path = _resolve_path(input_text, ctx)
     output_path = _resolve_path(output_text, ctx)
@@ -125,6 +158,14 @@ def run(args, ctx):
     dst_nodata = _parse_float_or_none(str(args.get("dst_nodata") or ""))
     compress = str(args.get("compress") or "deflate").strip()
     verbose = bool(args.get("verbose", False))
+    template_path = None
+    if template_text:
+        template_path = _resolve_path(template_text, ctx)
+    elif template_glob:
+        matches = _expand_glob(template_glob, ctx)
+        if not matches:
+            raise FileNotFoundError(f"template_glob matched no files: {template_glob}")
+        template_path = matches[0]
 
     with rasterio.open(input_path) as src:
         src_crs = src.crs or None
@@ -134,17 +175,26 @@ def run(args, ctx):
             src_crs = source_crs_arg
         src_crs_text = str(src_crs.to_string() if hasattr(src_crs, "to_string") else src_crs)
 
-        transform_kwargs = {}
-        if resolution is not None:
-            transform_kwargs["resolution"] = resolution
-        dst_transform, dst_width, dst_height = calculate_default_transform(
-            src_crs,
-            target_crs,
-            src.width,
-            src.height,
-            *src.bounds,
-            **transform_kwargs,
-        )
+        if template_path is not None:
+            with rasterio.open(template_path) as tmpl:
+                if tmpl.crs is None:
+                    raise ValueError("template raster has no CRS")
+                dst_transform = tmpl.transform
+                dst_width = int(tmpl.width)
+                dst_height = int(tmpl.height)
+                target_crs = str(tmpl.crs.to_string() if hasattr(tmpl.crs, "to_string") else tmpl.crs)
+        else:
+            transform_kwargs = {}
+            if resolution is not None:
+                transform_kwargs["resolution"] = resolution
+            dst_transform, dst_width, dst_height = calculate_default_transform(
+                src_crs,
+                target_crs,
+                src.width,
+                src.height,
+                *src.bounds,
+                **transform_kwargs,
+            )
 
         profile = src.profile.copy()
         profile.update(
@@ -179,7 +229,10 @@ def run(args, ctx):
         f"source_crs={src_crs_text} target_crs={target_crs} width={dst_width} height={dst_height} bands={src.count}"
     )
     if verbose:
-        ctx.log(f"[geo_raster_reproject] resolution={resolution} resampling={str(args.get('resampling') or 'nearest')}")
+        ctx.log(
+            f"[geo_raster_reproject] resolution={resolution} template={template_path.as_posix() if template_path else ''} "
+            f"resampling={str(args.get('resampling') or 'nearest')}"
+        )
 
     return {
         "input_path": input_path.resolve().as_posix(),
