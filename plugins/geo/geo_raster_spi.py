@@ -143,6 +143,25 @@ def _read_masked_raster(path: Path, *, band: int):
     return arr, profile, float(nodata), signature
 
 
+def _read_raster_metadata(path: Path, *, band: int) -> dict[str, Any]:
+    with rasterio.open(path) as ds:
+        if band < 1 or band > int(ds.count):
+            raise ValueError(f"band must be in 1..{ds.count}; got {band}")
+        profile = ds.profile.copy()
+        profile.update(driver="GTiff", count=1, dtype="float32")
+        nodata = ds.nodata if ds.nodata is not None else -9999.0
+        return {
+            "profile": profile,
+            "nodata": float(nodata),
+            "signature": {
+                "width": int(ds.width),
+                "height": int(ds.height),
+                "crs": str(ds.crs or ""),
+                "transform": tuple(ds.transform),
+            },
+        }
+
+
 def _ensure_same_grid(items: list[dict[str, Any]]) -> None:
     if not items:
         return
@@ -195,28 +214,28 @@ def run(args, ctx):
         if day in seen_days:
             raise ValueError(f"Duplicate day '{day}' detected in raster series")
         seen_days.add(day)
-        arr, profile, nodata, signature = _read_masked_raster(path, band=band)
+        meta = _read_raster_metadata(path, band=band)
         items.append(
             {
                 "day": day,
                 "path": path,
-                "array": arr,
-                "profile": profile,
-                "nodata": nodata,
-                "signature": signature,
+                "profile": meta["profile"],
+                "nodata": meta["nodata"],
+                "signature": meta["signature"],
             }
         )
     items.sort(key=lambda item: item["day"])
     _ensure_same_grid(items)
 
     template = items[0]
-    shape = template["array"].shape
+    shape = (int(template["signature"]["height"]), int(template["signature"]["width"]))
     count = np.zeros(shape, dtype=np.int32)
     mean = np.zeros(shape, dtype=np.float64)
     m2 = np.zeros(shape, dtype=np.float64)
 
     for item in items:
-        arr = np.ma.asarray(item["array"], dtype=np.float64)
+        arr, _, _, _ = _read_masked_raster(item["path"], band=band)
+        arr = np.ma.asarray(arr, dtype=np.float64)
         valid = ~np.ma.getmaskarray(arr)
         if not np.any(valid):
             continue
@@ -274,7 +293,8 @@ def run(args, ctx):
         if out_path.exists() and not overwrite:
             skipped_count += 1
         else:
-            arr = np.ma.asarray(item["array"], dtype=np.float64)
+            arr, _, _, _ = _read_masked_raster(item["path"], band=band)
+            arr = np.ma.asarray(arr, dtype=np.float64)
             arr_mask = np.ma.getmaskarray(arr)
             out_mask = arr_mask | ~usable_stats
             out = np.ma.masked_all(shape, dtype=np.float32)
