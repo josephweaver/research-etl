@@ -4,8 +4,6 @@ import ast
 import csv
 import glob
 import re
-from collections import deque
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,9 +19,9 @@ except Exception:  # noqa: BLE001
 
 
 meta = {
-    "name": "geo_raster_running_window",
+    "name": "geo_raster_spi",
     "version": "0.1.0",
-    "description": "Compute trailing running-window raster metrics from a dated raster series and write GeoTIFF outputs.",
+    "description": "Compute raster SPI-like standardized anomalies from an accumulated raster series.",
     "inputs": [],
     "outputs": [
         "input_count",
@@ -31,30 +29,26 @@ meta = {
         "manifest_path",
         "generated_count",
         "skipped_count",
-        "metric",
-        "windows",
+        "method",
+        "mean_raster_path",
+        "std_raster_path",
     ],
     "params": {
         "input_glob": {"type": "str", "default": ""},
         "input_paths": {"type": "str", "default": ""},
         "output_dir": {"type": "str", "default": ""},
-        "metric": {"type": "str", "default": "sum"},
-        "windows": {"type": "str", "default": "3,7,14,30"},
+        "method": {"type": "str", "default": "zscore"},
         "band": {"type": "int", "default": 1},
         "day_from_filename_regex": {"type": "str", "default": "(\\d{8})"},
         "day_from_filename_group": {"type": "int", "default": 1},
-        "target_year": {"type": "int", "default": 0},
-        "input_start_day": {"type": "str", "default": ""},
-        "input_end_day": {"type": "str", "default": ""},
-        "output_start_day": {"type": "str", "default": ""},
-        "output_end_day": {"type": "str", "default": ""},
+        "min_std": {"type": "float", "default": 1e-6},
         "overwrite": {"type": "bool", "default": False},
         "compress": {"type": "str", "default": "LZW"},
     },
     "idempotent": True,
 }
 
-_ALLOWED_METRICS = {"sum"}
+_ALLOWED_METHODS = {"zscore"}
 
 
 def _resolve_path(path_text: str, ctx) -> Path:
@@ -83,35 +77,6 @@ def _coerce_list(raw: Any) -> list[str]:
     if isinstance(parsed, (list, tuple, set)):
         return [str(item).strip() for item in parsed if str(item).strip()]
     return [part.strip() for part in text.replace(";", ",").split(",") if part.strip()]
-
-
-def _parse_windows(raw: Any) -> list[int]:
-    out: list[int] = []
-    seen: set[int] = set()
-    for token in _coerce_list(raw):
-        try:
-            value = int(token)
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"Invalid window size '{token}'") from exc
-        if value <= 0:
-            raise ValueError(f"Window size must be positive; got {value}")
-        if value in seen:
-            continue
-        seen.add(value)
-        out.append(value)
-    if not out:
-        raise ValueError("windows must include at least one positive integer")
-    return sorted(out)
-
-
-def _parse_metric(raw: Any) -> str:
-    metric = str(raw or "sum").strip().lower()
-    if not metric:
-        metric = "sum"
-    if metric not in _ALLOWED_METRICS:
-        allowed = ", ".join(sorted(_ALLOWED_METRICS))
-        raise ValueError(f"Unsupported metric '{metric}'. Allowed: {allowed}")
-    return metric
 
 
 def _collect_input_paths(args, ctx) -> list[Path]:
@@ -153,44 +118,19 @@ def _extract_day(path: Path, pattern: str, group_idx: int) -> str:
     return value
 
 
-def _day_in_output_range(day: str, *, start_day: str, end_day: str) -> bool:
-    if start_day and day < start_day:
-        return False
-    if end_day and day > end_day:
-        return False
-    return True
-
-
-def _derive_day_windows(
-    *,
-    target_year: int,
-    windows: list[int],
-    input_start_day: str,
-    input_end_day: str,
-    output_start_day: str,
-    output_end_day: str,
-) -> tuple[str, str, str, str]:
-    if target_year <= 0:
-        return input_start_day, input_end_day, output_start_day, output_end_day
-    year_start = datetime(int(target_year), 1, 1)
-    year_end = datetime(int(target_year), 12, 31)
-    if not output_start_day:
-        output_start_day = year_start.strftime("%Y%m%d")
-    if not output_end_day:
-        output_end_day = year_end.strftime("%Y%m%d")
-    if not input_start_day:
-        lookback_days = max(0, max(windows or [1]) - 1)
-        input_start_day = (year_start - timedelta(days=lookback_days)).strftime("%Y%m%d")
-    if not input_end_day:
-        input_end_day = output_end_day
-    return input_start_day, input_end_day, output_start_day, output_end_day
+def _parse_method(raw: Any) -> str:
+    method = str(raw or "zscore").strip().lower()
+    if method not in _ALLOWED_METHODS:
+        allowed = ", ".join(sorted(_ALLOWED_METHODS))
+        raise ValueError(f"Unsupported method '{method}'. Allowed: {allowed}")
+    return method
 
 
 def _read_masked_raster(path: Path, *, band: int):
     with rasterio.open(path) as ds:
         if band < 1 or band > int(ds.count):
             raise ValueError(f"band must be in 1..{ds.count}; got {band}")
-        arr = ds.read(band, masked=True).astype("float32")
+        arr = ds.read(band, masked=True).astype("float64")
         profile = ds.profile.copy()
         profile.update(driver="GTiff", count=1, dtype="float32")
         nodata = ds.nodata if ds.nodata is not None else -9999.0
@@ -215,19 +155,7 @@ def _ensure_same_grid(items: list[dict[str, Any]]) -> None:
             )
 
 
-def _metric_sum(arrays) -> Any:
-    return np.ma.sum(np.ma.stack(list(arrays)), axis=0)
-
-
-def _compute_metric(metric: str, arrays) -> Any:
-    # Add new metrics here as needed. Keep the dispatch isolated so the
-    # rolling-window orchestration stays unchanged when new math is added.
-    if metric == "sum":
-        return _metric_sum(arrays)
-    raise ValueError(f"Unsupported metric '{metric}'")
-
-
-def _write_output(path: Path, *, data, profile: dict[str, Any], nodata: float, compress: str) -> None:
+def _write_raster(path: Path, *, data: Any, profile: dict[str, Any], nodata: float, compress: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     out_profile = profile.copy()
     out_profile.update(nodata=float(nodata), compress=compress)
@@ -240,54 +168,30 @@ def _write_output(path: Path, *, data, profile: dict[str, Any], nodata: float, c
 def run(args, ctx):
     if rasterio is None or np is None:
         raise RuntimeError(
-            "geo_raster_running_window requires rasterio and numpy. Install requirements.txt in the active environment."
+            "geo_raster_spi requires rasterio and numpy. Install requirements.txt in the active environment."
         )
 
     output_text = str(args.get("output_dir") or "").strip()
     if not output_text:
         raise ValueError("output_dir is required")
 
-    metric = _parse_metric(args.get("metric"))
-    windows = _parse_windows(args.get("windows"))
+    method = _parse_method(args.get("method"))
     band = int(args.get("band", 1) or 1)
+    min_std = float(args.get("min_std", 1e-6) or 1e-6)
     overwrite = bool(args.get("overwrite", False))
     compress = str(args.get("compress") or "LZW").strip() or "LZW"
     day_pattern = str(args.get("day_from_filename_regex") or "(\\d{8})").strip()
     day_group = int(args.get("day_from_filename_group", 1) or 1)
-    target_year = int(args.get("target_year") or 0)
-    input_start_day = str(args.get("input_start_day") or "").strip()
-    input_end_day = str(args.get("input_end_day") or "").strip()
-    output_start_day = str(args.get("output_start_day") or "").strip()
-    output_end_day = str(args.get("output_end_day") or "").strip()
-
-    input_start_day, input_end_day, output_start_day, output_end_day = _derive_day_windows(
-        target_year=target_year,
-        windows=windows,
-        input_start_day=input_start_day,
-        input_end_day=input_end_day,
-        output_start_day=output_start_day,
-        output_end_day=output_end_day,
-    )
-
-    if input_start_day and input_end_day and input_start_day > input_end_day:
-        raise ValueError("input_start_day must be <= input_end_day")
-    if output_start_day and output_end_day and output_start_day > output_end_day:
-        raise ValueError("output_start_day must be <= output_end_day")
 
     input_paths = _collect_input_paths(args, ctx)
     for path in input_paths:
         if not path.exists():
             raise FileNotFoundError(f"input raster not found: {path}")
 
-    output_dir = _resolve_path(output_text, ctx)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     items: list[dict[str, Any]] = []
     seen_days: set[str] = set()
     for path in input_paths:
         day = _extract_day(path, day_pattern, day_group)
-        if not _day_in_output_range(day, start_day=input_start_day, end_day=input_end_day):
-            continue
         if day in seen_days:
             raise ValueError(f"Duplicate day '{day}' detected in raster series")
         seen_days.add(day)
@@ -302,61 +206,111 @@ def run(args, ctx):
                 "signature": signature,
             }
         )
-    if not items:
-        raise ValueError("no rasters remained after applying input day filters")
     items.sort(key=lambda item: item["day"])
     _ensure_same_grid(items)
 
-    buffer = deque(maxlen=max(windows))
-    generated_count = 0
-    skipped_count = 0
-    manifest_path = output_dir / "manifest.csv"
-    manifest_rows: list[dict[str, Any]] = []
+    template = items[0]
+    shape = template["array"].shape
+    count = np.zeros(shape, dtype=np.int32)
+    mean = np.zeros(shape, dtype=np.float64)
+    m2 = np.zeros(shape, dtype=np.float64)
 
     for item in items:
-        buffer.append(item)
-        for window in windows:
-            if len(buffer) < window:
-                continue
-            trailing = list(buffer)[-window:]
-            source_item = item
-            if not _day_in_output_range(
-                source_item["day"],
-                start_day=output_start_day,
-                end_day=output_end_day,
-            ):
-                continue
-            output_path = output_dir / f"{metric}_{window:02d}d" / source_item["path"].name
-            if output_path.exists() and not overwrite:
-                skipped_count += 1
-            else:
-                result = _compute_metric(metric, [entry["array"] for entry in trailing])
-                _write_output(
-                    output_path,
-                    data=result,
-                    profile=source_item["profile"],
-                    nodata=source_item["nodata"],
-                    compress=compress,
-                )
-                generated_count += 1
-            manifest_rows.append(
-                {
-                    "day": source_item["day"],
-                    "window_days": window,
-                    "metric": metric,
-                    "input_count": window,
-                    "output_path": output_path.resolve().as_posix(),
-                }
-            )
+        arr = np.ma.asarray(item["array"], dtype=np.float64)
+        valid = ~np.ma.getmaskarray(arr)
+        if not np.any(valid):
+            continue
+        values = arr.filled(0.0)
+        prev_mean = mean[valid]
+        prev_count = count[valid].astype(np.float64)
+        next_count = prev_count + 1.0
+        delta = values[valid] - prev_mean
+        next_mean = prev_mean + (delta / next_count)
+        delta2 = values[valid] - next_mean
+        count[valid] += 1
+        mean[valid] = next_mean
+        m2[valid] += delta * delta2
+
+    valid_stats = count > 1
+    std = np.zeros(shape, dtype=np.float64)
+    std[valid_stats] = np.sqrt(m2[valid_stats] / (count[valid_stats] - 1.0))
+    usable_stats = valid_stats & (std > float(min_std))
+
+    output_dir = _resolve_path(output_text, ctx)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stats_dir = output_dir / "_stats"
+    mean_path = stats_dir / "mean.tif"
+    std_path = stats_dir / "std.tif"
+    nodata = float(template["nodata"])
+    stats_mask = ~usable_stats
+    mean_masked = np.ma.array(mean.astype("float32"), mask=stats_mask)
+    std_masked = np.ma.array(std.astype("float32"), mask=stats_mask)
+    if overwrite or not mean_path.exists():
+        _write_raster(mean_path, data=mean_masked, profile=template["profile"], nodata=nodata, compress=compress)
+    if overwrite or not std_path.exists():
+        _write_raster(std_path, data=std_masked, profile=template["profile"], nodata=nodata, compress=compress)
+
+    manifest_path = output_dir / "manifest.csv"
+    manifest_rows: list[dict[str, Any]] = []
+    generated_count = 0
+    skipped_count = 0
+    artifacts: list[dict[str, Any]] = [
+        {
+            "uri": mean_path.resolve().as_posix(),
+            "class": "published",
+            "location_type": "run_artifact",
+            "canonical": False,
+        },
+        {
+            "uri": std_path.resolve().as_posix(),
+            "class": "published",
+            "location_type": "run_artifact",
+            "canonical": False,
+        },
+    ]
+
+    for item in items:
+        out_path = output_dir / item["day"][:4] / item["path"].name
+        if out_path.exists() and not overwrite:
+            skipped_count += 1
+        else:
+            arr = np.ma.asarray(item["array"], dtype=np.float64)
+            arr_mask = np.ma.getmaskarray(arr)
+            out_mask = arr_mask | ~usable_stats
+            out = np.ma.masked_all(shape, dtype=np.float32)
+            valid = ~out_mask
+            if np.any(valid):
+                if method == "zscore":
+                    out.data[valid] = ((arr.data[valid] - mean[valid]) / std[valid]).astype(np.float32)
+                else:
+                    raise ValueError(f"Unsupported method '{method}'")
+            out.mask = out_mask
+            _write_raster(out_path, data=out, profile=item["profile"], nodata=nodata, compress=compress)
+            generated_count += 1
+        manifest_rows.append(
+            {
+                "day": item["day"],
+                "method": method,
+                "output_path": out_path.resolve().as_posix(),
+            }
+        )
+        artifacts.append(
+            {
+                "uri": out_path.resolve().as_posix(),
+                "class": "published",
+                "location_type": "run_artifact",
+                "canonical": False,
+            }
+        )
 
     with manifest_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["day", "window_days", "metric", "input_count", "output_path"])
+        writer = csv.DictWriter(f, fieldnames=["day", "method", "output_path"])
         writer.writeheader()
         writer.writerows(manifest_rows)
 
     ctx.log(
-        f"[geo_raster_running_window] inputs={len(items)} metric={metric} windows={windows} "
-        f"generated={generated_count} skipped={skipped_count} output_dir={output_dir.as_posix()}"
+        f"[geo_raster_spi] inputs={len(items)} method={method} generated={generated_count} "
+        f"skipped={skipped_count} output_dir={output_dir.as_posix()}"
     )
 
     return {
@@ -365,9 +319,11 @@ def run(args, ctx):
         "manifest_path": manifest_path.resolve().as_posix(),
         "generated_count": int(generated_count),
         "skipped_count": int(skipped_count),
-        "metric": metric,
-        "windows": list(windows),
-        "_artifacts": [
+        "method": method,
+        "mean_raster_path": mean_path.resolve().as_posix(),
+        "std_raster_path": std_path.resolve().as_posix(),
+        "_artifacts": artifacts
+        + [
             {
                 "uri": manifest_path.resolve().as_posix(),
                 "class": "published",
