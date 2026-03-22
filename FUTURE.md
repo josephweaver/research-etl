@@ -54,6 +54,15 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
   - additional query endpoints
   - UI integration
   - governance, allowlists, and audit hardening
+- Persistent external execution monitor / controller:
+  - run as a long-lived process outside SLURM jobs
+  - watch submitted runs/jobs and react after the original short-lived controller exits
+  - detect terminal failure classes such as OOM from scheduler metadata/logs
+  - support policy-based resubmission with adjusted resources (for example higher `mem`) without requiring `sbatch` from inside a SLURM job
+  - manage dependency-aware scheduling across pipelines/runs from one control plane instead of ad hoc submit chains
+  - coordinate global job-rate limits / queue budgets (for example the 1000-job ceiling) rather than leaving each run to discover limits independently
+  - support recurrent/scheduled jobs from the same control system
+  - preserve provenance across retries/resubmissions so parent/child attempt lineage remains explicit
 - Dataset-platform redesign from `FUTURE/data.notes.md`:
   - dataset-first registry model
   - dictionary/DB split evolution
