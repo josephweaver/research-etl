@@ -715,15 +715,6 @@ def apply_db_mode_from_exec_env(exec_env: Dict[str, Any]) -> None:
     verbose = exec_env.get("db_verbose")
     if verbose is not None:
         os.environ["ETL_DB_VERBOSE"] = "1" if parse_bool(verbose, default=False) else "0"
-    tunnel_mode = str(exec_env.get("db_tunnel_mode") or "").strip()
-    if tunnel_mode:
-        os.environ["ETL_DB_TUNNEL_MODE"] = tunnel_mode
-    tunnel_command = str(exec_env.get("db_tunnel_command") or "").strip()
-    if tunnel_command:
-        os.environ["ETL_DB_TUNNEL_COMMAND_RAW"] = tunnel_command
-    tunnel_host = str(exec_env.get("db_tunnel_host") or "").strip()
-    if tunnel_host:
-        os.environ["ETL_DB_TUNNEL_HOST"] = tunnel_host
 
 
 def _resolve_max_passes(*, global_vars: Dict[str, Any], exec_env: Dict[str, Any]) -> int:
