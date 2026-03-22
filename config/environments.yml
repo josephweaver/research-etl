@@ -85,6 +85,7 @@ environments:
     propagate_db_secret: false
     load_secrets_file: true
     db_mode: online
+    db_tunnel_mode: process
     db_tunnel_via_tmux: true
     db_tunnel_session_prefix: "etl-db-tunnel"
     db_tunnel_command: "ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_hpc -L 6543:ep-sweet-sunset-ai8t67lb-pooler.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
@@ -119,6 +120,7 @@ environments:
     source_root: "{basedir}/src"
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
     db_tunnel_via_tmux: true
+    db_tunnel_mode: process
     db_tunnel_session_prefix: "etl-db-tunnel"
     db_tunnel_command: "ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_hpc -L 6543:ep-sweet-sunset-ai8t67lb-pooler.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
     db_tunnel_host: 127.0.0.1

@@ -319,6 +319,7 @@ class SlurmEnv:
     load_secrets_file: Optional[bool] = True
     database_url: Optional[str] = None
     db_tunnel_command: Optional[str] = None
+    db_tunnel_mode: Optional[str] = None
     db_tunnel_via_tmux: Optional[bool] = False
     db_tunnel_session_prefix: Optional[str] = None
     db_tunnel_host: Optional[str] = None
@@ -364,7 +365,7 @@ class SlurmExecutor(Executor):
             "execution_source", "source_bundle", "source_snapshot", "allow_workspace_source",
             "git_remote_url", "propagate_db_secret", "load_secrets_file",
             "database_url", "db_tunnel_command", "db_tunnel_via_tmux", "db_tunnel_session_prefix",
-            "db_tunnel_host", "db_tunnel_port", "db_tunnel_rewrite_database_url",
+            "db_tunnel_host", "db_tunnel_port", "db_tunnel_rewrite_database_url", "db_tunnel_mode",
             "ssh_retries", "scp_retries", "remote_retry_delay_seconds",
             "ssh_connect_timeout", "ssh_strict_host_key_checking",
         }}
@@ -415,6 +416,7 @@ class SlurmExecutor(Executor):
         config_database_url = str(env_config.get("database_url") or "").strip()
         self.database_url = config_database_url or self._load_database_url()
         self.db_tunnel_command = str(env_config.get("db_tunnel_command") or "").strip()
+        self.db_tunnel_mode = str(env_config.get("db_tunnel_mode") or "").strip().lower()
         self.db_tunnel_via_tmux = parse_bool(env_config.get("db_tunnel_via_tmux"), default=False)
         self.db_tunnel_session_prefix = (
             str(env_config.get("db_tunnel_session_prefix") or "").strip() or "etl-db-tunnel"
@@ -440,6 +442,15 @@ class SlurmExecutor(Executor):
 
     def _append_db_tunnel_lines(self, lines: list[str]) -> None:
         if not self.db_tunnel_command:
+            return
+        if self.db_tunnel_mode == "process":
+            lines.extend(
+                [
+                    "export ETL_DB_TUNNEL_MODE=process",
+                    f"export ETL_DB_TUNNEL_HOST={shlex.quote(str(self.db_tunnel_host or '127.0.0.1'))}",
+                    f"export ETL_DB_TUNNEL_COMMAND_RAW={shlex.quote(self.db_tunnel_command)}",
+                ]
+            )
             return
         if self.db_tunnel_via_tmux:
             if self.verbose:
@@ -512,6 +523,8 @@ class SlurmExecutor(Executor):
         lines.append(f"{self.db_tunnel_command}")
 
     def _append_db_tunnel_database_url_rewrite_lines(self, lines: list[str], *, python_expr: str) -> None:
+        if self.db_tunnel_mode == "process":
+            return
         if not self.db_tunnel_rewrite_database_url:
             return
         lines.extend(

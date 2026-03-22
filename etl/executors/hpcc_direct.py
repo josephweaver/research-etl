@@ -216,6 +216,7 @@ class HpccDirectExecutor(Executor):
         self.load_secrets_file = bool(self.env_config.get("load_secrets_file", True))
         self.database_url = str(self.env_config.get("database_url") or "").strip() or None
         self.db_tunnel_command = str(self.env_config.get("db_tunnel_command") or "").strip()
+        self.db_tunnel_mode = str(self.env_config.get("db_tunnel_mode") or "").strip().lower()
         self.db_tunnel_via_tmux = parse_bool(self.env_config.get("db_tunnel_via_tmux"), default=False)
         self.db_tunnel_session_prefix = (
             str(self.env_config.get("db_tunnel_session_prefix") or "").strip() or "etl-db-tunnel"
@@ -243,6 +244,15 @@ class HpccDirectExecutor(Executor):
 
     def _append_db_tunnel_lines(self, lines: list[str]) -> None:
         if not self.db_tunnel_command:
+            return
+        if self.db_tunnel_mode == "process":
+            lines.extend(
+                [
+                    "export ETL_DB_TUNNEL_MODE=process",
+                    f"export ETL_DB_TUNNEL_HOST={shlex.quote(str(self.db_tunnel_host or '127.0.0.1'))}",
+                    f"export ETL_DB_TUNNEL_COMMAND_RAW={shlex.quote(self.db_tunnel_command)}",
+                ]
+            )
             return
         if self.db_tunnel_via_tmux:
             lines.extend(
@@ -290,6 +300,8 @@ class HpccDirectExecutor(Executor):
         lines.append(self.db_tunnel_command)
 
     def _append_db_tunnel_database_url_rewrite_lines(self, lines: list[str], *, python_expr: str) -> None:
+        if self.db_tunnel_mode == "process":
+            return
         if not self.db_tunnel_rewrite_database_url:
             return
         lines.extend(

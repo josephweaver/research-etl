@@ -645,12 +645,16 @@ On remote submissions, the SLURM executor ensures `~/.secrets/etl` exists on the
 For HPCC/network-restricted DB access, execution environments also support:
 - `database_url`: optional explicit DB URL override (used instead of local `ETL_DATABASE_URL`).
 - `db_tunnel_command`: optional shell command executed before run stages (for example SSH local-port forwarding to Neon).
+- `db_tunnel_mode`: optional tunnel lifecycle mode.
+  - `process`: each Python process creates and owns its own SSH tunnel on demand and rewrites `ETL_DATABASE_URL` locally.
+  - default behavior remains executor-managed bootstrap/tmux lifecycle when `db_tunnel_command` is set.
 - `db_tunnel_via_tmux`: when `true`, starts `db_tunnel_command` in a tmux session and auto-kills that session when the stage exits.
 - `db_tunnel_session_prefix`: optional tmux session-name prefix (default: `etl-db-tunnel`).
 - `db_tunnel_host` / `db_tunnel_port`: loopback target used when rewriting `ETL_DATABASE_URL` for tunneled runs (defaults: `127.0.0.1:6543`).
 - `db_tunnel_rewrite_database_url`: when enabled (default when `db_tunnel_command` is set), rewrites `ETL_DATABASE_URL` host:port to tunnel host:port while preserving database name and query parameters (including Neon endpoint options).
 
 When using `db_tunnel_via_tmux`, prefer a non-forking command (for example `ssh -N ...` without `-f`) so lifecycle is controlled by tmux.
+When using `db_tunnel_mode: process`, prefer leaving `db_tunnel_via_tmux` off for that environment; the DB layer will start a per-process tunnel lazily and restart it if it dies.
 
 Pipeline asset resolution can be pinned to a stable shared cache path by setting `ETL_PIPELINE_ASSET_CACHE_ROOT` (for example `/mnt/scratch/weave151/etl`). This avoids per-run cache churn under transient work directories.
 

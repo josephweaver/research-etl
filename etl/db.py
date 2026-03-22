@@ -25,6 +25,7 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 import psycopg
+from .common.db_tunnel import ensure_process_tunneled_database_url
 
 
 class DatabaseError(RuntimeError):
@@ -105,7 +106,13 @@ def _load_database_url() -> Optional[str]:
 
 def get_database_url() -> Optional[str]:
     """Return normalized DB URL (or None if not configured)."""
-    return _load_database_url()
+    raw = _load_database_url()
+    if not raw:
+        return None
+    try:
+        return ensure_process_tunneled_database_url(raw)
+    except Exception as exc:
+        raise DatabaseError(f"Failed to initialize process DB tunnel: {exc}") from exc
 
 
 def _discover_ddl_scripts(ddl_dir: Path) -> List[Path]:
