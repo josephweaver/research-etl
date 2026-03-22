@@ -3,7 +3,6 @@ from __future__ import annotations
 import atexit
 import os
 import re
-import shlex
 import socket
 import subprocess
 import threading
@@ -84,17 +83,28 @@ def _wait_for_port(host: str, port: int, *, proc: subprocess.Popen, timeout_seco
     raise RuntimeError(f"db tunnel not ready at {host}:{port}")
 
 
+def _build_launch_kwargs(command: str) -> tuple[list[str], dict[str, object]]:
+    text = str(command or "").strip()
+    if not text:
+        raise RuntimeError("db tunnel command is empty")
+    kwargs: dict[str, object] = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return ["cmd", "/c", text], kwargs
+    kwargs["start_new_session"] = True
+    return ["bash", "-lc", text], kwargs
+
+
 def _start_tunnel(*, host: str, base_command: str) -> _TunnelState:
     local_port = _choose_free_port(host)
     command = _rewrite_local_forward_command(base_command, local_port=local_port)
     _log(f"starting process-local tunnel host={host} port={local_port}")
-    proc = subprocess.Popen(
-        ["bash", "-lc", command],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    argv, kwargs = _build_launch_kwargs(command)
+    proc = subprocess.Popen(argv, **kwargs)
     _wait_for_port(host, local_port, proc=proc)
     _log(f"process-local tunnel ready pid={proc.pid} host={host} port={local_port}")
     return _TunnelState(proc=proc, host=host, port=local_port, command=command)
@@ -165,4 +175,5 @@ __all__ = [
     "ensure_process_tunneled_database_url",
     "close_process_tunnel",
     "_rewrite_local_forward_command",
+    "_build_launch_kwargs",
 ]
