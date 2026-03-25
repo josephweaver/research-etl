@@ -36,6 +36,8 @@ Related sibling repos currently in use:
 - Remote/HPCC setup also depends on `requirements.txt`, so dependency changes should be added there, not only installed locally.
 - In this environment, `python` may resolve to Anaconda instead of the repo `.venv`.
 - For dependency-sensitive tests or commands, prefer `.venv\\Scripts\\python.exe` explicitly.
+- Default SLURM resource values should be checked in `config/environments.yml`.
+- Do not guess baseline `mem`, `cpus_per_task`, or similar scheduler defaults from generic cluster assumptions.
 
 ## Known Environment Quirks
 
