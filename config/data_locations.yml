@@ -18,3 +18,11 @@ locations:
     transport: local_fs
     target_uri: ".runs/datasets_cache"
     environment: local
+
+  LC_GCS:
+    location_type: gcs
+    transport: gcs
+    target_uri: "gcs://crop-dl/lake"
+    options:
+      endpoint_url: "https://storage.googleapis.com"
+      region_name: "auto"

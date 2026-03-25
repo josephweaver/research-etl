@@ -243,6 +243,53 @@ def test_store_data_resolves_location_alias(monkeypatch, tmp_path):
     assert captured["options"]["shared_drive_id"] == "team123"
 
 
+def test_store_data_resolves_gcs_location_alias(monkeypatch, tmp_path):
+    conn = _FakeConn()
+    src = tmp_path / "payload.txt"
+    src.write_text("hello", encoding="utf-8")
+    captured = {}
+
+    def _fake_transfer(**kwargs):
+        captured.update(kwargs)
+        return {
+            "transport": kwargs["transport"],
+            "target_uri": kwargs["target_uri"],
+            "dry_run": False,
+        }
+
+    monkeypatch.setattr(ds, "_connect", lambda: conn)
+    monkeypatch.setattr(ds, "_load_policy_or_none", lambda: None)
+    monkeypatch.setattr(ds, "_infer_dataset_profile", lambda _src: {"columns": [], "schema_hash": None})
+    monkeypatch.setattr(
+        ds,
+        "resolve_data_location_alias",
+        lambda alias, config_path=None: {
+            "alias": alias,
+            "location_type": "gcs",
+            "transport": "gcs",
+            "target_uri": "gcs://demo-bucket/lake",
+            "options": {"endpoint_url": "https://storage.googleapis.com"},
+        },
+    )
+    monkeypatch.setattr(ds, "transfer_via_transport", _fake_transfer)
+
+    out = ds.store_data(
+        dataset_id="serve.demo",
+        source_path=str(src),
+        stage="published",
+        runtime_context="local",
+        version_label="v1",
+        location_alias="LC_GCS",
+        transport_options={"region_name": "auto"},
+    )
+    assert out["location_alias"] == "LC_GCS"
+    assert out["location_type"] == "gcs"
+    assert out["transport"] == "gcs"
+    assert captured["target_uri"] == "gcs://demo-bucket/lake"
+    assert captured["options"]["endpoint_url"] == "https://storage.googleapis.com"
+    assert captured["options"]["region_name"] == "auto"
+
+
 def test_store_data_auto_registers_workspace_entry(monkeypatch, tmp_path):
     conn = _FakeConn()
     src = tmp_path / "payload.csv"
@@ -458,6 +505,52 @@ def test_get_data_applies_alias_location_type_filter(monkeypatch, tmp_path):
     assert out["location_alias"] == "LC_GDrive"
     assert captured["transport"] == "rclone"
     assert captured["options"]["rclone_bin"] == "bin/rclone"
+
+
+def test_get_data_fetches_gcs_alias(monkeypatch, tmp_path):
+    src_uri = "gcs://demo-bucket/lake/serve/demo/v2/file.txt"
+    captured = {}
+
+    class _Cursor(_FakeCursor):
+        def fetchall(self):
+            if "dataset_version_id = %s" in self._last_sql:
+                return [
+                    (11, "local", "gcs", src_uri, True, "abc", 5, datetime(2026, 2, 17, 1, 3, 4)),
+                ]
+            return super().fetchall()
+
+    class _Conn(_FakeConn):
+        def cursor(self):
+            return _Cursor(self)
+
+    def _fake_fetch(**kwargs):
+        captured.update(kwargs)
+        return {"target_path": str(tmp_path / "cache" / "file.txt"), "transport": kwargs["transport"], "dry_run": False}
+
+    monkeypatch.setattr(ds, "_connect", lambda: _Conn())
+    monkeypatch.setattr(ds, "fetch_via_transport", _fake_fetch)
+    monkeypatch.setattr(
+        ds,
+        "resolve_data_location_alias",
+        lambda alias, config_path=None: {
+            "alias": alias,
+            "location_type": "gcs",
+            "transport": "gcs",
+            "options": {"endpoint_url": "https://storage.googleapis.com"},
+        },
+    )
+
+    out = ds.get_data(
+        dataset_id="serve.demo",
+        version="latest",
+        runtime_context="local",
+        cache_dir=str(tmp_path / "cache"),
+        location_alias="LC_GCS",
+    )
+    assert out["location_alias"] == "LC_GCS"
+    assert captured["transport"] == "gcs"
+    assert captured["source_uri"] == src_uri
+    assert captured["options"]["endpoint_url"] == "https://storage.googleapis.com"
 
 
 def test_get_data_missing_version_raises(monkeypatch):

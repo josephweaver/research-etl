@@ -34,6 +34,15 @@ def test_infer_transport_to_gdrive_uses_rclone() -> None:
     assert transport == "rclone"
 
 
+def test_infer_transport_to_gcs_uses_gcs() -> None:
+    transport = infer_transport(
+        runtime_context="local",
+        target_location_type="gcs",
+        policy={"locations": {"gcs": {"kind": "gcs"}}},
+    )
+    assert transport == "gcs"
+
+
 def test_default_location_type_staging_local() -> None:
     assert default_location_type(stage="staging", runtime_context="local", policy=None) == "local_cache"
 

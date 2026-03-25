@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from .gcs import fetch_gcs, transfer_gcs
 from .local_fs import fetch_local_fs, transfer_local_fs
 from .rclone import fetch_rclone, transfer_rclone
 
@@ -30,6 +31,8 @@ def transfer_via_transport(
         return transfer_local_fs(source_path=source_path, target_uri=target_uri, dry_run=dry_run)
     if name == "rclone":
         return transfer_rclone(source_path=source_path, target_uri=target_uri, dry_run=dry_run, options=opts)
+    if name == "gcs":
+        return transfer_gcs(source_path=source_path, target_uri=target_uri, dry_run=dry_run, options=opts)
     if name == "rsync":
         raise DatasetTransportError(
             "Transport 'rsync' is not implemented yet; provide --transport local_fs/rclone or add rsync adapter."
@@ -51,6 +54,8 @@ def fetch_via_transport(
         return fetch_local_fs(source_uri=source_uri, target_path=target_path, dry_run=dry_run)
     if name == "rclone":
         return fetch_rclone(source_uri=source_uri, target_path=target_path, dry_run=dry_run, options=opts)
+    if name == "gcs":
+        return fetch_gcs(source_uri=source_uri, target_path=target_path, dry_run=dry_run, options=opts)
     if name == "rsync":
         raise DatasetTransportError(
             "Transport 'rsync' is not implemented yet for fetch; provide --transport local_fs/rclone or add rsync adapter."

@@ -4,10 +4,10 @@ classes:
   published:
     require_canonical: true
     canonical_location_type: gdrive
-    allowed_location_types: [gdrive]
+    allowed_location_types: [gdrive, gcs]
     enforce_delete: false
   cache:
-    allowed_location_types: [local_cache, hpcc_cache]
+    allowed_location_types: [local_cache, hpcc_cache, gcs]
     retention_days: 30
     enforce_delete: true
   tmp:
@@ -28,6 +28,10 @@ locations:
     kind: gdrive
     root_uri: gdrive://data/etl
     description: canonical published dataset location
+  gcs:
+    kind: gcs
+    root_uri: gcs://crop-dl
+    description: gcs dataset lake
   local_cache:
     kind: filesystem
     root_path: C:/Joe Local Only/College/Research/etl/.runs/cache

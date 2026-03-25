@@ -38,6 +38,27 @@ def test_load_data_locations_and_resolve_alias(tmp_path: Path) -> None:
     assert spec["transport"] == "rclone"
 
 
+def test_load_data_locations_and_resolve_gcs_alias(tmp_path: Path) -> None:
+    cfg = tmp_path / "data_locations.yml"
+    cfg.write_text(
+        "\n".join(
+            [
+                "locations:",
+                "  LC_GCS:",
+                "    location_type: gcs",
+                "    transport: gcs",
+                "    target_uri: gcs://demo-bucket/lake",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    data = load_data_locations(cfg)
+    spec = resolve_data_location_alias("LC_GCS", config_data=data)
+    assert spec["alias"] == "LC_GCS"
+    assert spec["location_type"] == "gcs"
+    assert spec["transport"] == "gcs"
+
+
 def test_resolve_data_location_alias_raises_on_unknown(tmp_path: Path) -> None:
     cfg = tmp_path / "data_locations.yml"
     cfg.write_text("locations: {}\n", encoding="utf-8")

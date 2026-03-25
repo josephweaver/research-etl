@@ -39,6 +39,8 @@ def infer_transport(
 
     if kind == "filesystem":
         return "local_fs"
+    if target_location_type == "gcs" or kind == "gcs":
+        return "gcs"
     if target_location_type == "gdrive" or kind == "gdrive":
         return "rclone"
     if runtime == "local" and target_location_type.startswith("hpcc_"):

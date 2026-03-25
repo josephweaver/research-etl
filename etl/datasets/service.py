@@ -399,6 +399,8 @@ def _infer_fetch_transport(*, location_type: str, policy: Optional[Dict[str, Any
     kind = str((spec or {}).get("kind", "filesystem")).strip().lower() if isinstance(spec, dict) else "filesystem"
     if kind == "filesystem":
         return "local_fs"
+    if location_type == "gcs" or kind == "gcs":
+        return "gcs"
     if location_type == "gdrive" or kind == "gdrive":
         return "rclone"
     raise DatasetServiceError(f"No fetch transport mapping for location_type='{location_type}'")

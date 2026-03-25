@@ -68,6 +68,38 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
   - dictionary/DB split evolution
   - dataset service/routing/transport surface expansion
   - broader datasets UX and CLI additions beyond immediate delivery needs
+- Variable typing / lightweight transform model:
+    - current recommendation: defer until a concrete delivery blocker appears in one of the active dataset flows
+  - reason to defer now:
+    - this is architecture work, not a current blocker for crop-insurance or landcore dataset delivery
+    - likely disruption surface includes variable resolution, templating, step outputs, and plugin compatibility
+  - options discussed:
+    - typed value envelope:
+      - keep normal values but optionally wrap as `{ "_value": ..., "_type": "path" }`
+      - upgraded plugins unwrap `_value`; non-upgraded paths continue treating plain values as the contract
+      - preferred future option if typed values become necessary because it supports incremental adoption
+    - plugin capability metadata:
+      - current loader does not accept arbitrary extra `meta` keys, so do not extend plugin `meta` ad hoc
+      - if capability reporting becomes necessary, add a first-class plugin capability query/interface in the core plugin system instead of relying on unsupported extra metadata fields
+      - possible direction:
+        - add a standard capability query function or explicitly supported capability field in the plugin interface
+        - expose things like `typed_values_in`, `typed_values_out`, or `experimental` only after the loader/runtime supports them intentionally
+    - `variable_transform` plugin:
+      - only useful if limited to trivial scalar/path/file-list transforms
+      - do not let this grow into a DSL or mini programming language
+      - current repo status:
+        - a prototype exists locally but should be treated as experimental / do not use
+        - if revisited, either harden it into a very small transform set or remove it
+    - inline `python_eval` / scriptlet plugin:
+      - better than a large transform DSL for shaping explicit step inputs/outputs
+      - require explicit inputs rather than implicitly exposing the full pipeline namespace
+      - still deferred because `exec_script` already covers the current need set and no active delivery blocker requires an inline eval step
+    - full tuple-style variable overhaul:
+      - changing runtime vars to `(value, type)` pairs is a major overhaul and should remain deferred unless a major blocker justifies it
+  - decision for now:
+    - keep runtime values simple
+    - prefer normal scripts/plugins for non-trivial logic
+    - revisit typed envelopes only after repeated real failures or ambiguity justify the migration
 - Builder step-test session system:
   - persisted session state
   - shared context across steps
