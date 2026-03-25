@@ -111,6 +111,12 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
 - YanRoy geo plugin and pipeline backlog from `FUTURE/geo.plugins.todo.md`
 - generalized data-zone redesign (`work`, `cache`, `publish`) beyond immediate delivery needs
 - generic validation-plugin templates, retention policy automation, checksum manifest systems, and similar framework work unless needed for current dataset publication
+- fix cross-pipeline dependency resolution:
+  - current defect: when a pipeline depends on another pipeline from another repo, dependency resolution can fail to locate or execute the prerequisite correctly in that repo context
+  - likely areas to revisit:
+    - required pipeline path normalization
+    - dependency lookup relative to the current pipeline repo/root instead of only the caller/default repo context
+    - cross-repo / sibling-repo dependency execution rules
 
 ## Deferred product and UX backlog
 
