@@ -6,9 +6,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -16,11 +14,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib import error, request
 
 import psycopg
 
 from .db import get_database_url
+from .source_control.github import GitHubPullRequestError, create_pull_request
 from .subprocess_logging import run_logged_subprocess
 
 
@@ -140,62 +138,6 @@ def _resolve_target_path(
     if row and str(row[0] or "").strip():
         return str(row[0]).replace("\\", "/")
     return f"datasets/{dataset_id}.yml"
-
-
-def _github_api_create_pr(
-    *,
-    owner: str,
-    repo: str,
-    head: str,
-    base: str,
-    title: str,
-    body: str,
-    trace: list[str],
-) -> tuple[str, Optional[int]]:
-    token = str(os.environ.get("GITHUB_TOKEN") or "").strip()
-    if not token:
-        raise DictionaryPRError("GITHUB_TOKEN is not set for GitHub API PR creation.", details={"operation_log": trace})
-
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
-    payload = json.dumps(
-        {
-            "title": title,
-            "head": head,
-            "base": base,
-            "body": body,
-        }
-    ).encode("utf-8")
-    req = request.Request(
-        url,
-        data=payload,
-        method="POST",
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Content-Type": "application/json",
-            "User-Agent": "research-etl-dictionary-pr",
-        },
-    )
-    _log(trace, f"github_api:create_pr repo={owner}/{repo} base={base} head={head}")
-    try:
-        with request.urlopen(req, timeout=30) as resp:
-            text = resp.read().decode("utf-8", errors="replace")
-    except error.HTTPError as exc:
-        body_text = exc.read().decode("utf-8", errors="replace")
-        _log(trace, f"github_api:error status={exc.code} body={body_text[:1000]}")
-        raise DictionaryPRError(f"GitHub API PR create failed ({exc.code}).", details={"operation_log": trace}) from exc
-    except Exception as exc:  # noqa: BLE001
-        _log(trace, f"github_api:error {exc}")
-        raise DictionaryPRError(f"GitHub API PR create failed: {exc}", details={"operation_log": trace}) from exc
-
-    try:
-        parsed = json.loads(text)
-    except Exception as exc:  # noqa: BLE001
-        raise DictionaryPRError("GitHub API response parse failed.", details={"operation_log": trace}) from exc
-    pr_url = str(parsed.get("html_url") or "").strip()
-    pr_number = parsed.get("number")
-    return pr_url, int(pr_number) if pr_number is not None else None
 
 
 def _gh_cli_create_pr(
@@ -400,7 +342,7 @@ def create_dictionary_pr(
                     repo_full = f"{repo.owner}/{repo.repo_name}"
                     if use_github_api:
                         try:
-                            pr_url, pr_number = _github_api_create_pr(
+                            pr_url, pr_number = create_pull_request(
                                 owner=repo.owner,
                                 repo=repo.repo_name,
                                 head=branch,
@@ -408,8 +350,9 @@ def create_dictionary_pr(
                                 title=title,
                                 body=body,
                                 trace=trace,
+                                use_github_api=True,
                             )
-                        except DictionaryPRError as api_exc:
+                        except GitHubPullRequestError as api_exc:
                             _log(trace, f"github_api_failed_fallback_to_gh={api_exc}")
                             pr_url, pr_number = _gh_cli_create_pr(
                                 repo_full=repo_full,
@@ -420,13 +363,15 @@ def create_dictionary_pr(
                                 trace=trace,
                             )
                     else:
-                        pr_url, pr_number = _gh_cli_create_pr(
-                            repo_full=repo_full,
+                        pr_url, pr_number = create_pull_request(
+                            owner=repo.owner,
+                            repo=repo.repo_name,
                             head=branch,
                             base=base,
                             title=title,
                             body=body,
                             trace=trace,
+                            use_github_api=False,
                         )
                     review_status = "open"
 

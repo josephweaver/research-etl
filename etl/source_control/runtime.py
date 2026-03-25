@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
+import subprocess
 
 from ..transports import CommandTransport, ExecutionOptions, LocalProcessTransport, SshTransport
 from ..git_checkout import infer_repo_name
@@ -335,11 +336,220 @@ def checkin_single_file(
     return out
 
 
+def checkin_files(
+    *,
+    file_paths: list[str | Path],
+    message: str,
+    push: bool = False,
+    remote: str = "origin",
+    branch: str = "",
+    env: Optional[Dict[str, str]] = None,
+    transport: Optional[CommandTransport] = None,
+) -> Dict[str, Any]:
+    local_transport = transport or LocalProcessTransport()
+    paths = [Path(p).expanduser() for p in list(file_paths or [])]
+    if not paths:
+        return {"committed": False, "reason": "workspace_path_missing"}
+    missing = [p for p in paths if not p.exists()]
+    if missing:
+        return {"committed": False, "reason": "workspace_path_missing", "missing_paths": [p.as_posix() for p in missing]}
+    target = paths[0].resolve()
+    cur = target.parent if target.is_file() else target
+    repo_root: Optional[Path] = None
+    while True:
+        if (cur / ".git").exists():
+            repo_root = cur
+            break
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    if repo_root is None:
+        return {"committed": False, "reason": "git_repo_not_found"}
+    rels: list[str] = []
+    for item in paths:
+        resolved = item.resolve()
+        try:
+            rel = resolved.relative_to(repo_root).as_posix()
+        except ValueError:
+            return {"committed": False, "reason": "path_outside_repo", "path": resolved.as_posix()}
+        rels.append(rel)
+    proc_add = local_transport.run(
+        ["git", "add", "--", *rels],
+        cwd=repo_root,
+        env=env,
+        check=False,
+        options=ExecutionOptions(),
+    )
+    if proc_add.returncode != 0:
+        return {"committed": False, "reason": "git_add_failed", "stderr": (proc_add.stderr or "").strip()}
+    proc_diff = local_transport.run(
+        ["git", "diff", "--cached", "--quiet", "--", *rels],
+        cwd=repo_root,
+        env=env,
+        check=False,
+        options=ExecutionOptions(),
+    )
+    if proc_diff.returncode == 0:
+        return {"committed": False, "reason": "no_staged_changes", "workspace_paths": [str((repo_root / r).resolve().as_posix()) for r in rels]}
+    proc_commit = local_transport.run(
+        ["git", "commit", "-m", str(message)],
+        cwd=repo_root,
+        env=env,
+        check=False,
+        options=ExecutionOptions(),
+    )
+    if proc_commit.returncode != 0:
+        return {
+            "committed": False,
+            "reason": "git_commit_failed",
+            "stdout": (proc_commit.stdout or "").strip(),
+            "stderr": (proc_commit.stderr or "").strip(),
+        }
+    out = {
+        "committed": True,
+        "workspace_paths": [str((repo_root / r).resolve().as_posix()) for r in rels],
+        "repo_root": repo_root.as_posix(),
+        "message": str(message),
+    }
+    head_proc = local_transport.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        env=env,
+        check=False,
+        options=ExecutionOptions(),
+    )
+    if head_proc.returncode == 0:
+        out["commit_sha"] = str(head_proc.stdout or "").strip()
+    if push:
+        if str(branch or "").strip():
+            proc_push = local_transport.run(
+                ["git", "push", str(remote or "origin"), f"HEAD:{str(branch).strip()}"],
+                cwd=repo_root,
+                env=env,
+                check=False,
+                options=ExecutionOptions(),
+            )
+        else:
+            proc_push = local_transport.run(
+                ["git", "push", str(remote or "origin"), "HEAD"],
+                cwd=repo_root,
+                env=env,
+                check=False,
+                options=ExecutionOptions(),
+            )
+        out["pushed"] = proc_push.returncode == 0
+        out["push_stderr"] = (proc_push.stderr or "").strip()
+    return out
+
+
+def prepare_local_checkout(
+    *,
+    repo_url: str,
+    local_path: str | Path,
+    branch: str = "",
+    remote: str = "origin",
+    pull: bool = True,
+    create_branch: bool = False,
+    set_remote_url: bool = False,
+    env: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    repo_url_text = str(repo_url or "").strip()
+    target = Path(local_path).expanduser().resolve()
+    if target.exists() and not (target / ".git").exists():
+        return {"ok": False, "reason": "target_exists_not_git_repo", "local_repo_path": target.as_posix()}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        if not repo_url_text:
+            return {"ok": False, "reason": "repo_url_required_for_clone", "local_repo_path": target.as_posix()}
+        proc_clone = subprocess.run(
+            ["git", "clone", repo_url_text, str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        if proc_clone.returncode != 0:
+            return {
+                "ok": False,
+                "reason": "git_clone_failed",
+                "stderr": (proc_clone.stderr or proc_clone.stdout or "").strip(),
+                "local_repo_path": target.as_posix(),
+            }
+    if set_remote_url and repo_url_text:
+        subprocess.run(
+            ["git", "-C", str(target), "remote", "set-url", str(remote or "origin"), repo_url_text],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    proc_fetch = subprocess.run(
+        ["git", "-C", str(target), "fetch", "--tags", "--prune", str(remote or "origin")],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    if proc_fetch.returncode != 0:
+        return {
+            "ok": False,
+            "reason": "git_fetch_failed",
+            "stderr": (proc_fetch.stderr or proc_fetch.stdout or "").strip(),
+            "local_repo_path": target.as_posix(),
+        }
+    branch_text = str(branch or "").strip()
+    if branch_text:
+        checkout_cmd = ["git", "-C", str(target), "checkout", "-B" if create_branch else branch_text]
+        if create_branch:
+            checkout_cmd = ["git", "-C", str(target), "checkout", "-B", branch_text]
+        else:
+            checkout_cmd = ["git", "-C", str(target), "checkout", branch_text]
+        proc_checkout = subprocess.run(checkout_cmd, capture_output=True, text=True, check=False, env=env)
+        if proc_checkout.returncode != 0:
+            return {
+                "ok": False,
+                "reason": "git_checkout_failed",
+                "stderr": (proc_checkout.stderr or proc_checkout.stdout or "").strip(),
+                "local_repo_path": target.as_posix(),
+            }
+        if pull and not create_branch:
+            subprocess.run(
+                ["git", "-C", str(target), "pull", "--ff-only", str(remote or "origin"), branch_text],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+    proc_head = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    proc_branch = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    return {
+        "ok": True,
+        "local_repo_path": target.as_posix(),
+        "repo_url": repo_url_text,
+        "branch": str(proc_branch.stdout or "").strip(),
+        "commit_sha": str(proc_head.stdout or "").strip(),
+    }
+
+
 __all__ = [
     "CheckoutSpec",
     "build_source_commandline_vars",
+    "checkin_files",
     "checkin_single_file",
     "checkout",
     "merge_source_commandline_vars",
+    "prepare_local_checkout",
     "resolve_source_override",
 ]

@@ -1,0 +1,18 @@
+repositories:
+  LC_DUCKDB:
+    provider: git
+    local_path: ../landcore-duckdb
+    repo_url: git@github.com:land-core/landcore-duckdb.git
+    default_branch: main
+
+  LC_PIPELINES:
+    provider: git
+    local_path: ../landcore-etl-pipelines
+    repo_url: git@github.com:land-core/landcore-etl-pipelines.git
+    default_branch: main
+
+  LC_DICTIONARY:
+    provider: git
+    local_path: ../landcore-data-dictionary
+    repo_url: git@github.com:land-core/landcore-data-dictionary.git
+    default_branch: main
