@@ -2,29 +2,29 @@ repositories:
   LC_DUCKDB:
     provider: git
     local_path: ../landcore-duckdb
-    repo_url: https://github.com/josephweaver/landcore-duckdb.git
+    repo_url: git@github.com:josephweaver/landcore-duckdb.git
     default_branch: main
 
   LC_PIPELINES:
     provider: git
     local_path: ../landcore-etl-pipelines
-    repo_url: https://github.com/josephweaver/landcore-etl-pipelines.git
+    repo_url: git@github.com:josephweaver/landcore-etl-pipelines.git
     default_branch: main
 
   LC_DICTIONARY:
     provider: git
     local_path: ../landcore-data-dictionary
-    repo_url: https://github.com/josephweaver/landcore-data-dictionary.git
+    repo_url: git@github.com:josephweaver/landcore-data-dictionary.git
     default_branch: main
 
   SHARED_PIPELINES:
     provider: git
     local_path: ../shared-etl-pipelines
-    repo_url: https://github.com/josephweaver/shared-etl-pipelines.git
+    repo_url: git@github.com:josephweaver/shared-etl-pipelines.git
     default_branch: main
 
   CROP_INSURANCE_PIPELINES:
     provider: git
     local_path: ../crop-insurance-etl-pipelines
-    repo_url: https://github.com/josephweaver/crop-insurance-etl-pipelines.git
+    repo_url: git@github.com:josephweaver/crop-insurance-etl-pipelines.git
     default_branch: main

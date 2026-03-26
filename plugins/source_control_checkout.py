@@ -72,7 +72,8 @@ def run(args, ctx):
         env=dict(os.environ),
     )
     if not result.get("ok"):
-        raise RuntimeError(result.get("reason") or "source-control checkout failed")
+        detail = str(result.get("stderr") or result.get("reason") or "source-control checkout failed").strip()
+        raise RuntimeError(detail)
     out = {
         "repo_alias": repo_alias,
         "provider": provider,
