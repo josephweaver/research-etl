@@ -46,6 +46,7 @@ from .variable_solver import VariableSolver
 
 DEFAULT_SECRET_ENV_KEYS = ("ETL_DATABASE_URL", "OPENAI_API_KEY", "GITHUB_TOKEN")
 _RUNTIME_TPL_RE = re.compile(r"\{([^{}]+)\}")
+_MODULE_APP_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _commandline_env_value(commandline_vars: Dict[str, Any], key: str) -> str:
@@ -53,6 +54,48 @@ def _commandline_env_value(commandline_vars: Dict[str, Any], key: str) -> str:
     if not isinstance(env_ns, dict):
         return ""
     return str(env_ns.get(key) or "").strip()
+
+
+def determine_app_path(*, repo_root: Optional[Path] = None) -> Path:
+    explicit = Path(repo_root).expanduser().resolve() if repo_root is not None else None
+    if explicit is not None:
+        return explicit
+    repo_root_env = str(os.environ.get("ETL_REPO_ROOT") or "").strip()
+    if repo_root_env:
+        return Path(repo_root_env).expanduser().resolve()
+    return _MODULE_APP_ROOT.resolve()
+
+
+def determine_projects_dir(*, app_path: Optional[Path] = None) -> Path:
+    raw = str(os.environ.get("ETL_PROJECTS_DIR") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return determine_app_path(repo_root=app_path).parent.resolve()
+
+
+def determine_pipeline_file(*, pipeline_path: Optional[Path] = None) -> Optional[Path]:
+    if pipeline_path is not None:
+        return Path(pipeline_path).expanduser().resolve()
+    raw = str(os.environ.get("ETL_PIPELINE_FILE") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return None
+
+
+def determine_project_dir(*, pipeline_file: Optional[Path] = None) -> Optional[Path]:
+    raw = str(os.environ.get("ETL_PROJECT_DIR") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    candidate = determine_pipeline_file(pipeline_path=pipeline_file)
+    if candidate is None:
+        return None
+    cur = candidate.parent.resolve()
+    while True:
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
 
 
 @dataclass(frozen=True)
@@ -765,8 +808,14 @@ def _build_variable_catalog(
     project_id: Optional[str],
     env_name: Optional[str],
     executor: Optional[str],
+    app_path: Optional[Path] = None,
+    pipeline_path: Optional[Path] = None,
 ) -> tuple[VariableCatalog, VariableSolver]:
     max_passes = _resolve_max_passes(global_vars=global_vars, exec_env=exec_env)
+    app_dir = determine_app_path(repo_root=app_path).resolve()
+    projects_dir = determine_projects_dir(app_path=app_dir).resolve()
+    pipeline_file = determine_pipeline_file(pipeline_path=pipeline_path)
+    project_dir = determine_project_dir(pipeline_file=pipeline_file)
     solver = VariableSolver(max_passes=max_passes)
     solver.overlay("global", global_vars, add_namespace=True, add_flat=True)
     solver.overlay("globals", global_vars, add_namespace=True, add_flat=False)
@@ -784,6 +833,11 @@ def _build_variable_catalog(
             "project": {"id": str(project_id or "")},
             "env": {"name": str(env_name or "")},
             "executor": {"name": str(executor or "")},
+            "appdir": app_dir.as_posix(),
+            "apppath": app_dir.as_posix(),
+            "projectsdir": projects_dir.as_posix(),
+            "projectdir": project_dir.as_posix() if project_dir is not None else "",
+            "pipelinefile": pipeline_file.as_posix() if pipeline_file is not None else "",
         }
     )
     return VariableCatalog(
@@ -934,6 +988,8 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
         project_id=project_id,
         env_name=selected_env_name,
         executor=selected_executor,
+        app_path=determine_app_path(),
+        pipeline_path=pipeline_path,
     )
     # Control scope represents the local/orchestrator process context.
     control_catalog, control_solver = _build_variable_catalog(
@@ -947,6 +1003,8 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
         project_id=project_id,
         env_name="control",
         executor="local",
+        app_path=determine_app_path(),
+        pipeline_path=pipeline_path,
     )
     logging_ctx.bootstrap_logger.info(
         "Variable catalog built max_passes=%s keys=%s",

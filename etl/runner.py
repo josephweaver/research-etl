@@ -44,6 +44,10 @@ from .plugins.base import (
 )
 from .runtime_context import (
     RuntimeNamespace,
+    determine_app_path,
+    determine_pipeline_file,
+    determine_project_dir,
+    determine_projects_dir,
     eval_runtime_when,
     lookup_runtime_value,
     resolve_runtime_expr_only,
@@ -493,7 +497,16 @@ def _with_runtime_sys(
     step_nn: str = "",
 ) -> Dict[str, Any]:
     out = dict(base_ctx or {})
+    app_path = determine_app_path().as_posix()
+    projects_dir = determine_projects_dir().as_posix()
+    pipeline_file = determine_pipeline_file()
+    project_dir = determine_project_dir(pipeline_file=pipeline_file)
     sys_ns = {
+        "appdir": app_path,
+        "apppath": app_path,
+        "projectsdir": projects_dir,
+        "projectdir": project_dir.as_posix() if project_dir is not None else "",
+        "pipelinefile": pipeline_file.as_posix() if pipeline_file is not None else "",
         "run": {
             "id": str(run_id),
             "short_id": str(run_id)[:8],
@@ -524,6 +537,11 @@ def _with_runtime_sys(
     out["step_name"] = sys_ns["step"]["name"]
     out["step_index"] = sys_ns["step"]["index"]
     out["step_nn"] = sys_ns["step"]["NN"]
+    out["appdir"] = app_path
+    out["apppath"] = app_path
+    out["projectsdir"] = projects_dir
+    out["projectdir"] = sys_ns["projectdir"]
+    out["pipelinefile"] = sys_ns["pipelinefile"]
     out["date"] = sys_ns["now"]["yymmdd"]
     out["time"] = sys_ns["now"]["hhmmss"]
     return out

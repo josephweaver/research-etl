@@ -9,29 +9,36 @@
 			"path": "../RiskModel-etl"
 		},
 		{
+			"name": "crop-insurance-etl-pipelines",
+			"path": "../crop-insurance-etl-pipelines"
+		},
+		{
+			"name": "landcore-etl-pipelines",
+			"path": "../landcore-etl-pipelines"
+		},
+		{
 			"name": "landcore-data-catalog",
 			"path": "../landcore-data-catalog"
 		},
 		{
+			"name": "landcore-duckdb",
+			"path": "../landcore-duckdb"
+		},
+		{
+			"name": "shared-etl-pipelines",
 			"path": "../shared-etl-pipelines"
 		},
 		{
-			"path": "../landcore-etl-pipelines"
-		},
-		{
-			"path": "../RiskModel-HPCC"
-		},
-		{
+			"name": ".out",
 			"path": "../.out"
 		},
 		{
+			"name": "verify_yanroy",
 			"path": "../verify_yanroy"
 		},
 		{
-			"path": "../crop-insurance-etl-pipelines"
-		},
-		{
-			"path": "../landcore-duckdb"
+			"name": "RiskModel-HPCC",
+			"path": "../RiskModel-HPCC"
 		}
 	],
 	"settings": {

@@ -319,6 +319,17 @@ def _main_impl(argv: list[str] | None = None) -> int:
         pipeline=full_pipeline,
         cli_command="python etl/run_batch.py " + " ".join(argv or []),
     )
+    os.environ["ETL_PIPELINE_FILE"] = resolved_pipeline_path.resolve().as_posix()
+    project_dir = resolved_pipeline_path.resolve().parent
+    while True:
+        if (project_dir / ".git").exists():
+            break
+        if project_dir.parent == project_dir:
+            project_dir = resolved_pipeline_path.resolve().parent
+            break
+        project_dir = project_dir.parent
+    os.environ["ETL_PROJECT_DIR"] = project_dir.resolve().as_posix()
+    os.environ.setdefault("ETL_PROJECTS_DIR", str(repo_root_for_resolution.parent.resolve().as_posix()))
 
     ctx = load_context(Path(args.context_file)) if args.context_file else {}
     if args.context_file:

@@ -57,6 +57,69 @@ def test_runner_resolves_sys_placeholders_in_step_args(tmp_path: Path) -> None:
     assert "{" not in out["tag"]
 
 
+def test_runner_exposes_sys_apppath_from_etl_repo_root(tmp_path: Path, monkeypatch) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_capture_plugin(plugin_dir / "capture.py")
+    app_root = tmp_path / "remote-checkout"
+    app_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("ETL_REPO_ROOT", str(app_root))
+
+    pipeline = Pipeline(
+        vars={"jobname": "yanroy"},
+        steps=[Step(name="s1", script="capture.py app={sys.apppath}", output_var="out")],
+    )
+
+    result = run_pipeline(
+        pipeline,
+        plugin_dir=plugin_dir,
+        workdir=tmp_path / ".runs",
+        run_id="1234567890abcdef1234567890abcdef",
+    )
+    assert result.success is True
+    out = result.steps[0].outputs["args"]
+    assert out["app"] == app_root.resolve().as_posix()
+
+
+def test_runner_exposes_project_execution_paths(tmp_path: Path, monkeypatch) -> None:
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    _write_capture_plugin(plugin_dir / "capture.py")
+    app_root = tmp_path / "src" / "research-etl-abc123"
+    project_root = tmp_path / "src" / "landcore-etl-pipelines-abc123"
+    pipeline_file = project_root / "pipelines" / "yanroy" / "db_fields.yml"
+    (project_root / ".git").mkdir(parents=True, exist_ok=True)
+    pipeline_file.parent.mkdir(parents=True, exist_ok=True)
+    pipeline_file.write_text("steps: []\n", encoding="utf-8")
+    monkeypatch.setenv("ETL_REPO_ROOT", str(app_root))
+    monkeypatch.setenv("ETL_PROJECTS_DIR", str((tmp_path / "src").resolve()))
+    monkeypatch.setenv("ETL_PROJECT_DIR", str(project_root))
+    monkeypatch.setenv("ETL_PIPELINE_FILE", str(pipeline_file))
+
+    pipeline = Pipeline(
+        vars={"jobname": "yanroy"},
+        steps=[
+            Step(
+                name="s1",
+                script="capture.py projects={sys.projectsdir} project={sys.projectdir} pipe={sys.pipelinefile}",
+                output_var="out",
+            )
+        ],
+    )
+
+    result = run_pipeline(
+        pipeline,
+        plugin_dir=plugin_dir,
+        workdir=tmp_path / ".runs",
+        run_id="fedcba9876543210fedcba9876543210",
+    )
+    assert result.success is True
+    out = result.steps[0].outputs["args"]
+    assert out["projects"] == (tmp_path / "src").resolve().as_posix()
+    assert out["project"] == project_root.resolve().as_posix()
+    assert out["pipe"] == pipeline_file.resolve().as_posix()
+
+
 def test_runner_resolves_sys_step_nn_for_parallel_steps(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir(parents=True, exist_ok=True)
