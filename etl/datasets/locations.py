@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -27,10 +28,22 @@ def resolve_data_locations_config_path(path: Optional[Path]) -> Optional[Path]:
         candidate = Path(path)
         if candidate.exists():
             return candidate
+        repo_root_env = str(os.environ.get("ETL_REPO_ROOT") or "").strip()
+        if repo_root_env and not candidate.is_absolute():
+            repo_candidate = (Path(repo_root_env).expanduser().resolve() / candidate).resolve()
+            if repo_candidate.exists():
+                return repo_candidate
         raise DataLocationConfigError(f"Data locations config not found: {candidate}")
     for candidate in DEFAULT_DATA_LOCATIONS_PATHS:
         if candidate.exists():
             return candidate
+    repo_root_env = str(os.environ.get("ETL_REPO_ROOT") or "").strip()
+    if repo_root_env:
+        repo_root = Path(repo_root_env).expanduser().resolve()
+        for candidate in DEFAULT_DATA_LOCATIONS_PATHS:
+            repo_candidate = (repo_root / candidate).resolve()
+            if repo_candidate.exists():
+                return repo_candidate
     return None
 
 

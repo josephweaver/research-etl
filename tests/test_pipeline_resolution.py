@@ -258,6 +258,26 @@ def test_parse_pipeline_supports_step_resources_mapping(tmp_path: Path) -> None:
     assert pipeline.steps[0].resources["wall_minutes"] == 45
 
 
+def test_parse_pipeline_resolves_step_resource_variables(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "vars:",
+                "  build_db_fields_mem: 16G",
+                "steps:",
+                "  - name: s1",
+                "    plugin: echo.py",
+                "    resources:",
+                "      mem: \"{build_db_fields_mem}\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pipeline = parse_pipeline(p)
+    assert pipeline.steps[0].resources["mem"] == "16G"
+
+
 def test_parse_pipeline_supports_script_as_token_list(tmp_path: Path) -> None:
     p = tmp_path / "p.yml"
     p.write_text(

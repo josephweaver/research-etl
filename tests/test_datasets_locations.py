@@ -14,6 +14,7 @@ from etl.datasets.locations import (
     DataLocationConfigError,
     load_data_locations,
     resolve_data_location_alias,
+    resolve_data_locations_config_path,
 )
 
 
@@ -65,3 +66,14 @@ def test_resolve_data_location_alias_raises_on_unknown(tmp_path: Path) -> None:
     data = load_data_locations(cfg)
     with pytest.raises(DataLocationConfigError, match="Unknown data location alias"):
         resolve_data_location_alias("LC_Missing", config_data=data)
+
+
+def test_resolve_data_locations_config_path_uses_etl_repo_root_for_relative_path(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    cfg = repo_root / "config" / "data_locations.yml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("locations: {}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ETL_REPO_ROOT", str(repo_root))
+    resolved = resolve_data_locations_config_path(Path("config/data_locations.yml"))
+    assert resolved == cfg.resolve()

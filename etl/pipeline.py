@@ -552,6 +552,7 @@ def parse_pipeline(
         name_interp = _resolve_iterative(spec["name"], step_ctx_local, max_passes=resolve_max_passes)
         script_interp = _resolve_iterative(spec["script"], step_ctx_local, max_passes=resolve_max_passes)
         env_interp = _resolve_iterative(spec["env"], step_ctx_local, max_passes=resolve_max_passes)
+        resources_interp = _resolve_iterative(spec["resources"], step_ctx_local, max_passes=resolve_max_passes)
         foreach_glob_interp: Optional[str] = None
         if spec["foreach_glob"] is not None:
             foreach_glob_interp = _resolve_iterative(spec["foreach_glob"], step_ctx_local, max_passes=resolve_max_passes)
@@ -561,7 +562,7 @@ def parse_pipeline(
                 script=str(script_interp),
                 output_var=spec["output_var"],
                 env=env_interp if isinstance(env_interp, dict) else {},
-                resources=copy.deepcopy(spec["resources"]),
+                resources=resources_interp if isinstance(resources_interp, dict) else {},
                 when=spec["when"],
                 parallel_with=spec["parallel_with"],
                 foreach=spec["foreach"],
