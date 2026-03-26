@@ -71,6 +71,47 @@ def test_source_control_checkout_plugin_clones_named_repo(tmp_path: Path) -> Non
     assert (Path(out["local_repo_path"]) / "README.md").exists()
 
 
+def test_source_control_checkout_resolves_repo_local_path_from_etl_repo_root(tmp_path: Path, monkeypatch) -> None:
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    etl_root = tmp_path / "etlroot"
+    checkout_dir = etl_root.parent / "landcore-duckdb"
+    config_path = etl_root / "config" / "source_control.yml"
+
+    _git(["init", "--bare", str(remote)])
+    _git(["clone", str(remote), str(seed)])
+    _git(["config", "user.email", "test@example.com"], cwd=seed)
+    _git(["config", "user.name", "Test User"], cwd=seed)
+    (seed / "README.md").write_text("hello\n", encoding="utf-8")
+    _git(["add", "README.md"], cwd=seed)
+    _git(["commit", "-m", "init"], cwd=seed)
+    _git(["branch", "-M", "main"], cwd=seed)
+    _git(["push", "-u", "origin", "main"], cwd=seed)
+
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "repositories:",
+                "  LC_DUCKDB:",
+                "    provider: git",
+                "    local_path: ../landcore-duckdb",
+                f"    repo_url: {remote.as_posix()}",
+                "    default_branch: main",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ETL_REPO_ROOT", str(etl_root))
+
+    out = source_control_checkout.run(
+        {"repo_alias": "LC_DUCKDB", "config_path": str(config_path)},
+        _ctx(tmp_path),
+    )
+
+    assert Path(out["local_repo_path"]).resolve() == checkout_dir.resolve()
+
+
 def test_source_control_checkin_plugin_commits_file(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     target_file = repo / "tables" / "yanroy" / "fields.yml"

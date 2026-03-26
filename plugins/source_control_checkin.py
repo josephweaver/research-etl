@@ -21,6 +21,23 @@ from etl.source_control import (
 )
 
 
+def _resolve_repo_local_path(raw_path: str, *, repo_cfg: dict) -> str:
+    text = str(raw_path or "").strip()
+    if not text:
+        return ""
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        return str(path.resolve())
+    repo_root_env = str(os.environ.get("ETL_REPO_ROOT") or "").strip()
+    if repo_root_env:
+        return str((Path(repo_root_env).expanduser().resolve() / path).resolve())
+    cfg_path = str(repo_cfg.get("config_path") or "").strip()
+    if cfg_path:
+        cfg_file = Path(cfg_path).expanduser().resolve()
+        return str((cfg_file.parent.parent / path).resolve())
+    return str(path.resolve())
+
+
 meta = {
     "name": "source_control_checkin",
     "version": "0.1.0",
@@ -104,7 +121,7 @@ def run(args, ctx):
             repo_cfg = resolve_repo_config(repo_alias=repo_alias, config_path=str(args.get("config_path") or "").strip() or None)
         except SourceControlConfigError as exc:
             raise ValueError(str(exc)) from exc
-    repo_root = str(args.get("local_path") or repo_cfg.get("local_path") or "").strip()
+    repo_root = _resolve_repo_local_path(str(args.get("local_path") or repo_cfg.get("local_path") or "").strip(), repo_cfg=repo_cfg)
     if not repo_root:
         raise ValueError("local_path is required, either directly or via repo_alias config")
     paths = [str(Path(p).expanduser().resolve()) for p in _parse_paths(args)]
