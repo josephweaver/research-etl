@@ -46,6 +46,32 @@ def _write_raster(path: Path) -> None:
         crs="EPSG:4326",
         transform=transform,
         nodata=-9999.0,
+        ) as ds:
+        ds.write(data, 1)
+
+
+def _write_raster_with_nan(path: Path) -> None:
+    data = np.array(
+        [
+            [1, np.nan, 3, 4],
+            [5, 6, 7, 8],
+            [9, 10, 11, np.nan],
+            [13, 14, 15, 16],
+        ],
+        dtype="float32",
+    )
+    transform = rasterio.transform.from_origin(0, 4, 1, 1)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=4,
+        width=4,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=transform,
+        nodata=-9999.0,
     ) as ds:
         ds.write(data, 1)
 
@@ -160,4 +186,41 @@ def test_geo_county_raster_aggregate_quantile_aliases(tmp_path: Path) -> None:
     assert len(rows) == 2
     expected_cols = {"ppt_min", "ppt_p5", "ppt_q1", "ppt_med", "ppt_avg", "ppt_q3", "ppt_p95", "ppt_max"}
     assert expected_cols.issubset(set(rows[0].keys()))
+
+
+def test_geo_county_raster_aggregate_ignores_nan_pixels(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo/geo_county_raster_aggregate.py"))
+
+    raster_path = tmp_path / "corn_2016.tif"
+    county_path = tmp_path / "counties.gpkg"
+    output_path = tmp_path / "county_nan.csv"
+    _write_raster_with_nan(raster_path)
+    _write_counties(county_path)
+
+    plugin.run(
+        {
+            "raster_path": str(raster_path),
+            "county_path": str(county_path),
+            "output_path": str(output_path),
+            "county_id_field": "GEOID",
+            "county_name_field": "NAME",
+            "aggregations": "sum,mean,count,max",
+            "value_prefix": "ppt",
+        },
+        _ctx(tmp_path),
+    )
+
+    with output_path.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    by_id = {r["county_id"]: r for r in rows}
+    assert float(by_id["001"]["ppt_sum"]) == 12.0
+    assert float(by_id["001"]["ppt_mean"]) == 4.0
+    assert int(float(by_id["001"]["ppt_count"])) == 3
+    assert float(by_id["001"]["ppt_max"]) == 6.0
+
+    assert float(by_id["002"]["ppt_sum"]) == 42.0
+    assert float(by_id["002"]["ppt_mean"]) == 14.0
+    assert int(float(by_id["002"]["ppt_count"])) == 3
+    assert float(by_id["002"]["ppt_max"]) == 16.0
 

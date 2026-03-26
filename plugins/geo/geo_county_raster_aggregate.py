@@ -144,9 +144,27 @@ def _empty_agg_values(agg_list: list[str]) -> dict[str, Any]:
     return values
 
 
+def _sanitize_values(values: Any) -> Any:
+    arr = np.asarray(values)
+    if arr.size == 0:
+        return arr
+    if np.issubdtype(arr.dtype, np.number):
+        return arr[np.isfinite(arr)]
+    cleaned: list[Any] = []
+    for value in arr.tolist():
+        try:
+            number = float(value)
+        except Exception:  # noqa: BLE001
+            cleaned.append(value)
+            continue
+        if np.isfinite(number):
+            cleaned.append(value)
+    return np.asarray(cleaned)
+
+
 def _compute_aggs(values: Any, agg_list: list[str]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    arr = np.asarray(values)
+    arr = _sanitize_values(values)
     if arr.size == 0:
         return _empty_agg_values(agg_list)
 
