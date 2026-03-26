@@ -30,6 +30,7 @@ class ExecutionConfigError(ValueError):
 
 DEFAULT_ENV_CONFIG_PATH = Path("config/environments.yml")
 _PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+_MODULE_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _lookup_path(ctx: Dict[str, Any], path: str) -> tuple[Any, bool]:
@@ -101,9 +102,15 @@ def resolve_execution_config_path(path: Optional[Path]) -> Optional[Path]:
             repo_candidate = (Path(repo_root_env).expanduser().resolve() / candidate).resolve()
             if repo_candidate.exists():
                 return repo_candidate
+        module_candidate = (_MODULE_REPO_ROOT / candidate).resolve() if not candidate.is_absolute() else None
+        if module_candidate is not None and module_candidate.exists():
+            return module_candidate
         raise ExecutionConfigError(f"Environments config not found: {candidate}")
     if DEFAULT_ENV_CONFIG_PATH.exists():
         return DEFAULT_ENV_CONFIG_PATH
+    module_candidate = (_MODULE_REPO_ROOT / DEFAULT_ENV_CONFIG_PATH).resolve()
+    if module_candidate.exists():
+        return module_candidate
     repo_root_env = str(os.environ.get("ETL_REPO_ROOT") or "").strip()
     if repo_root_env:
         repo_candidate = (Path(repo_root_env).expanduser().resolve() / DEFAULT_ENV_CONFIG_PATH).resolve()
