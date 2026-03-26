@@ -93,6 +93,16 @@ def _parse_paths(args: dict) -> list[str]:
     return out
 
 
+def _resolve_repo_file_path(raw_path: str, *, repo_root: str) -> str:
+    text = str(raw_path or "").strip()
+    if not text:
+        return ""
+    path = Path(text).expanduser()
+    if path.is_absolute():
+        return str(path.resolve())
+    return str((Path(repo_root).expanduser().resolve() / path).resolve())
+
+
 def _current_branch(repo_root: Path) -> str:
     proc = subprocess.run(
         ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -124,7 +134,7 @@ def run(args, ctx):
     repo_root = _resolve_repo_local_path(str(args.get("local_path") or repo_cfg.get("local_path") or "").strip(), repo_cfg=repo_cfg)
     if not repo_root:
         raise ValueError("local_path is required, either directly or via repo_alias config")
-    paths = [str(Path(p).expanduser().resolve()) for p in _parse_paths(args)]
+    paths = [_resolve_repo_file_path(p, repo_root=repo_root) for p in _parse_paths(args)]
     message = str(args.get("commit_message") or "").strip()
     if not message:
         raise ValueError("commit_message is required")

@@ -140,3 +140,44 @@ def test_source_control_checkin_plugin_commits_file(tmp_path: Path) -> None:
     assert out["committed"] is True
     assert out["branch"] == "main"
     assert out["commit_sha"]
+
+
+def test_source_control_checkin_resolves_relative_paths_from_repo_root(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    config_path = tmp_path / "source_control.yml"
+    target_file = repo / "tables" / "yanroy" / "fields.yml"
+
+    _git(["init", str(repo)])
+    _git(["-C", str(repo), "config", "user.email", "test@example.com"])
+    _git(["-C", str(repo), "config", "user.name", "Test User"])
+    _git(["-C", str(repo), "branch", "-M", "main"])
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    _git(["-C", str(repo), "add", "README.md"])
+    _git(["-C", str(repo), "commit", "-m", "init"])
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.write_text("name: fields\n", encoding="utf-8")
+    config_path.write_text(
+        "\n".join(
+            [
+                "repositories:",
+                "  LC_DUCKDB:",
+                "    provider: git",
+                f"    local_path: {repo.as_posix()}",
+                "    default_branch: main",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    out = source_control_checkin.run(
+        {
+            "repo_alias": "LC_DUCKDB",
+            "config_path": str(config_path),
+            "path": "tables/yanroy/fields.yml",
+            "commit_message": "add fields table config",
+            "create_pr": False,
+        },
+        _ctx(tmp_path),
+    )
+
+    assert out["committed"] is True
