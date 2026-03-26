@@ -136,6 +136,14 @@ Current location alias:
 
 - `LC_GCS`
 
+### Remote executor secret propagation
+
+- GCS transport on remote HPCC/SLURM runs does not work unless `GCS_HMAC_KEY` and `GCS_HMAC_SECRET` are explicitly propagated into the remote job environment.
+- Do not rely on the default secret allowlist.
+- For `hpcc_msu` / `hpcc_msu_direct`, add these keys under:
+  - `secret_env_keys`
+  - `required_secret_keys`
+
 ## LandCore DuckDB Repo Notes
 
 Repo:

@@ -92,6 +92,15 @@ environments:
     sync: true
     db_tunnel_host: 127.0.0.1
     db_tunnel_port: 6543
+    secret_env_keys:
+      - ETL_DATABASE_URL
+      - OPENAI_API_KEY
+      - GITHUB_TOKEN
+      - GCS_HMAC_KEY
+      - GCS_HMAC_SECRET
+    required_secret_keys:
+      - GCS_HMAC_KEY
+      - GCS_HMAC_SECRET
 
     # ---- Template-only variables (kept at the end on purpose) ----
     basedir: /mnt/gs21/scratch/weave151/etl
@@ -125,6 +134,15 @@ environments:
     db_tunnel_command: "ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_hpc -L 6543:ep-sweet-sunset-ai8t67lb-pooler.c-4.us-east-1.aws.neon.tech:5432 weave151@hpcc.msu.edu"
     db_tunnel_host: 127.0.0.1
     db_tunnel_port: 6543
+    secret_env_keys:
+      - ETL_DATABASE_URL
+      - OPENAI_API_KEY
+      - GITHUB_TOKEN
+      - GCS_HMAC_KEY
+      - GCS_HMAC_SECRET
+    required_secret_keys:
+      - GCS_HMAC_KEY
+      - GCS_HMAC_SECRET
 
     # ---- Template-only variables (kept at the end on purpose) ----
     basedir: /mnt/gs21/scratch/weave151/etl
