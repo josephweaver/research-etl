@@ -126,6 +126,8 @@ Important implementation notes:
 - client needed path-style addressing and `put_object` behavior to work reliably
 - direct upload test succeeded against bucket:
   - `crop-dl`
+- remote immutable/HPCC runs may fail plugin load if `boto3` is present but `botocore` is missing or partially installed
+- keep `botocore` explicitly declared in dependency files alongside `boto3`
 
 Config files updated:
 
