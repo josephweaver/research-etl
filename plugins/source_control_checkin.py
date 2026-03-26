@@ -147,7 +147,18 @@ def run(args, ctx):
         env=dict(os.environ),
     )
     if result.get("committed") is False and result.get("reason") not in {"no_staged_changes"}:
-        raise RuntimeError(result.get("reason") or "source-control checkin failed")
+        reason = str(result.get("reason") or "source-control checkin failed").strip() or "source-control checkin failed"
+        missing_paths = list(result.get("missing_paths") or [])
+        bad_path = str(result.get("path") or "").strip()
+        stderr = str(result.get("stderr") or "").strip()
+        detail_parts: list[str] = [reason]
+        if missing_paths:
+            detail_parts.append("missing_paths=" + ",".join(str(p) for p in missing_paths))
+        elif bad_path:
+            detail_parts.append(f"path={bad_path}")
+        if stderr:
+            detail_parts.append(stderr)
+        raise RuntimeError("; ".join(detail_parts))
 
     out = dict(result)
     repo_root_path = Path(str(out.get("repo_root") or repo_root)).resolve()
