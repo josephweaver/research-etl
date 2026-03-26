@@ -67,7 +67,7 @@ environments:
     mem: "8G"
     modules: ["Python/3.11.3-GCCcore-12.3.0", "rclone/1.63.1-amd64", "PostgreSQL/16.1-GCCcore-12.3.0"]
     job_limit: 1000
-    array_task_limit: 1000
+    array_task_limit: 10000
     max_parallel: 50
     ssh_timeout: 120
     scp_timeout: 300
