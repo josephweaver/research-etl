@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from etl.source_control.config import resolve_repo_config
+import etl.source_control.config as scc
+from etl.source_control.config import resolve_repo_config, resolve_source_control_config_path
 
 
 def test_resolve_repo_config_reads_named_repository(tmp_path) -> None:
@@ -27,3 +28,26 @@ def test_resolve_repo_config_reads_named_repository(tmp_path) -> None:
     assert out["repo_alias"] == "LC_DUCKDB"
     assert out["provider"] == "git"
     assert out["local_path"] == "../landcore-duckdb"
+
+
+def test_resolve_source_control_config_path_uses_etl_repo_root_for_relative_path(tmp_path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    cfg = repo_root / "config" / "source_control.yml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("repositories: {}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ETL_REPO_ROOT", str(repo_root))
+    resolved = resolve_source_control_config_path("config/source_control.yml")
+    assert resolved == cfg.resolve()
+
+
+def test_resolve_source_control_config_path_uses_module_repo_root(tmp_path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    cfg = repo_root / "config" / "source_control.yml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("repositories: {}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ETL_REPO_ROOT", raising=False)
+    monkeypatch.setattr(scc, "_MODULE_REPO_ROOT", repo_root)
+    resolved = resolve_source_control_config_path("config/source_control.yml")
+    assert resolved == cfg.resolve()

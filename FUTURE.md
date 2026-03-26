@@ -68,6 +68,22 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
   - dictionary/DB split evolution
   - dataset service/routing/transport surface expansion
   - broader datasets UX and CLI additions beyond immediate delivery needs
+- Project-scoped config overlays:
+  - current pain point:
+    - configs such as `config/environments.yml`, `config/data_locations.yml`, and `config/source_control.yml` are ETL-repo rooted, but some settings are really project-specific
+    - this creates friction in cross-repo runs where project assets live in sibling repos like `landcore-etl-pipelines`
+  - future direction:
+    - allow project repos to carry their own config files under a local `config/` folder
+    - load ETL base config first, then overlay project-scoped config when present
+  - likely candidates for overlay support:
+    - environments
+    - data locations
+    - source control repo aliases
+    - possibly artifact policy or project-specific publication defaults
+  - desired behavior:
+    - shared/common defaults remain in the ETL repo
+    - landcore-specific settings can live in `landcore-etl-pipelines/config/...`
+    - selected project/repo context determines whether an overlay exists and should be merged
 - Variable typing / lightweight transform model:
     - current recommendation: defer until a concrete delivery blocker appears in one of the active dataset flows
   - reason to defer now:
