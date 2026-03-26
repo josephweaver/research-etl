@@ -60,6 +60,7 @@ meta = {
         "value_prefix": {"type": "str", "default": "ppt"},
         "band": {"type": "int", "default": 1},
         "all_touched": {"type": "bool", "default": False},
+        "include_empty_polygons": {"type": "bool", "default": True},
         "day": {"type": "str", "default": ""},
         "day_from_filename_regex": {"type": "str", "default": ""},
         "day_from_filename_group": {"type": "int", "default": 1},
@@ -212,6 +213,7 @@ def run(args, ctx):
     value_prefix = str(args.get("value_prefix") or "ppt").strip() or "ppt"
     band = int(args.get("band", 1) or 1)
     all_touched = bool(args.get("all_touched", False))
+    include_empty_polygons = bool(args.get("include_empty_polygons", True))
     verbose = bool(args.get("verbose", False))
 
     if not raster_text:
@@ -258,19 +260,20 @@ def run(args, ctx):
         rows: list[dict[str, Any]] = []
         agg_columns = [f"{value_prefix}_{agg}" for agg in agg_list]
 
-        for _, row in non_intersecting.iterrows():
-            item: dict[str, Any] = {
-                "county_id": row[county_id_field],
-                "raster_path": raster_path.resolve().as_posix(),
-            }
-            if county_name_field:
-                item["county_name"] = row[county_name_field]
-            if day:
-                item["day"] = day
-            for agg in agg_list:
-                value = 0 if agg == "count" else None
-                item[f"{value_prefix}_{agg}"] = value
-            rows.append(item)
+        if include_empty_polygons:
+            for _, row in non_intersecting.iterrows():
+                item: dict[str, Any] = {
+                    "county_id": row[county_id_field],
+                    "raster_path": raster_path.resolve().as_posix(),
+                }
+                if county_name_field:
+                    item["county_name"] = row[county_name_field]
+                if day:
+                    item["day"] = day
+                for agg in agg_list:
+                    value = 0 if agg == "count" else None
+                    item[f"{value_prefix}_{agg}"] = value
+                rows.append(item)
 
         for _, row in intersecting.iterrows():
             geom = row.geometry
@@ -296,6 +299,9 @@ def run(args, ctx):
                 agg_values = _compute_aggs(band_values, agg_list)
             except ValueError:
                 agg_values = _empty_agg_values(agg_list)
+
+            if not include_empty_polygons and int(agg_values.get("count", 0) or 0) == 0:
+                continue
 
             for agg in agg_list:
                 item[f"{value_prefix}_{agg}"] = agg_values.get(agg)
