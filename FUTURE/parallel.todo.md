@@ -75,7 +75,7 @@ steps:
     foreach_mode: serial
     foreach_backend: serial
     placement: same_job
-    plugin: geo/geo_county_raster_aggregate.py
+    plugin: geo/raster_aggregate_by_polygon.py
     args: ...
 ```
 
