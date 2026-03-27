@@ -31,6 +31,22 @@ def test_combine_files_csv_merges_rows(tmp_path: Path) -> None:
     assert res["combined_count"] == 2
 
 
+def test_combine_files_csv_merges_mismatched_headers_without_buffering_rows(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/combine_files.py"))
+    d = tmp_path / "in_mixed"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "a.csv").write_text("id,val\n1,a\n", encoding="utf-8")
+    (d / "b.csv").write_text("id,extra\n2,z\n", encoding="utf-8")
+    out = tmp_path / "out_mixed.csv"
+
+    plugin.run({"input_glob": f"{d.as_posix()}/*.csv", "output_file": str(out), "format": "csv"}, _ctx(tmp_path))
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "id,val,extra"
+    assert "1,a," in lines
+    assert "2,,z" in lines
+
+
 def test_combine_files_json_merges_arrays(tmp_path: Path) -> None:
     plugin = load_plugin(Path("plugins/combine_files.py"))
     d = tmp_path / "j"

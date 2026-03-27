@@ -65,7 +65,6 @@ def _detect_format(fmt: str, out: Path) -> str:
 
 
 def _combine_csv(paths: List[Path], out: Path) -> None:
-    rows: List[Dict[str, Any]] = []
     headers: List[str] = []
     seen = set()
     for p in paths:
@@ -77,14 +76,17 @@ def _combine_csv(paths: List[Path], out: Path) -> None:
                 if h not in seen:
                     seen.add(h)
                     headers.append(h)
-            for row in rdr:
-                rows.append(dict(row))
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=headers)
         w.writeheader()
-        for row in rows:
-            w.writerow({h: row.get(h, "") for h in headers})
+        for p in paths:
+            with p.open("r", encoding="utf-8-sig", newline="") as src:
+                rdr = csv.DictReader(src)
+                if not rdr.fieldnames:
+                    continue
+                for row in rdr:
+                    w.writerow({h: row.get(h, "") for h in headers})
 
 
 def _combine_json(paths: List[Path], out: Path) -> None:
