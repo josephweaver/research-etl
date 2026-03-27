@@ -1,4 +1,4 @@
-# Project Status (2026-03-14)
+# Project Status (2026-03-26)
 
 ## What this file is for
 
@@ -52,6 +52,12 @@ Current engineering focus is limited to the `needed-now core` areas:
 - run the next real crop-insurance pipeline on HPCC and confirm artifacts land in the intended output locations
 - run the next real landcore pipeline on HPCC and confirm the same
 - treat failures as concrete runtime-context, path-resolution, validation, or provenance defects before doing broader cleanup
+- continue Lobell corn field-year verification on HPCC:
+  - steps 1-3 are confirmed good for the current debug target (`h18v05`, `2016`)
+  - still need to verify step 4 (`normalize_corn_field_year`) against the latest raw aggregate output
+  - current HPCC debug references:
+    - `/mnt/scratch/weave151/etl/work/by_tile_year_csv/corn_yield_h18v05_2016.csv`
+    - `/mnt/scratch/weave151/etl/work/lobell_corn_field_year/260326/230041-a9606475`
 
 ## Executor strategy
 
@@ -60,6 +66,24 @@ Current engineering focus is limited to the `needed-now core` areas:
 - Do not treat `hpcc_direct` and `slurm` as separate product tracks. The intent is for `hpcc_direct` to de-risk the same remote execution model that `slurm` will use.
 
 ## Recent progress
+
+### 2026-03-26
+
+- Lobell corn field-year stabilization advanced:
+  - replaced `geo_county_raster_aggregate` with `geo/raster_aggregate_by_polygon`
+  - plugin now supports:
+    - `include_empty_polygons`
+    - finite-value filtering for raster `NaN` pixels before aggregation
+    - structured `columns` specs with `source`, `name`, `type`, optional `format`
+    - literal columns via `source: literal` + `value`
+  - `combine_files` CSV path was changed to stream rows one file at a time instead of buffering all rows in memory
+  - Lobell normalizer was updated to accept polygon-oriented aggregate outputs
+- current Lobell verification checkpoint:
+  - step 1 (`combine_corn_rasters_by_year`) verified
+  - step 2 (`aggregate_corn_fields_by_tile_year`) verified
+  - step 3 (`combine_corn_field_year_csvs`) verified
+  - step 4 (`normalize_corn_field_year`) still needs direct verification
+  - current narrowed debug scope remains `h18v05` and `2016`
 
 ### 2026-03-14
 

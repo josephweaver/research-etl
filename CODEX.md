@@ -198,6 +198,48 @@ Working pattern:
 - use a simpler tile regex:
   - `(h\d{2}v\d{2})`
 
+## Lobell Corn Notes
+
+### Current debug checkpoint
+
+- Current narrowed debug target in `../landcore-etl-pipelines/pipelines/lobell/corn_field_year.yml`:
+  - tile: `h18v05`
+  - year: `2016`
+- Verified so far:
+  - step 1 `combine_corn_rasters_by_year`
+  - step 2 `aggregate_corn_fields_by_tile_year`
+  - step 3 `combine_corn_field_year_csvs`
+- Still needs verification:
+  - step 4 `normalize_corn_field_year`
+- Current HPCC references:
+  - `/mnt/scratch/weave151/etl/work/by_tile_year_csv/corn_yield_h18v05_2016.csv`
+  - `/mnt/scratch/weave151/etl/work/lobell_corn_field_year/260326/230041-a9606475`
+
+### Raster aggregate plugin notes
+
+- `geo_county_raster_aggregate` was replaced by `plugins/geo/raster_aggregate_by_polygon.py`.
+- New argument names are polygon-oriented:
+  - `polygon_path`
+  - `polygon_id_field`
+  - `polygon_name_field`
+- `raster_aggregate_by_polygon` now supports column specs:
+  - `source`
+  - `name`
+  - `type`
+  - optional `format`
+  - `source: literal` with required `value`
+- Supported `source` forms currently include:
+  - `polygon.<field>`
+  - `polygon.id`
+  - `polygon.name`
+  - `raster.<agg>`
+  - `context.day`
+  - `context.raster_path`
+  - `literal`
+- If a downstream script still expects `county_*` fields, either:
+  - rewrite the normalizer to accept polygon-oriented names, or
+  - emit compatibility column names through the plugin `columns` spec
+
 ## Current Design Decisions
 
 - Defer typed variable envelopes / typed runtime values.
