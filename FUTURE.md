@@ -127,6 +127,9 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
 - YanRoy geo plugin and pipeline backlog from `FUTURE/geo.plugins.todo.md`
 - generalized data-zone redesign (`work`, `cache`, `publish`) beyond immediate delivery needs
 - generic validation-plugin templates, retention policy automation, checksum manifest systems, and similar framework work unless needed for current dataset publication
+- `combine_files` further streaming work beyond the current CSV fix:
+  - JSON/YAML/XML/text paths still materialize full inputs or merged payloads in memory
+  - if these become an HPCC/runtime blocker, add one-file-at-a-time streaming/append strategies where the format allows it
 - fix cross-pipeline dependency resolution:
   - current defect: when a pipeline depends on another pipeline from another repo, dependency resolution can fail to locate or execute the prerequisite correctly in that repo context
   - likely areas to revisit:
