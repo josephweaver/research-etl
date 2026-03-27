@@ -225,6 +225,20 @@ def _coerce_output_value(value: Any, type_name: str) -> Any:
     raise ValueError(f"Unsupported output column type '{type_name}'")
 
 
+def _format_output_value(value: Any, column: dict[str, str]) -> Any:
+    if value is None:
+        return None
+    format_spec = str(column.get("format") or "").strip()
+    if not format_spec:
+        return value
+    try:
+        return format(value, format_spec)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(
+            f"Could not format column '{column.get('name')}' with format '{format_spec}': {exc}"
+        ) from exc
+
+
 def _default_columns(args: dict[str, Any], agg_list: list[str], day: str) -> list[dict[str, str]]:
     value_prefix = str(args.get("value_prefix") or "value").strip() or "value"
     columns: list[dict[str, str]] = [{"source": "polygon.id", "name": "polygon_id"}]
@@ -260,6 +274,7 @@ def _parse_columns_spec(raw: Any, args: dict[str, Any], agg_list: list[str], day
         source = str(item.get("source") or "").strip()
         name = str(item.get("name") or "").strip()
         type_name = str(item.get("type") or "").strip().lower()
+        format_spec = str(item.get("format") or "").strip()
         raw_value = item.get("value")
         if not source:
             raise ValueError(f"columns[{idx}].source is required")
@@ -272,6 +287,8 @@ def _parse_columns_spec(raw: Any, args: dict[str, Any], agg_list: list[str], day
             raise ValueError(f"Duplicate output column name '{name}'")
         seen_names.add(name)
         column = {"source": source, "name": name, "type": type_name}
+        if format_spec:
+            column["format"] = format_spec
         if source.lower() == "literal":
             if raw_value is None:
                 raise ValueError(f"columns[{idx}].value is required when source=literal")
@@ -353,7 +370,8 @@ def _build_output_row(
             day=day,
             raster_path=raster_path,
         )
-        row[str(column["name"])] = _coerce_output_value(value, str(column.get("type") or ""))
+        coerced = _coerce_output_value(value, str(column.get("type") or ""))
+        row[str(column["name"])] = _format_output_value(coerced, column)
     return row
 
 

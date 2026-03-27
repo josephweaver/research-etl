@@ -202,9 +202,11 @@ def test_raster_aggregate_by_polygon_custom_columns(tmp_path: Path) -> None:
   value: "2016"
   name: year
   type: int
+  format: "04d"
 - source: raster.mean
   name: corn_yield_mean
   type: double
+  format: ".2f"
 - source: raster.count
   name: pixel_count
   type: int
@@ -218,11 +220,11 @@ def test_raster_aggregate_by_polygon_custom_columns(tmp_path: Path) -> None:
 
     assert rows[0].keys() == {"tile_field_id", "year", "corn_yield_mean", "pixel_count"}
     by_id = {r["tile_field_id"]: r for r in rows}
-    assert int(by_id["h18v05_001"]["year"]) == 2016
-    assert float(by_id["h18v05_001"]["corn_yield_mean"]) == 3.5
+    assert by_id["h18v05_001"]["year"] == "2016"
+    assert by_id["h18v05_001"]["corn_yield_mean"] == "3.50"
     assert int(by_id["h18v05_001"]["pixel_count"]) == 4
-    assert int(by_id["h18v05_002"]["year"]) == 2016
-    assert float(by_id["h18v05_002"]["corn_yield_mean"]) == 13.5
+    assert by_id["h18v05_002"]["year"] == "2016"
+    assert by_id["h18v05_002"]["corn_yield_mean"] == "13.50"
     assert int(by_id["h18v05_002"]["pixel_count"]) == 4
 
 
