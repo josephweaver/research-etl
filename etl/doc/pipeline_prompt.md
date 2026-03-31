@@ -53,6 +53,9 @@ Validation and provenance rules:
 - Make step inputs/outputs traceable through `vars` or prior `output_var` values.
 - Prefer explicit final artifact paths and versioned targets.
 - Do not hide critical path decisions in prose; encode them in YAML fields.
+- Consider hardware requirements for each step, especially memory-heavy combine, normalization, geospatial, and model-fit work.
+- First prefer stream-oriented or chunked processing patterns that reduce memory footprint instead of buffering whole inputs in memory.
+- If a step still legitimately needs more memory after that, add or increase executor resource requests explicitly; for SLURM-oriented runs, consider raising memory requests up to `64G` when justified by the workload.
 
 What to return:
 - Return only the final YAML unless the user explicitly asks for explanation.
@@ -69,6 +72,7 @@ Before finishing, check:
 - Are plugin names and argument shapes aligned with existing repo patterns?
 - Are `workdir` and `logdir` defined consistently?
 - Are step names ordered and readable?
+- Have hardware requirements been considered, with memory footprint reduced via streaming/chunking first and only then higher SLURM memory requests up to `64G` if needed?
 
 ## Suggested Invocation
 
