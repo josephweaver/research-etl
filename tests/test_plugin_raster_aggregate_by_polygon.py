@@ -102,6 +102,32 @@ def _write_raster_with_empty_intersection(path: Path) -> None:
         ds.write(data, 1)
 
 
+def _write_categorical_raster(path: Path) -> None:
+    data = np.array(
+        [
+            [0, 1, 1, 1],
+            [0, np.nan, 1, 1],
+            [0, 0, 1, np.nan],
+            [0, 0, 1, 1],
+        ],
+        dtype="float32",
+    )
+    transform = rasterio.transform.from_origin(0, 4, 1, 1)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=4,
+        width=4,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=transform,
+        nodata=-9999.0,
+    ) as ds:
+        ds.write(data, 1)
+
+
 def _write_polygons(path: Path) -> None:
     geoms = [
         shapely_geometry.box(0, 2, 2, 4),
@@ -372,3 +398,118 @@ def test_raster_aggregate_by_polygon_can_drop_empty_polygons(tmp_path: Path) -> 
     assert set(by_id) == {"002"}
     assert float(by_id["002"]["ppt_mean"]) == 13.5
     assert int(float(by_id["002"]["ppt_count"])) == 4
+
+
+def test_raster_aggregate_by_polygon_value_counts_and_proportions(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo/raster_aggregate_by_polygon.py"))
+
+    raster_path = tmp_path / "tillage_2016.tif"
+    polygon_path = tmp_path / "polygons.gpkg"
+    output_path = tmp_path / "polygon_tillage.csv"
+    _write_categorical_raster(raster_path)
+    _write_polygons(polygon_path)
+
+    plugin.run(
+        {
+            "raster_path": str(raster_path),
+            "polygon_path": str(polygon_path),
+            "output_path": str(output_path),
+            "polygon_id_field": "GEOID",
+            "columns": """
+- source: polygon.tile_field_id
+  name: tile_field_id
+  type: str
+- source: raster.value_count.0
+  name: tillage_0_count
+  type: int
+- source: raster.value_count.1
+  name: tillage_1_count
+  type: int
+- source: raster.value_count.na
+  name: tillage_na_count
+  type: int
+- source: raster.value_proportion.0
+  name: tillage_0_prop
+  type: double
+  format: ".2f"
+- source: raster.value_proportion.1
+  name: tillage_1_prop
+  type: double
+  format: ".2f"
+- source: raster.value_proportion.na
+  name: tillage_na_prop
+  type: double
+  format: ".2f"
+- source: raster.observed_count
+  name: observed_count
+  type: int
+""",
+        },
+        _ctx(tmp_path),
+    )
+
+    with output_path.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    by_id = {r["tile_field_id"]: r for r in rows}
+    assert int(by_id["h18v05_001"]["tillage_0_count"]) == 2
+    assert int(by_id["h18v05_001"]["tillage_1_count"]) == 1
+    assert int(by_id["h18v05_001"]["tillage_na_count"]) == 1
+    assert by_id["h18v05_001"]["tillage_0_prop"] == "0.50"
+    assert by_id["h18v05_001"]["tillage_1_prop"] == "0.25"
+    assert by_id["h18v05_001"]["tillage_na_prop"] == "0.25"
+    assert int(by_id["h18v05_001"]["observed_count"]) == 4
+
+    assert int(by_id["h18v05_002"]["tillage_0_count"]) == 0
+    assert int(by_id["h18v05_002"]["tillage_1_count"]) == 3
+    assert int(by_id["h18v05_002"]["tillage_na_count"]) == 1
+    assert by_id["h18v05_002"]["tillage_0_prop"] == "0.00"
+    assert by_id["h18v05_002"]["tillage_1_prop"] == "0.75"
+    assert by_id["h18v05_002"]["tillage_na_prop"] == "0.25"
+    assert int(by_id["h18v05_002"]["observed_count"]) == 4
+
+
+def test_raster_aggregate_by_polygon_categorical_outputs_keep_all_na_intersections(tmp_path: Path) -> None:
+    plugin = load_plugin(Path("plugins/geo/raster_aggregate_by_polygon.py"))
+
+    raster_path = tmp_path / "tillage_nan.tif"
+    polygon_path = tmp_path / "polygons_with_outside.gpkg"
+    output_path = tmp_path / "polygon_tillage_nan.csv"
+    _write_raster_with_empty_intersection(raster_path)
+    _write_polygons_with_outside(polygon_path)
+
+    plugin.run(
+        {
+            "raster_path": str(raster_path),
+            "polygon_path": str(polygon_path),
+            "output_path": str(output_path),
+            "polygon_id_field": "GEOID",
+            "polygon_name_field": "NAME",
+            "include_empty_polygons": False,
+            "columns": """
+- source: polygon.id
+  name: polygon_id
+  type: str
+- source: raster.value_count.na
+  name: tillage_na_count
+  type: int
+- source: raster.value_proportion.na
+  name: tillage_na_prop
+  type: double
+  format: ".2f"
+- source: raster.observed_count
+  name: observed_count
+  type: int
+""",
+        },
+        _ctx(tmp_path),
+    )
+
+    with output_path.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    by_id = {r["polygon_id"]: r for r in rows}
+    assert set(by_id) == {"001", "002"}
+    assert int(by_id["001"]["tillage_na_count"]) == 4
+    assert by_id["001"]["tillage_na_prop"] == "1.00"
+    assert int(by_id["001"]["observed_count"]) == 4

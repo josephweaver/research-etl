@@ -165,9 +165,40 @@ def _sanitize_values(values: Any) -> Any:
     return np.asarray(cleaned)
 
 
+def _flatten_nonmasked(values: Any) -> Any:
+    arr = np.asanyarray(values)
+    if np.ma.isMaskedArray(arr):
+        return np.asarray(arr.compressed())
+    return np.asarray(arr).reshape(-1)
+
+
+def _categorical_stats(values: Any) -> dict[str, Any]:
+    raw = _flatten_nonmasked(values)
+    if raw.size == 0:
+        return {
+            "raw": raw,
+            "finite": raw,
+            "observed_count": 0,
+            "finite_count": 0,
+            "na_count": 0,
+        }
+    finite = _sanitize_values(raw)
+    observed_count = int(raw.size)
+    finite_count = int(finite.size)
+    na_count = int(observed_count - finite_count)
+    return {
+        "raw": raw,
+        "finite": finite,
+        "observed_count": observed_count,
+        "finite_count": finite_count,
+        "na_count": na_count,
+    }
+
+
 def _compute_aggs(values: Any, agg_list: list[str]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    arr = _sanitize_values(values)
+    stats = _categorical_stats(values)
+    arr = stats["finite"]
     if arr.size == 0:
         return _empty_agg_values(agg_list)
 
@@ -195,6 +226,55 @@ def _compute_aggs(values: Any, agg_list: list[str]) -> dict[str, Any]:
         elif agg == "count":
             out[agg] = int(arr.size)
     return out
+
+
+def _parse_value_token(token: str) -> Any:
+    text = str(token or "").strip().lower()
+    if text in {"na", "nan", "null", "none", "missing"}:
+        return "na"
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise ValueError(
+            f"Unsupported raster value token '{token}'. Use a numeric literal or one of: na, nan, null, none, missing"
+        ) from exc
+
+
+def _count_matching_value(raw: Any, finite: Any, value_token: Any) -> int:
+    if value_token == "na":
+        return int(raw.size - finite.size)
+    if finite.size == 0:
+        return 0
+    return int(np.count_nonzero(np.isclose(finite.astype(float), float(value_token), equal_nan=False)))
+
+
+def _resolve_special_raster_value(source_lower: str, value_stats: dict[str, Any]) -> Any:
+    if source_lower == "raster.observed_count":
+        return int(value_stats["observed_count"])
+    if source_lower == "raster.na_count":
+        return int(value_stats["na_count"])
+    if source_lower == "raster.na_proportion":
+        observed = int(value_stats["observed_count"])
+        return (float(value_stats["na_count"]) / float(observed)) if observed else None
+
+    prefixes = {
+        "raster.value_count.": "count",
+        "raster.value_proportion.": "proportion",
+        "raster.value_prop.": "proportion",
+    }
+    for prefix, mode in prefixes.items():
+        if not source_lower.startswith(prefix):
+            continue
+        token_text = source_lower[len(prefix) :]
+        if not token_text:
+            raise ValueError(f"Raster column source '{source_lower}' is missing a value token")
+        value_token = _parse_value_token(token_text)
+        matched = _count_matching_value(value_stats["raw"], value_stats["finite"], value_token)
+        if mode == "count":
+            return matched
+        observed = int(value_stats["observed_count"])
+        return (float(matched) / float(observed)) if observed else None
+    return None
 
 
 def _normalize_bool(value: Any) -> bool:
@@ -304,6 +384,10 @@ def _resolve_agg_list(args: dict[str, Any], columns: list[dict[str, str]]) -> li
         source = str(column.get("source") or "").strip().lower()
         if not source.startswith("raster."):
             continue
+        if source in {"raster.observed_count", "raster.na_count", "raster.na_proportion"}:
+            continue
+        if source.startswith("raster.value_count.") or source.startswith("raster.value_proportion.") or source.startswith("raster.value_prop."):
+            continue
         agg = source.split(".", 1)[1]
         if agg not in _ALLOWED_AGGS:
             allowed = ", ".join(sorted(_ALLOWED_AGGS))
@@ -314,6 +398,16 @@ def _resolve_agg_list(args: dict[str, Any], columns: list[dict[str, str]]) -> li
     if out:
         return out
     return _parse_aggs(str(args.get("aggregations") or "sum,mean,count"))
+
+
+def _uses_categorical_raster_sources(columns: list[dict[str, str]]) -> bool:
+    for column in columns:
+        source = str(column.get("source") or "").strip().lower()
+        if source in {"raster.observed_count", "raster.na_count", "raster.na_proportion"}:
+            return True
+        if source.startswith("raster.value_count.") or source.startswith("raster.value_proportion.") or source.startswith("raster.value_prop."):
+            return True
+    return False
 
 
 def _resolve_column_value(
@@ -338,6 +432,13 @@ def _resolve_column_value(
         field_name = source.split(".", 1)[1]
         return polygon_row[field_name]
     if source_lower.startswith("raster."):
+        special = _resolve_special_raster_value(source_lower, agg_values)
+        if special is not None or source_lower in {
+            "raster.observed_count",
+            "raster.na_count",
+            "raster.na_proportion",
+        } or source_lower.startswith("raster.value_count.") or source_lower.startswith("raster.value_proportion.") or source_lower.startswith("raster.value_prop."):
+            return special
         agg = source_lower.split(".", 1)[1]
         return agg_values.get(agg)
     if source_lower == "literal":
@@ -413,6 +514,7 @@ def run(args, ctx):
     day = _resolve_day(args, raster_path)
     columns = _parse_columns_spec(args.get("columns"), args, _parse_aggs(str(args.get("aggregations") or "sum,mean,count")), day)
     agg_list = _resolve_agg_list(args, columns)
+    uses_categorical_sources = _uses_categorical_raster_sources(columns)
 
     polygons = gpd.read_file(polygon_path)
     if polygons.empty:
@@ -448,6 +550,7 @@ def run(args, ctx):
         if include_empty_polygons:
             for _, polygon_row in non_intersecting.iterrows():
                 agg_values = _empty_agg_values(agg_list)
+                agg_values.update(_categorical_stats(np.asarray([])))
                 rows.append(
                     _build_output_row(
                         columns=columns,
@@ -470,11 +573,14 @@ def run(args, ctx):
                     filled=False,
                     all_touched=all_touched,
                 )
-                agg_values = _compute_aggs(masked.compressed(), agg_list)
+                agg_values = _compute_aggs(masked, agg_list)
+                agg_values.update(_categorical_stats(masked))
             except ValueError:
                 agg_values = _empty_agg_values(agg_list)
+                agg_values.update(_categorical_stats(np.asarray([])))
 
-            if not include_empty_polygons and int(agg_values.get("count", 0) or 0) == 0:
+            effective_count = agg_values.get("observed_count") if uses_categorical_sources else agg_values.get("count", 0)
+            if not include_empty_polygons and int(effective_count or 0) == 0:
                 continue
 
             rows.append(
