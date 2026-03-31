@@ -313,6 +313,14 @@ Acceptance criteria:
 - [ ] Add a first-class partitioned fan-out mode for pipeline datasets that should parallelize by declared partitions rather than `foreach_glob` path discovery.
   - Current pain point: PRISM rolling-window datasets should parallelize by `years` with explicit overlap windows; using `foreach_glob` for this is operationally awkward and not a true backend-parallel partition model.
   - Desired behavior: let pipeline authors declare partition keys and overlap policy directly, with deterministic expansion manifests and clean step-level logging.
+- [ ] Add pipeline-level job-slot budgeting for SLURM/QOS-limited runs.
+  - Motivation: some clusters enforce a hard cap on total runnable jobs per user/QOS, so one pipeline should be able to stay within a declared job-slot budget instead of blindly expanding every parallel component.
+  - Desired operator control: allow a command-line flag like `--job-slots N` (name TBD) to declare how many scheduler slots the whole run may consume.
+  - Desired planning behavior:
+    - combine compatible sequential steps into a single submitted job when doing so reduces scheduler slot pressure without breaking logging/provenance boundaries
+    - throttle or block parallel fan-out groups so active submitted/running jobs never exceed the declared slot budget
+    - account for arrays and `parallel_with` groups against the same pipeline-level slot budget instead of only per-step concurrency caps
+  - Important design constraint: preserve deterministic execution order, resume semantics, and step-level logs/status even when multiple sequential steps are packed into one scheduler job.
 - [ ] Resolved dynamic execution plans materialized before run start.
 - [ ] Adaptive SLURM execution packing using historical runtime telemetry.
 - [ ] Revisit nested child-pipeline execution on HPCC/SLURM.
