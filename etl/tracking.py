@@ -432,6 +432,7 @@ def upsert_step_attempt(
     project_id: Optional[str] = None,
     artifact_dir: Optional[str] = None,
     executor: Optional[str] = None,
+    enable_artifact_tracking: bool = True,
 ) -> None:
     """
     Upsert a single step attempt row for retry-aware tracking.
@@ -516,7 +517,7 @@ def upsert_step_attempt(
                 ),
             )
         conn.commit()
-    if success and outputs and pipeline:
+    if bool(enable_artifact_tracking) and success and outputs and pipeline:
         try:
             register_step_artifacts(
                 run_id=run_id,
@@ -632,6 +633,7 @@ def record_run(
     artifact_dir: Optional[str] = None,
     provenance: Optional[Dict[str, Any]] = None,
     project_id: Optional[str] = None,
+    enable_artifact_tracking: bool = True,
 ) -> RunRecord:
     store.parent.mkdir(parents=True, exist_ok=True)
     started = getattr(run_result, "started_at", None) or _now_iso()
@@ -650,18 +652,19 @@ def record_run(
         f.write(json.dumps(asdict(rec)) + "\n")
 
     _upsert_run_db(rec, executor=executor, artifact_dir=artifact_dir, provenance=provenance)
-    try:
-        register_run_artifacts(
-            run_id=rec.run_id,
-            pipeline=rec.pipeline,
-            project_id=rec.project_id,
-            artifact_dir=artifact_dir or getattr(run_result, "artifact_dir", None),
-            steps=rec.steps,
-            executor=executor,
-        )
-    except Exception:
-        # Artifact registration is best-effort and should not fail run persistence.
-        pass
+    if bool(enable_artifact_tracking):
+        try:
+            register_run_artifacts(
+                run_id=rec.run_id,
+                pipeline=rec.pipeline,
+                project_id=rec.project_id,
+                artifact_dir=artifact_dir or getattr(run_result, "artifact_dir", None),
+                steps=rec.steps,
+                executor=executor,
+            )
+        except Exception:
+            # Artifact registration is best-effort and should not fail run persistence.
+            pass
     return rec
 
 

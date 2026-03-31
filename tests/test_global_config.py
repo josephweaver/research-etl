@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import cli
-from etl.config import resolve_global_config_path
+from etl.config import artifact_tracking_enabled, resolve_global_config_path, run_context_snapshots_enabled
 from etl.executors.base import SubmissionResult
 from etl.pipeline import Pipeline, Step
 
@@ -82,4 +82,36 @@ def test_cmd_run_auto_loads_default_global_config(monkeypatch, tmp_path: Path) -
     assert rc == 0
     assert seen_global_vars
     assert seen_global_vars[0].get("basedir") == "./out"
+
+
+def test_run_context_snapshots_enabled_defaults_true() -> None:
+    assert run_context_snapshots_enabled({}) is True
+
+
+def test_run_context_snapshots_enabled_respects_enable_flag() -> None:
+    assert run_context_snapshots_enabled({"enable_run_context_snapshots": False}) is False
+    assert run_context_snapshots_enabled({"enable_run_context_snapshots": "false"}) is False
+    assert run_context_snapshots_enabled({"enable_run_context_snapshots": "true"}) is True
+
+
+def test_run_context_snapshots_enabled_respects_disable_flag() -> None:
+    assert run_context_snapshots_enabled({"disable_run_context_snapshots": True}) is False
+    assert run_context_snapshots_enabled({"disable_run_context_snapshots": "true"}) is False
+    assert run_context_snapshots_enabled({"disable_run_context_snapshots": "false"}) is True
+
+
+def test_artifact_tracking_enabled_defaults_true() -> None:
+    assert artifact_tracking_enabled({}) is True
+
+
+def test_artifact_tracking_enabled_respects_enable_flag() -> None:
+    assert artifact_tracking_enabled({"enable_artifact_tracking": False}) is False
+    assert artifact_tracking_enabled({"enable_artifact_tracking": "false"}) is False
+    assert artifact_tracking_enabled({"enable_artifact_tracking": "true"}) is True
+
+
+def test_artifact_tracking_enabled_respects_disable_flag() -> None:
+    assert artifact_tracking_enabled({"disable_artifact_tracking": True}) is False
+    assert artifact_tracking_enabled({"disable_artifact_tracking": "true"}) is False
+    assert artifact_tracking_enabled({"disable_artifact_tracking": "false"}) is True
 

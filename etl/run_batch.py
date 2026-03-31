@@ -25,7 +25,7 @@ from pathlib import Path
 
 from etl.app_logging import configure_app_logger
 from etl.db_sync_queue import queue_tracking_update
-from etl.config import load_global_config, resolve_global_config_path, ConfigError
+from etl.config import artifact_tracking_enabled, load_global_config, resolve_global_config_path, run_context_snapshots_enabled, ConfigError
 from etl.execution_config import (
     load_execution_config,
     apply_execution_env_overrides,
@@ -248,6 +248,8 @@ def _main_impl(argv: list[str] | None = None) -> int:
     if resolved_exec_cfg:
         args.environments_config = str(resolved_exec_cfg)
     apply_db_mode_from_exec_env(exec_env)
+    snapshots_enabled = run_context_snapshots_enabled(global_vars)
+    artifacts_enabled = artifact_tracking_enabled(global_vars)
     parse_context_vars = merge_context_with_secrets(commandline_vars, collect_secret_vars(exec_env))
 
     repo_root_for_resolution = Path(str(os.environ.get("ETL_REPO_ROOT") or "").strip() or ".").expanduser().resolve()
@@ -437,16 +439,20 @@ def _main_impl(argv: list[str] | None = None) -> int:
                 if args.foreach_item_index is not None
                 else None
             ),
-            context_snapshot_func=lambda **snap: upsert_run_context_snapshot(
-                run_id=run_id,
-                pipeline=str(resolved_pipeline_path),
-                project_id=project_id,
-                executor=tracking_executor,
-                event_type=str(snap.get("event_type") or "snapshot"),
-                context=dict(snap.get("context") or {}),
-                step_name=str(snap.get("step_name") or "").strip() or None,
-                step_index=snap.get("step_index"),
-                snapshot_file=(workdir_path / "_context_snapshots" / f"{run_id}.jsonl"),
+            context_snapshot_func=(
+                (lambda **snap: upsert_run_context_snapshot(
+                    run_id=run_id,
+                    pipeline=str(resolved_pipeline_path),
+                    project_id=project_id,
+                    executor=tracking_executor,
+                    event_type=str(snap.get("event_type") or "snapshot"),
+                    context=dict(snap.get("context") or {}),
+                    step_name=str(snap.get("step_name") or "").strip() or None,
+                    step_index=snap.get("step_index"),
+                    snapshot_file=(workdir_path / "_context_snapshots" / f"{run_id}.jsonl"),
+                ))
+                if snapshots_enabled
+                else None
             ),
         )
     finally:
@@ -483,6 +489,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
                     project_id=project_id,
                     artifact_dir=step_artifact_dir,
                     executor=tracking_executor,
+                    enable_artifact_tracking=artifacts_enabled,
                 )
         elif step_res.attempt_no > 0:
             _safe_tracking_write(
@@ -503,6 +510,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
                 project_id=project_id,
                 artifact_dir=step_artifact_dir,
                 executor=tracking_executor,
+                enable_artifact_tracking=artifacts_enabled,
             )
 
     # merge outputs into ctx (simple overwrite)

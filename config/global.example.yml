@@ -2,3 +2,7 @@ data: /data
 bin: /opt/etl/bin
 log: /data/logs
 resolve_max_passes: 20
+# programmatic: set false to disable DB/file run context snapshot writes temporarily.
+enable_run_context_snapshots: true
+# programmatic: set false to disable DB artifact registration temporarily.
+enable_artifact_tracking: true

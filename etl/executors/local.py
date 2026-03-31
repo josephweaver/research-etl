@@ -19,6 +19,7 @@ import shutil
 from typing import Any, Dict, Optional
 
 from .base import Executor, RunState, RunStatus, SubmissionResult
+from ..config import artifact_tracking_enabled, run_context_snapshots_enabled
 from ..git_checkout import GitCheckoutError, GitExecutionSpec
 from ..pipeline import Pipeline, parse_pipeline, PipelineError
 from ..pipeline_assets import PipelineAssetMatch, infer_pipeline_asset_match
@@ -313,6 +314,8 @@ class LocalExecutor(Executor):
                     run_started = datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
                 except Exception:
                     run_started = None
+        snapshots_enabled = run_context_snapshots_enabled(global_vars)
+        artifacts_enabled = artifact_tracking_enabled(global_vars)
 
         with _pushd(execution_cwd):
             run_result = run_pipeline(
@@ -328,20 +331,24 @@ class LocalExecutor(Executor):
                 prior_step_outputs=prior_step_outputs,
                 log_func=context.get("log"),
                 step_log_func=context.get("step_log"),
-                context_snapshot_func=lambda **snap: upsert_run_context_snapshot(
-                    run_id=str((snap.get("context") or {}).get("sys", {}).get("run", {}).get("id") or context.get("run_id") or ""),
-                    pipeline=str(pipeline_path),
-                    project_id=context.get("project_id"),
-                    executor=self.name,
-                    event_type=str(snap.get("event_type") or "snapshot"),
-                    context=dict(snap.get("context") or {}),
-                    step_name=str(snap.get("step_name") or "").strip() or None,
-                    step_index=snap.get("step_index"),
-                    snapshot_file=(
-                        effective_workdir
-                        / "_context_snapshots"
-                        / f"{str((snap.get('context') or {}).get('sys', {}).get('run', {}).get('id') or context.get('run_id') or 'run').strip()}.jsonl"
-                    ),
+                context_snapshot_func=(
+                    (lambda **snap: upsert_run_context_snapshot(
+                        run_id=str((snap.get("context") or {}).get("sys", {}).get("run", {}).get("id") or context.get("run_id") or ""),
+                        pipeline=str(pipeline_path),
+                        project_id=context.get("project_id"),
+                        executor=self.name,
+                        event_type=str(snap.get("event_type") or "snapshot"),
+                        context=dict(snap.get("context") or {}),
+                        step_name=str(snap.get("step_name") or "").strip() or None,
+                        step_index=snap.get("step_index"),
+                        snapshot_file=(
+                            effective_workdir
+                            / "_context_snapshots"
+                            / f"{str((snap.get('context') or {}).get('sys', {}).get('run', {}).get('id') or context.get('run_id') or 'run').strip()}.jsonl"
+                        ),
+                    ))
+                    if snapshots_enabled
+                    else None
                 ),
             )
         # attach timestamps
@@ -357,6 +364,7 @@ class LocalExecutor(Executor):
             artifact_dir=getattr(run_result, "artifact_dir", None),
             provenance=context.get("provenance"),
             project_id=context.get("project_id"),
+            enable_artifact_tracking=artifacts_enabled,
         )
         return SubmissionResult(run_id=run_result.run_id, message=status.message)
 

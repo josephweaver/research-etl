@@ -60,4 +60,41 @@ def load_global_config(path: Path) -> Dict[str, Any]:
     return data
 
 
-__all__ = ["load_global_config", "resolve_global_config_path", "ConfigError"]
+def _parse_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def run_context_snapshots_enabled(global_vars: Optional[Dict[str, Any]]) -> bool:
+    data = dict(global_vars or {})
+    if "enable_run_context_snapshots" in data:
+        return _parse_bool(data.get("enable_run_context_snapshots"), default=True)
+    if "disable_run_context_snapshots" in data:
+        return not _parse_bool(data.get("disable_run_context_snapshots"), default=False)
+    return True
+
+
+def artifact_tracking_enabled(global_vars: Optional[Dict[str, Any]]) -> bool:
+    data = dict(global_vars or {})
+    if "enable_artifact_tracking" in data:
+        return _parse_bool(data.get("enable_artifact_tracking"), default=True)
+    if "disable_artifact_tracking" in data:
+        return not _parse_bool(data.get("disable_artifact_tracking"), default=False)
+    return True
+
+
+__all__ = [
+    "artifact_tracking_enabled",
+    "load_global_config",
+    "resolve_global_config_path",
+    "run_context_snapshots_enabled",
+    "ConfigError",
+]

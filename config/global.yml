@@ -16,6 +16,12 @@ etl_git_remote_url: "https://github.com/josephweaver/research-etl.git"
 # `immutable` means run from a pinned clean checkout outside the live workspace.
 execution_mode: immutable
 
+# programmatic: when false, do not persist run context snapshots to DB or jsonl files.
+enable_run_context_snapshots: false
+
+# programmatic: when false, do not register run/step artifacts in DB.
+enable_artifact_tracking: false
+
 # programmatic: root directory for immutable source checkouts.
 # Desired layout:
 #   ../.out/src/research-etl-<sha>
