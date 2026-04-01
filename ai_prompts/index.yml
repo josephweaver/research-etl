@@ -1,0 +1,176 @@
+version: 1
+
+root_router:
+  path: "CODEX.md"
+  role: "dispatcher"
+  notes: "Root routing file that tells the AI which prompt assets to read for which task."
+
+prompt_assets:
+  - id: "pipeline_authoring"
+    path: "ai_prompts/pipeline_prompt.md"
+    format: "markdown"
+    role: "canonical authoring rules for ETL pipeline YAML"
+    use_when:
+      - "drafting a new pipeline"
+      - "revising pipeline structure"
+      - "checking authoring standards"
+
+  - id: "pipeline_template"
+    path: "ai_prompts/pipeline_template.md"
+    format: "markdown"
+    role: "starter template for dataset-oriented pipelines"
+    use_when:
+      - "creating a new pipeline from scratch"
+      - "checking expected shape and finalizer pattern"
+
+  - id: "pipeline_intake_checklist"
+    path: "ai_prompts/pipeline_intake_checklist.md"
+    format: "markdown"
+    role: "pre-authoring checklist for identifying decision-critical missing information"
+    use_when:
+      - "starting a new pipeline"
+      - "determining what information to request from the user"
+      - "scoping a new dataset"
+
+  - id: "pipeline_failure_patterns"
+    path: "ai_prompts/pipeline_failure_patterns.md"
+    format: "markdown"
+    role: "catalog of recurring pipeline failures, root causes, and fixes"
+    use_when:
+      - "debugging a failed pipeline"
+      - "updating prompts after a failure"
+      - "extracting validator or linter ideas from real incidents"
+
+  - id: "pipeline_failure_triage_checklist"
+    path: "ai_prompts/pipeline_failure_triage_checklist.md"
+    format: "markdown"
+    role: "failure classification checklist for pipeline debugging"
+    use_when:
+      - "reviewing pipeline logs"
+      - "classifying a failed step"
+      - "choosing the next fix path after a failure"
+
+  - id: "pipeline_progress_checklist"
+    path: "ai_prompts/pipeline_progress_checklist.md"
+    format: "markdown"
+    role: "progress and next-step checklist for workflow status questions"
+    use_when:
+      - "answering what is next"
+      - "summarizing workflow status"
+      - "finding the next blocking dependency"
+
+  - id: "data_dictionary_authoring"
+    path: "ai_prompts/data_dictionary_prompt.md"
+    format: "markdown"
+    role: "canonical rules for creating one dataset dictionary entry for one dataset"
+    use_when:
+      - "creating a new dataset entry"
+      - "updating a sibling data dictionary or data catalog repo"
+      - "creating a new pipeline that introduces a new dataset"
+
+  - id: "data_dictionary_entry_template"
+    path: "ai_prompts/data_dictionary_entry_template.md"
+    format: "markdown"
+    role: "starter structure for one dataset entry"
+    use_when:
+      - "creating a new dataset entry from scratch"
+      - "checking whether an entry covers provenance and quality metadata"
+
+  - id: "data_dictionary_guidelines"
+    path: "ai_prompts/data_dictionary_guidelines.md"
+    format: "markdown"
+    role: "high-level dataset-entry rules adapted from the sibling data catalog"
+    use_when:
+      - "deciding whether a reusable output needs a dataset entry"
+      - "defining what counts as one dataset"
+      - "aligning ETL outputs with catalog expectations"
+
+  - id: "data_dictionary_data_classes"
+    path: "ai_prompts/data_dictionary_data_classes.md"
+    format: "markdown"
+    role: "data class selection guidance"
+    use_when:
+      - "choosing RAW/EXT/STAGE/MODEL_IN/MODEL_OUT/SERVE/REF"
+      - "setting dataset_id prefixes"
+
+  - id: "data_dictionary_naming"
+    path: "ai_prompts/data_dictionary_naming_guidelines.md"
+    format: "markdown"
+    role: "dataset_id and entry filename naming rules"
+    use_when:
+      - "choosing dataset_id values"
+      - "naming dataset entry files"
+
+  - id: "data_dictionary_contributing"
+    path: "ai_prompts/data_dictionary_contributing_guidelines.md"
+    format: "markdown"
+    role: "practical rules for adding or editing dataset entries"
+    use_when:
+      - "creating a new entry"
+      - "updating an existing entry"
+      - "checking minimum entry completeness"
+
+  - id: "data_dictionary_quality"
+    path: "ai_prompts/data_dictionary_quality_guidelines.md"
+    format: "markdown"
+    role: "quality and limitation documentation guidance for dataset entries"
+    use_when:
+      - "documenting licensing"
+      - "documenting validation performed"
+      - "documenting missingness"
+      - "documenting known issues"
+      - "documenting assumptions"
+
+  - id: "provenance_guidelines"
+    path: "ai_prompts/provenance_guidelines.md"
+    format: "markdown"
+    role: "provenance classification and attribution guidance for dataset entries"
+    use_when:
+      - "documenting dataset provenance"
+      - "documenting method provenance"
+      - "documenting feature or derived-field provenance"
+      - "adding citations and attribution"
+
+  - id: "prompt_engineering_guidelines"
+    path: "ai_prompts/prompt_engineering_guidelines.md"
+    format: "markdown"
+    role: "rules for maintaining and evolving the prompt set"
+    use_when:
+      - "adding new prompt guidance"
+      - "deciding where a new lesson belongs"
+      - "reviewing prompt-set structure"
+
+  - id: "windows_environment"
+    path: "ai_prompts/environments/windows.md"
+    format: "markdown"
+    role: "Windows-specific execution and shell notes"
+    use_when:
+      - "running locally on Windows"
+      - "debugging PowerShell or local Python environment issues"
+
+  - id: "hpcc_environment"
+    path: "ai_prompts/environments/hpcc.md"
+    format: "markdown"
+    role: "HPCC / SLURM / module-runtime notes"
+    use_when:
+      - "running on HPCC"
+      - "using module-managed binaries"
+      - "debugging SLURM or shared-library issues"
+
+format_policy:
+  prompt_bodies:
+    preferred_format: "markdown"
+    rationale:
+      - "easy for humans to edit"
+      - "easy for AI models to read as instructions"
+      - "supports examples, checklists, and links cleanly"
+  routing_metadata:
+    preferred_format: "yaml"
+    rationale:
+      - "easy to parse"
+      - "good for indexing, discovery, and future tooling"
+
+maintenance_rules:
+  - "Keep CODEX.md short and route detailed guidance into ai_prompts/."
+  - "Keep canonical prompt bodies in Markdown unless a machine-only asset is needed."
+  - "Use YAML for manifests, indexes, and machine-readable routing metadata."

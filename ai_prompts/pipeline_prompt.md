@@ -9,6 +9,7 @@ You are writing a Research ETL pipeline YAML for this repo.
 Goal:
 - Produce one functional pipeline that builds or publishes exactly one reusable dataset.
 - A pipeline is defined here as a sequence of ETL steps whose final outcome is one dataset version, not a whole program of loosely related outputs.
+- Assume that every new pipeline must have a corresponding data-dictionary entry for its final dataset.
 
 Platform rules:
 - Prefer one dataset per pipeline YAML.
@@ -31,6 +32,9 @@ Pipeline shape:
 
 Dataset/output rules:
 - The pipeline must make the final reusable dataset obvious.
+- Every pipeline must produce exactly one dataset.
+- A dataset is a logical group of files containing observations/records, plus selected metadata directly related to those records.
+- Temporary or intermediate files that are not intended for use outside the pipeline are not part of the dataset.
 - Set a concrete, stable `dataset_id` that matches the dataset's intent and role.
 - Prefer catalog-aligned prefixes such as `raw.`, `ext.`, `stage.`, `model_in.`, `model_out.`, `serve.`, or `ref.`.
 - Use boring, machine-stable names: lowercase, structured tokens, clear subject, and an explicit `_vN` version when the dataset meaning changes.
@@ -42,6 +46,7 @@ Dataset/output rules:
 Authoring rules:
 - Reuse patterns already present in sibling repos like `../shared-etl-pipelines`, `../landcore-etl-pipelines`, and `../crop-insurance-etl-pipelines`.
 - When the target project maintains a data catalog, shape the pipeline so the resulting dataset is easy to document there: one canonical dataset, explicit storage target, clear lineage boundary, and an understandable grain.
+- Whenever a new pipeline is created, also create the corresponding data-dictionary entry according to the target sibling catalog/dictionary repo conventions.
 - Reuse existing plugins before proposing new ones.
 - If a custom Python script is required, call it through an existing execution plugin pattern already used by the repo.
 - Make idempotent choices where possible: avoid unnecessary overwrite/destructive settings unless the workflow needs them.
@@ -53,6 +58,7 @@ Validation and provenance rules:
 - Make step inputs/outputs traceable through `vars` or prior `output_var` values.
 - Prefer explicit final artifact paths and versioned targets.
 - Do not hide critical path decisions in prose; encode them in YAML fields.
+- Make the final dataset easy to document with explicit provenance and clear upstream lineage boundaries.
 - Consider hardware requirements for each step, especially memory-heavy combine, normalization, geospatial, and model-fit work.
 - First prefer stream-oriented or chunked processing patterns that reduce memory footprint instead of buffering whole inputs in memory.
 - If a step still legitimately needs more memory after that, add or increase executor resource requests explicitly; for SLURM-oriented runs, consider raising memory requests up to `64G` when justified by the workload.
@@ -65,9 +71,11 @@ What to return:
 
 Before finishing, check:
 - Does this pipeline produce exactly one reusable dataset?
+- Is the dataset definition clear enough that a corresponding data-dictionary entry can describe one logical dataset rather than a mix of temporary products?
 - Does the `dataset_id` follow the intended data class and stable naming convention?
 - Is the final dataset path or registration target explicit?
 - Is the dataset grain and lineage boundary clear from the steps and variables?
+- Have you also created or updated the corresponding data-dictionary entry for the final dataset?
 - Should any prerequisite work be split into `requires_pipelines`?
 - Are plugin names and argument shapes aligned with existing repo patterns?
 - Are `workdir` and `logdir` defined consistently?
