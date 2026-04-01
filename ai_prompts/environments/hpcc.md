@@ -23,6 +23,20 @@ error while loading shared libraries: libgdal.so.37: cannot open shared object f
 Working rule:
 
 - if a step uses a module-managed tool such as GDAL, R, or similar, load the module in the runtime shell before invoking the binary
+- if you wrap the command with `bash -lc`, separate setup commands with `&&`
+  and construct the final tool command explicitly
+
+Safe pattern:
+
+```text
+bash -lc "source /etc/profile && module purge && module load GDAL/3.11.1-foss-2025a && ogr2ogr ..."
+```
+
+Avoid:
+
+```text
+bash -lc source /etc/profile module purge module load GDAL ogr2ogr ...
+```
 
 ### GDAL / FileGDB note
 

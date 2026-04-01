@@ -45,6 +45,7 @@ When a pipeline session exposes a new issue:
 2. Capture the issue in the narrowest appropriate file.
 3. Only promote stable, recurring lessons into the main authoring prompt.
 4. If the issue is machine-checkable, prefer adding validation/linting in addition to prompt text.
+5. Environment-specific shell/runtime mistakes should usually go into `ai_prompts/environments/` and `pipeline_failure_patterns.md`, not only the main pipeline authoring prompt.
 
 ## What Belongs Where
 
@@ -121,6 +122,24 @@ After a pipeline task:
    - a validator
    - an example pipeline
 4. keep the change as small as possible
+
+## Post-Fix Rule
+
+After fixing a non-trivial bug, failure, or environment issue, ask:
+
+1. Is this likely to recur?
+2. Could a future AI make the same mistake again?
+3. Is the lesson general enough to help future work?
+
+If the answer is yes to any of the above:
+
+- update the relevant `ai_prompts/` file in the same task
+- unless the user explicitly says not to
+
+If the issue is machine-checkable:
+
+- also consider a validator, linter, framework guardrail, or helper abstraction
+- do not rely on prompt text alone when code enforcement would be stronger
 
 ## Current Direction
 

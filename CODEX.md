@@ -59,6 +59,13 @@ When a session uncovers a recurring failure, environment quirk, or reliable work
 2. keep the note concrete and operational
 3. if machine-checkable, prefer validator/framework enforcement in addition to prompt text
 
+When fixing a non-trivial bug, pipeline failure, or environment issue:
+
+1. check whether the issue is likely to recur
+2. check whether a future AI could make the same mistake again
+3. if yes, update the relevant `ai_prompts/` file as part of the same task unless the user explicitly says not to
+4. if the issue is machine-checkable, also consider whether validator/linter/framework enforcement is the better long-term fix
+
 ## Prompt Asset Layout
 
 - `ai_prompts/pipeline_prompt.md`
@@ -91,6 +98,8 @@ When a session uncovers a recurring failure, environment quirk, or reliable work
   - licensing, validation, missingness, known issues, and assumptions
 - `ai_prompts/prompt_engineering_guidelines.md`
   - how to maintain and evolve the prompt set
+- `ai_prompts/prompt_update_checklist.md`
+  - post-fix checklist for deciding whether prompt assets should be updated
 - `ai_prompts/environments/windows.md`
   - Windows-specific operational notes
 - `ai_prompts/environments/hpcc.md`

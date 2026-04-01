@@ -286,3 +286,62 @@ steps:
 
 **Notes**
 - This is common for GDAL, R, and other cluster-managed toolchains.
+
+---
+
+### Pattern: `shell_wrapped_module_command_must_use_command_separators`
+
+**Status**
+- `active`
+
+**Category**
+- `hpcc`
+
+**Symptom**
+- A wrapped `bash -lc` command appears to run, but the tool never executes or
+  expected outputs are missing.
+- Downstream code fails with missing output files even though the logged command
+  looks superficially correct.
+
+**Example Error**
+```text
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/.../IL.valu1.tmp.csv'
+```
+
+**Root Cause**
+- A shell wrapper concatenated setup commands like `source /etc/profile`,
+  `module purge`, `module load`, and the final binary invocation without shell
+  separators such as `&&` or `;`.
+- The resulting `bash -lc` string was malformed, so the tool did not actually run.
+
+**Preferred Fix**
+- Build the actual tool command separately.
+- Join shell setup steps and the final command with `&&` so failures stop the chain cleanly.
+- Log the full shell command when debugging module-managed execution.
+
+**Prompt Rule**
+- When invoking a module-managed binary through `bash -lc`, separate setup commands with `&&` and build the final tool command explicitly instead of concatenating shell fragments with spaces.
+
+**Validator/Linter Opportunity**
+- `yes`
+- Warn in wrapper scripts or generated shell strings when multiple shell setup commands are concatenated without separators.
+
+**Example Bad Pattern**
+```text
+bash -lc source /etc/profile module purge module load GDAL ogr2ogr ...
+```
+
+**Example Good Pattern**
+```text
+bash -lc "source /etc/profile && module purge && module load GDAL && ogr2ogr ..."
+```
+
+**Applies To**
+- HPCC and other module-managed environments
+
+**Related Files**
+- [`pipeline_failure_triage_checklist.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/pipeline_failure_triage_checklist.md)
+- [`environments/hpcc.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/environments/hpcc.md)
+
+**Notes**
+- This is a shell-construction mistake, not a GDAL-specific mistake.

@@ -140,6 +140,15 @@ prompt_assets:
       - "deciding where a new lesson belongs"
       - "reviewing prompt-set structure"
 
+  - id: "prompt_update_checklist"
+    path: "ai_prompts/prompt_update_checklist.md"
+    format: "markdown"
+    role: "post-fix checklist for deciding whether prompt assets should be updated"
+    use_when:
+      - "after fixing a non-trivial bug"
+      - "after fixing a pipeline failure"
+      - "after fixing an environment-specific problem"
+
   - id: "windows_environment"
     path: "ai_prompts/environments/windows.md"
     format: "markdown"
