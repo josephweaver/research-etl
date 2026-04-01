@@ -923,9 +923,12 @@ def test_slurm_hpcc_bootstrap_uses_portable_venv_and_loads_modules_before_activa
     setup_script = calls[0]["script_text"]
     batch_script = calls[1]["script_text"]
     assert "$PYTHON -m venv --copies \"$VENV\"" in setup_script
+    assert "existing venv interpreter failed smoke test; rebuilding" in setup_script
+    assert "refusing to remove venv outside ETL_REPO_ROOT" in setup_script
     assert "module load Python/3.11.3-GCCcore-12.3.0" in batch_script
     assert "source \"$VENV/bin/activate\"" in batch_script
     assert batch_script.index("module load Python/3.11.3-GCCcore-12.3.0") < batch_script.index("source \"$VENV/bin/activate\"")
+    assert "runtime venv interpreter failed smoke test; rerun setup job to rebuild" in batch_script
 
 
 def test_slurm_includes_db_tunnel_command_in_setup_and_batch_scripts(monkeypatch, tmp_path: Path) -> None:

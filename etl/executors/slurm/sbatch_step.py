@@ -127,6 +127,10 @@ def render_step_script(
         if executor.verbose:
             chunk_runtime_bootstrap.append("log_step 'loading optional secrets file (values hidden)'")
         chunk_runtime_bootstrap.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
+    chunk_runtime_bootstrap.append("if [ ! -x \"$VENV/bin/python\" ] || ! \"$VENV/bin/python\" -c 'import sys' >/dev/null 2>&1; then")
+    chunk_runtime_bootstrap.append("  echo \"[etl][step] runtime venv interpreter failed smoke test; rerun setup job to rebuild: $VENV\" >&2")
+    chunk_runtime_bootstrap.append("  exit 1")
+    chunk_runtime_bootstrap.append("fi")
 
     if executor.env.modules:
         for mod in executor.env.modules:
