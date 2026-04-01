@@ -7,9 +7,14 @@ Keep this file short. Detailed guidance belongs in `ai_prompts/`.
 
 ## Primary Routing
 
+For system-level orientation or cross-repo architectural questions:
+
+- read [`ai_prompts/architecture_overview.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/architecture_overview.md)
+
 For pipeline authoring work:
 
 - read [`ai_prompts/pipeline_prompt.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/pipeline_prompt.md)
+- read [`ai_prompts/plugin_selection.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/plugin_selection.md) when choosing plugins
 - then read [`ai_prompts/pipeline_template.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/pipeline_template.md)
 - use [`ai_prompts/pipeline_intake_checklist.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/pipeline_intake_checklist.md) to determine what information is still missing
 - then inspect relevant example pipelines in the target repo
@@ -59,6 +64,12 @@ When a session uncovers a recurring failure, environment quirk, or reliable work
 2. keep the note concrete and operational
 3. if machine-checkable, prefer validator/framework enforcement in addition to prompt text
 
+When a session uncovers reusable plugin understanding:
+
+1. check whether the plugin is subtle, easy to misuse, or repeatedly used
+2. if yes, add or update a short note under `ai_prompts/plugins/`
+3. treat `ai_prompts/plugins/` as a cache of learned plugin usage guidance
+
 When fixing a non-trivial bug, pipeline failure, or environment issue:
 
 1. check whether the issue is likely to recur
@@ -70,6 +81,10 @@ When fixing a non-trivial bug, pipeline failure, or environment issue:
 
 - `ai_prompts/pipeline_prompt.md`
   - canonical pipeline authoring rules
+- `ai_prompts/plugin_selection.md`
+  - how to choose among existing plugins
+- `ai_prompts/architecture_overview.md`
+  - high-level system map for repo roles, datasets, pipelines, and lifecycle
 - `ai_prompts/pipeline_template.md`
   - starter pipeline shape
 - `ai_prompts/pipeline_intake_checklist.md`
@@ -104,3 +119,5 @@ When fixing a non-trivial bug, pipeline failure, or environment issue:
   - Windows-specific operational notes
 - `ai_prompts/environments/hpcc.md`
   - HPCC / SLURM / module-environment notes
+- `ai_prompts/plugins/`
+  - cached plugin-specific usage guidance for subtle or high-value plugins

@@ -6,6 +6,16 @@ root_router:
   notes: "Root routing file that tells the AI which prompt assets to read for which task."
 
 prompt_assets:
+  - id: "architecture_overview"
+    path: "ai_prompts/architecture_overview.md"
+    format: "markdown"
+    role: "system-level architecture overview for the ETL ecosystem"
+    use_when:
+      - "answering architecture questions"
+      - "reasoning across repos"
+      - "deciding where a change belongs"
+      - "onboarding to the ETL ecosystem"
+
   - id: "pipeline_authoring"
     path: "ai_prompts/pipeline_prompt.md"
     format: "markdown"
@@ -14,6 +24,15 @@ prompt_assets:
       - "drafting a new pipeline"
       - "revising pipeline structure"
       - "checking authoring standards"
+
+  - id: "plugin_selection"
+    path: "ai_prompts/plugin_selection.md"
+    format: "markdown"
+    role: "guide for choosing among existing plugins"
+    use_when:
+      - "authoring a new pipeline"
+      - "deciding whether to use a plugin or a script"
+      - "choosing among multiple plausible plugins"
 
   - id: "pipeline_template"
     path: "ai_prompts/pipeline_template.md"

@@ -65,6 +65,13 @@ Add to an environment note when:
 - the issue depends on the execution environment
 - the same pipeline would behave differently on another machine
 
+Add to `ai_prompts/plugins/` when:
+
+- a plugin is repeatedly used
+- the plugin contract is subtle or easy to misuse
+- a development session uncovers reusable plugin-specific guidance
+- the code header alone is not enough to help the AI use the plugin correctly
+
 Add a validator or framework change when:
 
 - the mistake can be detected automatically
@@ -78,6 +85,7 @@ Add a validator or framework change when:
 - Do not mix environment quirks into the main pipeline authoring prompt unless they are nearly universal.
 - Do not turn one-off incidents into permanent prompt clutter.
 - Do not solve framework validation problems only with prompt text.
+- Do not document every plugin by default; only cache high-value or easy-to-misuse plugin knowledge.
 
 ## Review Questions
 
