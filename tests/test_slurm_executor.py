@@ -887,6 +887,47 @@ def test_slurm_can_disable_loading_remote_secrets_file(monkeypatch, tmp_path: Pa
     assert "$HOME/.secrets/etl" not in batch_script
 
 
+def test_slurm_hpcc_bootstrap_uses_portable_venv_and_loads_modules_before_activation(monkeypatch, tmp_path: Path) -> None:
+    pipeline = Pipeline(steps=[Step(name="s1", script="echo.py")])
+    monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)
+    monkeypatch.setattr(slurm_mod, "upsert_run_status", lambda **_: None)
+
+    calls = []
+
+    def _fake_submit_script(
+        self,
+        script_text,
+        run_id,
+        label="job",
+        prev_dependency=None,
+        array_bounds=None,
+        remote_dest_dir=None,
+    ):
+        calls.append({"label": label, "script_text": script_text})
+        return f"job{len(calls)}"
+
+    monkeypatch.setattr(SlurmExecutor, "_submit_script", _fake_submit_script)
+
+    ex = SlurmExecutor(
+        {
+            "workdir": "/tmp/work",
+            "logdir": "/tmp/logs",
+            "modules": ["Python/3.11.3-GCCcore-12.3.0"],
+        },
+        repo_root=tmp_path,
+        plugins_dir=Path("plugins"),
+        dry_run=False,
+    )
+    ex.submit("pipelines/sample.yml", {"run_id": "runabc1234"})
+
+    setup_script = calls[0]["script_text"]
+    batch_script = calls[1]["script_text"]
+    assert "$PYTHON -m venv --copies \"$VENV\"" in setup_script
+    assert "module load Python/3.11.3-GCCcore-12.3.0" in batch_script
+    assert "source \"$VENV/bin/activate\"" in batch_script
+    assert batch_script.index("module load Python/3.11.3-GCCcore-12.3.0") < batch_script.index("source \"$VENV/bin/activate\"")
+
+
 def test_slurm_includes_db_tunnel_command_in_setup_and_batch_scripts(monkeypatch, tmp_path: Path) -> None:
     pipeline = Pipeline(steps=[Step(name="s1", script="echo.py")])
     monkeypatch.setattr(slurm_mod, "parse_pipeline", lambda *_args, **_kwargs: pipeline)

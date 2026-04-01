@@ -374,7 +374,7 @@ class HpccDirectExecutor(Executor):
         else:
             lines.append(
                 "VENV=\"$CHECKOUT_ROOT/.venv\"; "
-                f"if [ ! -f \"$VENV/bin/activate\" ]; then {shlex.quote(self.remote_python)} -m venv \"$VENV\"; fi; "
+                f"if [ ! -f \"$VENV/bin/activate\" ]; then {shlex.quote(self.remote_python)} -m venv --copies \"$VENV\"; fi; "
                 "source \"$VENV/bin/activate\""
             )
         self._append_db_tunnel_lines(lines)
@@ -774,6 +774,11 @@ class HpccDirectExecutor(Executor):
             if self.projects_config
             else None
         )
+        environments_remote = (
+            self._map_repo_path_for_root(self.environments_config.resolve(), repo_root_remote, label="environments_config")
+            if self.environments_config
+            else None
+        )
 
         # Execute run_batch with the interpreter from the activated runtime
         # environment (venv/conda), not the bootstrap interpreter.
@@ -963,7 +968,7 @@ class HpccDirectExecutor(Executor):
         else:
             runtime_lines.append(
                 "VENV=\"$CHECKOUT_ROOT/.venv\"; "
-                f"if [ ! -f \"$VENV/bin/activate\" ]; then {shlex.quote(self.remote_python)} -m venv \"$VENV\"; fi; "
+                f"if [ ! -f \"$VENV/bin/activate\" ]; then {shlex.quote(self.remote_python)} -m venv --copies \"$VENV\"; fi; "
                 "source \"$VENV/bin/activate\""
             )
         runtime_lines.append(

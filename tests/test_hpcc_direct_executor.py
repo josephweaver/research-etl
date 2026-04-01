@@ -108,6 +108,7 @@ def test_hpcc_direct_submit_runs_remote_run_batch(monkeypatch, tmp_path: Path) -
     assert "--steps 0,1" in remote_script
     assert "--project-id land_core" in remote_script
     assert "--context-file /scratch/alice/runs/_builder_sessions/runabc/context.json" in remote_script
+    assert any("-m venv --copies" in script for script in seen_scripts)
 
 
 def test_hpcc_direct_submit_uses_pipeline_remote_hint_for_external_pipeline(monkeypatch, tmp_path: Path) -> None:

@@ -274,7 +274,7 @@ def render_setup_script(
             chunk_venv_bootstrap.append("log_step 'loading optional secrets file (values hidden)'")
         chunk_venv_bootstrap.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
     chunk_venv_bootstrap.append("if [ ! -f \"$VENV/bin/activate\" ]; then")
-    chunk_venv_bootstrap.append("  $PYTHON -m venv \"$VENV\"")
+    chunk_venv_bootstrap.append("  $PYTHON -m venv --copies \"$VENV\"")
     chunk_venv_bootstrap.append("fi")
     chunk_venv_bootstrap.append("if [ ! -f \"$VENV/bin/activate\" ]; then echo \"[etl][setup] venv activation script missing: $VENV/bin/activate\" >&2; exit 1; fi")
     if executor.verbose:

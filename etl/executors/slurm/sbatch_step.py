@@ -68,6 +68,7 @@ def render_step_script(
     chunk_runtime_flags: list[str] = []
     chunk_runtime_bootstrap: list[str] = []
     chunk_modules: list[str] = []
+    chunk_runtime_ready: list[str] = []
     chunk_step_scope: list[str] = []
     chunk_run_batch: list[str] = []
     eff_time = str(sbatch_time or executor.env.time or "").strip() or None
@@ -126,12 +127,6 @@ def render_step_script(
         if executor.verbose:
             chunk_runtime_bootstrap.append("log_step 'loading optional secrets file (values hidden)'")
         chunk_runtime_bootstrap.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
-    chunk_runtime_bootstrap.append("source \"$VENV/bin/activate\"")
-    executor._append_db_tunnel_database_url_rewrite_lines(chunk_runtime_bootstrap, python_expr="\"$VENV/bin/python\"")
-    chunk_runtime_bootstrap.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
-    chunk_runtime_bootstrap.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
-    chunk_runtime_bootstrap.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
-    chunk_runtime_bootstrap.append("fi")
 
     if executor.env.modules:
         for mod in executor.env.modules:
@@ -142,6 +137,14 @@ def render_step_script(
         if executor.verbose:
             chunk_modules.append("log_step 'activating conda environment'")
         chunk_modules.append(f"source activate {executor.env.conda_env}")
+    if executor.verbose:
+        chunk_runtime_ready.append("log_step 'activating venv after module setup'")
+    chunk_runtime_ready.append("source \"$VENV/bin/activate\"")
+    executor._append_db_tunnel_database_url_rewrite_lines(chunk_runtime_ready, python_expr="\"$VENV/bin/python\"")
+    chunk_runtime_ready.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
+    chunk_runtime_ready.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
+    chunk_runtime_ready.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
+    chunk_runtime_ready.append("fi")
 
     env_workdir = Path(workdir).as_posix()
     if executor.verbose:
@@ -228,6 +231,7 @@ def render_step_script(
             "chunk_runtime_flags": _render_chunk("runtime_flags", chunk_runtime_flags),
             "chunk_runtime_bootstrap": _render_chunk("runtime_bootstrap", _with_chunk_logs(chunk_runtime_bootstrap, "runtime_bootstrap", executor.verbose)),
             "chunk_modules": _render_chunk("modules", _with_chunk_logs(chunk_modules, "modules", executor.verbose)),
+            "chunk_runtime_ready": _render_chunk("runtime_ready", _with_chunk_logs(chunk_runtime_ready, "runtime_ready", executor.verbose)),
             "chunk_step_scope": _render_chunk("step_scope", _with_chunk_logs(chunk_step_scope, "step_scope", executor.verbose)),
             "chunk_run_batch": _render_chunk("run_batch", _with_chunk_logs(chunk_run_batch, "run_batch", executor.verbose)),
         },

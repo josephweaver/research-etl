@@ -54,6 +54,13 @@ Implication:
 - Remote HPCC setup depends on `requirements.txt`.
 - Dependency changes needed by remote jobs must be added there, not only installed locally.
 
+### Python virtualenv portability across node types
+
+- ICER documents `Illegal instruction` failures when a virtualenv or pip-installed packages are created on one node type and reused on another.
+- Prefer creating HPCC virtual environments with `python -m venv --copies`.
+- For compatibility, create or refresh shared virtual environments from `dev-amd20` rather than from a newer or more specialized node type.
+- In job scripts, load the matching Python module before activating the virtual environment.
+
 ### Secret propagation for remote runs
 
 - Remote jobs do not automatically receive all local environment secrets.
