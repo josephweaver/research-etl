@@ -165,6 +165,56 @@ def test_assign_polygon_fips_extracts_tile_id_from_filename() -> None:
     assert mod._extract_tile_id("WELD_h12v05_2010_field_segments.gpkg") == "h12v05"
 
 
+def test_assign_polygon_fips_allows_empty_inputs(tmp_path: Path) -> None:
+    geopandas = pytest.importorskip("geopandas")
+    pandas = pytest.importorskip("pandas")
+
+    mod = _load_module(
+        "assign_polygon_fips", ASSET_REPO / "scripts/yanroy/assign_polygon_fips.py"
+    )
+
+    input_vector = tmp_path / "WELD_h17v12_2010_field_segments.gpkg"
+    county_path = tmp_path / "county.gpkg"
+    output_vector = tmp_path / "output.gpkg"
+    summary_json = tmp_path / "summary.json"
+
+    empty_fields = geopandas.GeoDataFrame(
+        {"field_id": pandas.Series(dtype="object")},
+        geometry=geopandas.GeoSeries([], crs="EPSG:5070"),
+        crs="EPSG:5070",
+    )
+    empty_fields.to_file(input_vector, driver="GPKG")
+
+    county_gdf = geopandas.GeoDataFrame(
+        {
+            "GEOID": ["17001"],
+            "NAME": ["Adams"],
+            "NAMELSAD": ["Adams County"],
+            "STATEFP": ["17"],
+            "COUNTYFP": ["001"],
+        },
+        geometry=geopandas.GeoSeries.from_wkt(["POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"], crs="EPSG:5070"),
+        crs="EPSG:5070",
+    )
+    county_gdf.to_file(county_path, driver="GPKG")
+
+    result = mod.assign_polygon_fips(
+        input_vector=input_vector,
+        county_path=county_path,
+        output_vector=output_vector,
+        summary_json=summary_json,
+        tile="h17v12",
+        overwrite=True,
+    )
+
+    assert result["tile"] == "h17v12"
+    assert result["input_row_count"] == 0
+    assert result["output_row_count"] == 0
+    assert result["empty_input"] is True
+    assert output_vector.exists()
+    assert summary_json.exists()
+
+
 def test_simplify_geojson_geometry_rejects_negative_tolerance(tmp_path: Path) -> None:
     mod = _load_module(
         "simplify_geojson_geometry", ASSET_REPO / "scripts/yanroy/simplify_geojson_geometry.py"
