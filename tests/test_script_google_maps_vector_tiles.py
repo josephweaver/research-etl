@@ -163,3 +163,19 @@ def test_assign_polygon_fips_extracts_tile_id_from_filename() -> None:
     )
 
     assert mod._extract_tile_id("WELD_h12v05_2010_field_segments.gpkg") == "h12v05"
+
+
+def test_simplify_geojson_geometry_rejects_negative_tolerance(tmp_path: Path) -> None:
+    mod = _load_module(
+        "simplify_geojson_geometry", ASSET_REPO / "scripts/yanroy/simplify_geojson_geometry.py"
+    )
+
+    input_vector = tmp_path / "input.geojson"
+    input_vector.write_text('{"type":"FeatureCollection","features":[]}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        mod.simplify_geojson_geometry(
+            input_vector=input_vector,
+            output_vector=tmp_path / "output.geojson",
+            tolerance=-1.0,
+        )
