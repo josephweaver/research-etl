@@ -928,8 +928,7 @@ def test_slurm_hpcc_bootstrap_uses_portable_venv_and_loads_modules_before_activa
     assert "ETL_SETUP_CPU_MODEL=\"$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^ +/, \"\", $2); print $2; exit}' || echo unknown-cpu)\"" in setup_script
     assert "ETL_SETUP_CPU_FLAGS=\"$(lscpu 2>/dev/null | awk -F: '/Flags/ {gsub(/^ +/, \"\", $2); print $2; exit}' || echo unknown-flags)\"" in setup_script
     assert "ETL_VENV_INFO=\"$VENV/.etl_venv_build_info\"" in setup_script
-    assert "setup_hostname=$ETL_SETUP_HOSTNAME" in setup_script
-    assert "setup_cpu_flags=$ETL_SETUP_CPU_FLAGS" in setup_script
+    assert "printf 'setup_hostname=%q\\nsetup_arch=%q\\nsetup_cpu_model=%q\\nsetup_cpu_flags=%q\\nvenv_path=%q\\nrepo_root=%q\\n'" in setup_script
     assert "existing venv interpreter failed smoke test; rebuilding" in setup_script
     assert "refusing to remove venv outside ETL_REPO_ROOT" in setup_script
     assert "module load Python/3.11.3-GCCcore-12.3.0" in batch_script
