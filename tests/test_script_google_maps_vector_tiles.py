@@ -123,6 +123,40 @@ def test_normalize_polygon_field_ids_coerces_integer_like_values() -> None:
     assert mod._normalize_field_id("1673") == 1673
 
 
+def test_normalize_polygon_field_ids_allows_empty_inputs(tmp_path: Path) -> None:
+    geopandas = pytest.importorskip("geopandas")
+    pandas = pytest.importorskip("pandas")
+
+    mod = _load_module(
+        "normalize_polygon_field_ids", ASSET_REPO / "scripts/yanroy/normalize_polygon_field_ids.py"
+    )
+
+    input_vector = tmp_path / "input.gpkg"
+    output_vector = tmp_path / "output.gpkg"
+    summary_json = tmp_path / "summary.json"
+
+    empty_gdf = geopandas.GeoDataFrame(
+        {"field_id": pandas.array([], dtype="Int64")},
+        geometry=geopandas.GeoSeries([], crs="EPSG:5070"),
+        crs="EPSG:5070",
+    )
+    empty_gdf.to_file(input_vector, driver="GPKG")
+
+    result = mod.normalize_polygon_field_ids(
+        input_vector=input_vector,
+        output_vector=output_vector,
+        summary_json=summary_json,
+        overwrite=True,
+    )
+
+    assert result["row_count"] == 0
+    assert result["changed_rows"] == 0
+    assert result["output_type"] == "integer"
+    assert result["empty_input"] is True
+    assert output_vector.exists()
+    assert summary_json.exists()
+
+
 def test_assign_polygon_fips_extracts_tile_id_from_filename() -> None:
     mod = _load_module(
         "assign_polygon_fips", ASSET_REPO / "scripts/yanroy/assign_polygon_fips.py"

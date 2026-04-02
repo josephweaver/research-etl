@@ -57,6 +57,8 @@ Authoring rules:
 - Avoid authoring pipelines that generate one log file, summary file, or tiny intermediate artifact per fanout item unless there is a concrete operational reason.
 - When parallel execution must emit per-item logs or fragments, prefer a follow-up aggregation step that merges them into a single durable log or summary artifact.
 - After aggregation, prefer cleaning up per-item fanout artifacts when they are temporary and are no longer required for downstream steps, provenance, or debugging.
+- When inputs may occasionally defy shape or content expectations, prefer a quarantine pattern over hard failure: copy or move the offending input plus a short reason record into a bounded `error_dir` when that preserves overall dataset production safely.
+- Use an `error_dir` only for exceptional inputs that need operator review; keep it bounded, clearly named, and separate from the final dataset outputs.
 - Keep comments short and only where they prevent confusion.
 
 Validation and provenance rules:
@@ -69,6 +71,7 @@ Validation and provenance rules:
 - First prefer stream-oriented or chunked processing patterns that reduce memory footprint instead of buffering whole inputs in memory.
 - Also prefer artifact-efficient patterns that reduce file-count pressure on Unix filesystems and shared workdirs, especially under high-parallel fanout.
 - If fanout creates unavoidable per-item artifacts, plan the post-fanout consolidation step explicitly in the pipeline instead of leaving cleanup implicit.
+- If a step is likely to encounter a small number of malformed, empty, or otherwise unexpected inputs, prefer quarantining those inputs into an `error_dir` with a compact manifest instead of aborting the entire run, unless correctness requires fail-fast behavior.
 - If a step still legitimately needs more memory after that, add or increase executor resource requests explicitly; for SLURM-oriented runs, consider raising memory requests up to `64G` when justified by the workload.
 
 What to return:
@@ -91,6 +94,7 @@ Before finishing, check:
 - Have hardware requirements been considered, with memory footprint reduced via streaming/chunking first and only then higher SLURM memory requests up to `64G` if needed?
 - Does the pipeline keep parallelism high without exploding the number of files, summaries, or per-item log artifacts?
 - If the pipeline creates unavoidable per-item fanout artifacts, does it also aggregate and clean them up when safe?
+- If the workflow can safely continue past a small number of bad inputs, is there an explicit `error_dir` or quarantine path rather than a brittle all-or-nothing failure mode?
 
 ## Suggested Invocation
 

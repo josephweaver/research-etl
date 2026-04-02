@@ -431,3 +431,72 @@ steps:
 - This is not an argument against parallelism; it is a constraint on how fanout materializes artifacts.
 - Logging is a major multiplier. A future framework change should support aggregated or artifact-budgeted logging for fanout steps.
 - A good default pattern is: parallel fanout, explicit aggregation, then cleanup of temporary fanout byproducts.
+
+---
+
+### Pattern: `unexpected_input_should_be_quarantined`
+
+**Status**
+- `active`
+
+**Category**
+- `data-shape`
+
+**Symptom**
+- A pipeline aborts because one or a few inputs are malformed, empty, or otherwise outside the expected shape, even though the rest of the batch could have completed successfully.
+
+**Example Error**
+```text
+RuntimeError: input vector has no features: /path/to/input.gpkg
+```
+
+**Root Cause**
+- A step encoded strict expectations directly into runtime behavior and treated every unexpected input as fatal.
+- The workflow lacked a quarantine path for exceptional inputs that deserve operator review but should not necessarily stop the entire dataset build.
+
+**Preferred Fix**
+- When correctness allows partial completion, copy or move the offending input into a bounded `error_dir` and emit a compact manifest or reason record.
+- Keep quarantined inputs separate from the final dataset and from normal temporary outputs.
+- Reserve fail-fast behavior for cases where a bad input invalidates the whole dataset or would hide a systemic upstream problem.
+
+**Prompt Rule**
+- If a small number of malformed or empty inputs can be isolated safely, quarantine them into an `error_dir` with a short reason record instead of aborting the entire pipeline.
+
+**Validator/Linter Opportunity**
+- `yes`
+- Warn when a high-fanout pipeline has strict per-item runtime checks but no explicit quarantine/error-handling path.
+- Future framework TODO: add first-class step/plugin support for bounded `error_dir` outputs and compact per-item error manifests.
+
+**Example Bad Pattern**
+```yaml
+steps:
+  - name: "{sys.step.NN}_normalize_vectors"
+    plugin: exec_script
+    foreach: tiles
+    args:
+      script: "scripts/normalize.py"
+      script_args: "--input \"{item_input}\" --output \"{item_output}\""
+```
+
+**Example Good Pattern**
+```yaml
+vars:
+  error_dir: "{workdir}/errors"
+steps:
+  - name: "{sys.step.NN}_normalize_vectors"
+    plugin: exec_script
+    foreach: tiles
+    args:
+      script: "scripts/normalize.py"
+      script_args: "--input \"{item_input}\" --output \"{item_output}\" --error-dir \"{error_dir}\""
+```
+
+**Applies To**
+- High-fanout pipelines, geospatial/vector normalization, file ingestion, validation-heavy ETL steps
+
+**Related Files**
+- [`pipeline_prompt.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/pipeline_prompt.md)
+- [`pipeline_failure_triage_checklist.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/pipeline_failure_triage_checklist.md)
+
+**Notes**
+- Quarantine is not a license to ignore data quality. Use it when the batch can still produce a useful dataset and the bad inputs remain visible for follow-up.

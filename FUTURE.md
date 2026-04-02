@@ -129,6 +129,11 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
 - YanRoy geo plugin and pipeline backlog from `FUTURE/geo.plugins.todo.md`
 - generalized data-zone redesign (`work`, `cache`, `publish`) beyond immediate delivery needs
 - generic validation-plugin templates, retention policy automation, checksum manifest systems, and similar framework work unless needed for current dataset publication
+- first-class quarantine / `error_dir` handling for pipelines, plugins, and scripts:
+  - allow steps to route malformed, empty, or otherwise unexpected inputs into a bounded `error_dir` instead of always failing the whole run
+  - emit compact machine-readable error manifests/reason codes rather than one verbose file per bad input
+  - support optional post-run aggregation/reporting for quarantined inputs
+  - define clear policy for when quarantine is allowed versus when fail-fast is required for correctness
 - `combine_files` further streaming work beyond the current CSV fix:
   - JSON/YAML/XML/text paths still materialize full inputs or merged payloads in memory
   - if these become an HPCC/runtime blocker, add one-file-at-a-time streaming/append strategies where the format allows it
