@@ -61,7 +61,8 @@ Implication:
 - For compatibility, create or refresh shared virtual environments from `dev-amd20` rather than from a newer or more specialized node type.
 - In job scripts, load the matching Python module before activating the virtual environment.
 - If a SLURM step job fails on `import etl.run_batch` or `pip install -e` with `Illegal instruction`, suspect node-type incompatibility in the shared venv before suspecting the pipeline logic.
-- Do not let parallel SLURM step jobs repair the shared venv in place. Rebuild or refresh the venv from the setup job on a compatible node type instead.
+- Prefer family-specific virtual environments on heterogeneous HPCC hardware (for example separate `amr` and `skl` venvs) rather than one cluster-wide shared venv.
+- If step jobs lazily create family-specific venvs, guard creation/install with a lock so parallel jobs do not race while bootstrapping the same family cache.
 
 ### Secret propagation for remote runs
 

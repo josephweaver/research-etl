@@ -62,7 +62,6 @@ def render_step_script(
     foreach_item_offset: int = 0,
     flatten_vars_for_cli=None,
 ) -> str:
-    _ = req_path
     logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
     sbatch_lines: list[str] = []
     chunk_runtime_flags: list[str] = []
@@ -115,6 +114,7 @@ def render_step_script(
         chunk_runtime_bootstrap.append("log_step 'activating runtime environment'")
     chunk_runtime_bootstrap.append(f"PYTHON={python_bin}")
     chunk_runtime_bootstrap.append(f"VENV={venv_path}")
+    chunk_runtime_bootstrap.append("VENV_BASE=\"$VENV\"")
     chunk_runtime_bootstrap.append(f"export ETL_REPO_ROOT={checkout_root}")
     chunk_runtime_bootstrap.append(
         "if [ -z \"${ETL_PIPELINE_ASSET_CACHE_ROOT:-}\" ]; then export ETL_PIPELINE_ASSET_CACHE_ROOT=\"$(dirname \"$ETL_REPO_ROOT\")\"; fi"
@@ -128,19 +128,13 @@ def render_step_script(
             chunk_runtime_bootstrap.append("log_step 'loading optional secrets file (values hidden)'")
         chunk_runtime_bootstrap.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
     chunk_runtime_bootstrap.append("ETL_HOSTNAME=\"$(hostname 2>/dev/null || echo unknown-host)\"")
+    chunk_runtime_bootstrap.append("ETL_NODE_FAMILY=\"$(printf '%s' \"$ETL_HOSTNAME\" | awk -F- '{print $1}')\"")
     chunk_runtime_bootstrap.append("ETL_ARCH=\"$(uname -m 2>/dev/null || echo unknown-arch)\"")
     chunk_runtime_bootstrap.append("ETL_CPU_MODEL=\"$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^ +/, \"\", $2); print $2; exit}' || echo unknown-cpu)\"")
     chunk_runtime_bootstrap.append("ETL_CPU_FLAGS=\"$(lscpu 2>/dev/null | awk -F: '/Flags/ {gsub(/^ +/, \"\", $2); print $2; exit}' || echo unknown-flags)\"")
+    chunk_runtime_bootstrap.append("if [ -z \"$ETL_NODE_FAMILY\" ]; then ETL_NODE_FAMILY=\"$ETL_ARCH\"; fi")
+    chunk_runtime_bootstrap.append("VENV=\"$VENV_BASE-$ETL_NODE_FAMILY\"")
     chunk_runtime_bootstrap.append("ETL_VENV_INFO=\"$VENV/.etl_venv_build_info\"")
-    chunk_runtime_bootstrap.append("if [ -f \"$ETL_VENV_INFO\" ]; then source \"$ETL_VENV_INFO\"; fi")
-    chunk_runtime_bootstrap.append("if [ ! -x \"$VENV/bin/python\" ] || ! \"$VENV/bin/python\" -c 'import sys' >/dev/null 2>&1; then")
-    chunk_runtime_bootstrap.append("  echo \"[etl][step] runtime venv interpreter failed smoke test; rerun setup job to rebuild: $VENV\" >&2")
-    chunk_runtime_bootstrap.append("  echo \"[etl][step] runtime host=$ETL_HOSTNAME arch=$ETL_ARCH cpu=$ETL_CPU_MODEL\" >&2")
-    chunk_runtime_bootstrap.append("  echo \"[etl][step] runtime cpu_flags=$ETL_CPU_FLAGS\" >&2")
-    chunk_runtime_bootstrap.append("  if [ -n \"${setup_hostname:-}\" ] || [ -n \"${setup_arch:-}\" ] || [ -n \"${setup_cpu_model:-}\" ]; then echo \"[etl][step] venv built on host=${setup_hostname:-unknown} arch=${setup_arch:-unknown} cpu=${setup_cpu_model:-unknown}\" >&2; fi")
-    chunk_runtime_bootstrap.append("  if [ -n \"${setup_cpu_flags:-}\" ]; then echo \"[etl][step] venv build cpu_flags=${setup_cpu_flags}\" >&2; fi")
-    chunk_runtime_bootstrap.append("  exit 1")
-    chunk_runtime_bootstrap.append("fi")
 
     if executor.env.modules:
         for mod in executor.env.modules:
@@ -151,20 +145,44 @@ def render_step_script(
         if executor.verbose:
             chunk_modules.append("log_step 'activating conda environment'")
         chunk_modules.append(f"source activate {executor.env.conda_env}")
+    chunk_runtime_ready.append(f"REQ_PATH={shlex.quote(req_path)}")
+    chunk_runtime_ready.append("ETL_VENV_LOCKDIR=\"$VENV.lockdir\"")
+    chunk_runtime_ready.append("acquire_venv_lock(){ while ! mkdir \"$ETL_VENV_LOCKDIR\" 2>/dev/null; do sleep 2; done; }")
+    chunk_runtime_ready.append("release_venv_lock(){ rmdir \"$ETL_VENV_LOCKDIR\" 2>/dev/null || true; }")
+    chunk_runtime_ready.append("rebuild_venv(){")
+    chunk_runtime_ready.append("  if [ -d \"$VENV\" ]; then")
+    chunk_runtime_ready.append("    case \"$VENV\" in")
+    chunk_runtime_ready.append("      \"$ETL_REPO_ROOT\"/*) rm -rf \"$VENV\" ;;")
+    chunk_runtime_ready.append("      *) echo \"[etl][step] refusing to remove venv outside ETL_REPO_ROOT: $VENV\" >&2; exit 1 ;;")
+    chunk_runtime_ready.append("    esac")
+    chunk_runtime_ready.append("  fi")
+    chunk_runtime_ready.append("  $PYTHON -m venv --copies \"$VENV\"")
+    chunk_runtime_ready.append("}")
+    chunk_runtime_ready.append("acquire_venv_lock")
+    if executor.verbose:
+        chunk_runtime_ready.append("log_step 'ensuring family-specific runtime venv exists'")
+    chunk_runtime_ready.append("if [ ! -f \"$VENV/bin/activate\" ]; then rebuild_venv; fi")
+    chunk_runtime_ready.append("if [ -x \"$VENV/bin/python\" ] && ! \"$VENV/bin/python\" -c 'import sys' >/dev/null 2>&1; then")
+    chunk_runtime_ready.append("  echo \"[etl][step] existing family venv interpreter failed smoke test; rebuilding: $VENV\" >&2")
+    chunk_runtime_ready.append("  rebuild_venv")
+    chunk_runtime_ready.append("fi")
+    chunk_runtime_ready.append("if [ ! -f \"$VENV/bin/activate\" ]; then echo \"[etl][step] venv activation script missing: $VENV/bin/activate\" >&2; release_venv_lock; exit 1; fi")
+    chunk_runtime_ready.append("if [ -f \"$REQ_PATH\" ]; then \"$VENV/bin/python\" -m pip install -r \"$REQ_PATH\"; fi")
+    chunk_runtime_ready.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
+    chunk_runtime_ready.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
+    chunk_runtime_ready.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
+    chunk_runtime_ready.append("fi")
+    chunk_runtime_ready.append("ETL_SETUP_HOSTNAME=\"$ETL_HOSTNAME\"")
+    chunk_runtime_ready.append("ETL_SETUP_ARCH=\"$ETL_ARCH\"")
+    chunk_runtime_ready.append("ETL_SETUP_CPU_MODEL=\"$ETL_CPU_MODEL\"")
+    chunk_runtime_ready.append("ETL_SETUP_CPU_FLAGS=\"$ETL_CPU_FLAGS\"")
+    chunk_runtime_ready.append("printf 'setup_hostname=%q\\nsetup_arch=%q\\nsetup_cpu_model=%q\\nsetup_cpu_flags=%q\\nvenv_path=%q\\nrepo_root=%q\\n' \"$ETL_SETUP_HOSTNAME\" \"$ETL_SETUP_ARCH\" \"$ETL_SETUP_CPU_MODEL\" \"$ETL_SETUP_CPU_FLAGS\" \"$VENV\" \"$ETL_REPO_ROOT\" > \"$ETL_VENV_INFO\"")
+    chunk_runtime_ready.append("release_venv_lock")
+    chunk_runtime_ready.append("if [ -f \"$ETL_VENV_INFO\" ]; then source \"$ETL_VENV_INFO\"; fi")
     if executor.verbose:
         chunk_runtime_ready.append("log_step 'activating venv after module setup'")
     chunk_runtime_ready.append("source \"$VENV/bin/activate\"")
     executor._append_db_tunnel_database_url_rewrite_lines(chunk_runtime_ready, python_expr="\"$VENV/bin/python\"")
-    chunk_runtime_ready.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
-    chunk_runtime_ready.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
-    chunk_runtime_ready.append("  echo \"[etl][step] runtime package import failed in shared venv; refusing in-step pip repair during parallel execution: $VENV\" >&2")
-    chunk_runtime_ready.append("  echo \"[etl][step] runtime host=$ETL_HOSTNAME arch=$ETL_ARCH cpu=$ETL_CPU_MODEL\" >&2")
-    chunk_runtime_ready.append("  echo \"[etl][step] runtime cpu_flags=$ETL_CPU_FLAGS\" >&2")
-    chunk_runtime_ready.append("  if [ -n \"${setup_hostname:-}\" ] || [ -n \"${setup_arch:-}\" ] || [ -n \"${setup_cpu_model:-}\" ]; then echo \"[etl][step] venv built on host=${setup_hostname:-unknown} arch=${setup_arch:-unknown} cpu=${setup_cpu_model:-unknown}\" >&2; fi")
-    chunk_runtime_ready.append("  if [ -n \"${setup_cpu_flags:-}\" ]; then echo \"[etl][step] venv build cpu_flags=${setup_cpu_flags}\" >&2; fi")
-    chunk_runtime_ready.append("  echo \"[etl][step] rerun the setup job to rebuild/install the venv on a compatible node type\" >&2")
-    chunk_runtime_ready.append("  exit 1")
-    chunk_runtime_ready.append("fi")
 
     env_workdir = Path(workdir).as_posix()
     if executor.verbose:
