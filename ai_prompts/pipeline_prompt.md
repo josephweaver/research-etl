@@ -28,6 +28,7 @@ Pipeline shape:
 - Use `plugin` plus structured `args` unless there is a strong reason to use `script`.
 - Add `output_var` for meaningful step outputs that later steps reference.
 - Use `when`, `foreach`, `sequential_foreach`, `foreach_glob`, and `parallel_with` only when they clearly fit the job.
+- Prefer maximum safe parallelization for independent work, but design fanout so it does not create unnecessary per-item files, temporary artifacts, or log files.
 - If prerequisite datasets already exist as reusable units, declare them in `requires_pipelines`.
 
 Dataset/output rules:
@@ -35,6 +36,7 @@ Dataset/output rules:
 - Every pipeline must produce exactly one dataset.
 - A dataset is a logical group of files containing observations/records, plus selected metadata directly related to those records.
 - Temporary or intermediate files that are not intended for use outside the pipeline are not part of the dataset.
+- Minimize file count. Prefer fewer larger artifacts over many tiny files when both satisfy the requirement, especially for temporary outputs, summaries, and logs.
 - Set a concrete, stable `dataset_id` that matches the dataset's intent and role.
 - Prefer catalog-aligned prefixes such as `raw.`, `ext.`, `stage.`, `model_in.`, `model_out.`, `serve.`, or `ref.`.
 - Use boring, machine-stable names: lowercase, structured tokens, clear subject, and an explicit `_vN` version when the dataset meaning changes.
@@ -51,6 +53,10 @@ Authoring rules:
 - If a custom Python script is required, call it through an existing execution plugin pattern already used by the repo.
 - Make idempotent choices where possible: avoid unnecessary overwrite/destructive settings unless the workflow needs them.
 - Prefer explicit filenames and directories over ambiguous temporary behavior.
+- When fanout is required, prefer parallel steps that write into a bounded number of stable output locations rather than one-off per-item scratch files unless the downstream contract truly requires per-item outputs.
+- Avoid authoring pipelines that generate one log file, summary file, or tiny intermediate artifact per fanout item unless there is a concrete operational reason.
+- When parallel execution must emit per-item logs or fragments, prefer a follow-up aggregation step that merges them into a single durable log or summary artifact.
+- After aggregation, prefer cleaning up per-item fanout artifacts when they are temporary and are no longer required for downstream steps, provenance, or debugging.
 - Keep comments short and only where they prevent confusion.
 
 Validation and provenance rules:
@@ -61,6 +67,8 @@ Validation and provenance rules:
 - Make the final dataset easy to document with explicit provenance and clear upstream lineage boundaries.
 - Consider hardware requirements for each step, especially memory-heavy combine, normalization, geospatial, and model-fit work.
 - First prefer stream-oriented or chunked processing patterns that reduce memory footprint instead of buffering whole inputs in memory.
+- Also prefer artifact-efficient patterns that reduce file-count pressure on Unix filesystems and shared workdirs, especially under high-parallel fanout.
+- If fanout creates unavoidable per-item artifacts, plan the post-fanout consolidation step explicitly in the pipeline instead of leaving cleanup implicit.
 - If a step still legitimately needs more memory after that, add or increase executor resource requests explicitly; for SLURM-oriented runs, consider raising memory requests up to `64G` when justified by the workload.
 
 What to return:
@@ -81,6 +89,8 @@ Before finishing, check:
 - Are `workdir` and `logdir` defined consistently?
 - Are step names ordered and readable?
 - Have hardware requirements been considered, with memory footprint reduced via streaming/chunking first and only then higher SLURM memory requests up to `64G` if needed?
+- Does the pipeline keep parallelism high without exploding the number of files, summaries, or per-item log artifacts?
+- If the pipeline creates unavoidable per-item fanout artifacts, does it also aggregate and clean them up when safe?
 
 ## Suggested Invocation
 

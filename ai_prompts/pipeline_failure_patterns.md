@@ -345,3 +345,89 @@ bash -lc "source /etc/profile && module purge && module load GDAL && ogr2ogr ...
 
 **Notes**
 - This is a shell-construction mistake, not a GDAL-specific mistake.
+
+---
+
+### Pattern: `fanout_file_count_exhaustion`
+
+**Status**
+- `active`
+
+**Category**
+- `runtime`
+
+**Symptom**
+- Pipelines that fan out across many items fail or degrade because they create too many files in workdirs, logdirs, or artifact directories.
+- Unix environments hit filesystem or operational limits due to excessive counts of tiny files, especially per-item logs, summaries, and scratch artifacts.
+
+**Example Error**
+```text
+Too many open files
+```
+
+**Root Cause**
+- The pipeline parallelized correctly but materialized too many per-item artifacts.
+- Logging/provenance behavior amplified the problem by producing one or more log files per fanout item.
+- The framework is not yet artifact-aware enough to budget, aggregate, or cap file creation during high-fanout execution.
+
+**Preferred Fix**
+- Keep parallelism for independent work, but reduce artifact count.
+- Prefer aggregated logs, bounded output directories, chunked batches, append-style summaries, and fewer stable output files over one-file-per-item patterns when the dataset contract allows it.
+- Reserve per-item files for true delivery artifacts or when downstream steps require them.
+- Add an explicit post-fanout aggregation step when per-item logs or fragments are unavoidable.
+- After aggregation, clean up temporary per-item fanout artifacts when they are no longer needed for downstream execution or debugging.
+
+**Prompt Rule**
+- Maximize safe parallelism, but minimize file creation; do not generate per-item logs, summaries, or scratch files unless they are required by the data contract or execution model.
+
+**Validator/Linter Opportunity**
+- `yes`
+- Warn when a pipeline combines high-cardinality `foreach` or fanout with per-item output paths that create many log, summary, or temporary files.
+- Future framework TODO: make execution artifact-aware so fanout can budget and aggregate logs/artifacts instead of emitting one file per task by default.
+- Future framework TODO: support first-class post-fanout log aggregation and optional cleanup of superseded per-item artifacts.
+
+**Example Bad Pattern**
+```yaml
+vars:
+  tiles: "{project.tiles_of_interest}"
+steps:
+  - name: "{sys.step.NN}_process_tile"
+    plugin: exec_script
+    foreach: tiles
+    args:
+      script: "scripts/example.py"
+      script_args: "--tile \"{item}\" --output \"{workdir}/{item}.tmp.csv\" --summary \"{workdir}/{item}.summary.json\""
+```
+
+**Example Good Pattern**
+```yaml
+vars:
+  tiles: "{project.tiles_of_interest}"
+  batch_output_dir: "{workdir}/batches"
+  summary_json: "{workdir}/summary.json"
+  combined_log: "{logdir}/process_tiles.log"
+steps:
+  - name: "{sys.step.NN}_process_tiles"
+    plugin: exec_script
+    foreach: tiles
+    args:
+      script: "scripts/example.py"
+      script_args: "--tile \"{item}\" --output-dir \"{batch_output_dir}\" --summary-json \"{summary_json}\" --log-dir \"{workdir}/tile_logs\""
+  - name: "{sys.step.NN}_aggregate_tile_logs"
+    plugin: exec_script
+    args:
+      script: "scripts/example_aggregate_logs.py"
+      script_args: "--input-dir \"{workdir}/tile_logs\" --output-log \"{combined_log}\" --delete-inputs"
+```
+
+**Applies To**
+- All repos using high-cardinality fanout, especially Unix/HPCC/shared-filesystem runs
+
+**Related Files**
+- [`pipeline_prompt.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/pipeline_prompt.md)
+- [`pipeline_failure_triage_checklist.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/pipeline_failure_triage_checklist.md)
+
+**Notes**
+- This is not an argument against parallelism; it is a constraint on how fanout materializes artifacts.
+- Logging is a major multiplier. A future framework change should support aggregated or artifact-budgeted logging for fanout steps.
+- A good default pattern is: parallel fanout, explicit aggregation, then cleanup of temporary fanout byproducts.

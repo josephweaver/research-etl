@@ -121,3 +121,11 @@ def test_normalize_polygon_field_ids_coerces_integer_like_values() -> None:
     assert mod._normalize_field_id(1673.0) == 1673
     assert mod._normalize_field_id("1673.0") == 1673
     assert mod._normalize_field_id("1673") == 1673
+
+
+def test_assign_polygon_fips_extracts_tile_id_from_filename() -> None:
+    mod = _load_module(
+        "assign_polygon_fips", ASSET_REPO / "scripts/yanroy/assign_polygon_fips.py"
+    )
+
+    assert mod._extract_tile_id("WELD_h12v05_2010_field_segments.gpkg") == "h12v05"
