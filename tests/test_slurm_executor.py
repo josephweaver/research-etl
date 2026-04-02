@@ -928,7 +928,10 @@ def test_slurm_hpcc_bootstrap_uses_portable_venv_and_loads_modules_before_activa
     assert "module load Python/3.11.3-GCCcore-12.3.0" in batch_script
     assert "source \"$VENV/bin/activate\"" in batch_script
     assert batch_script.index("module load Python/3.11.3-GCCcore-12.3.0") < batch_script.index("source \"$VENV/bin/activate\"")
+    assert "ETL_HOSTNAME=\"$(hostname 2>/dev/null || echo unknown-host)\"" in batch_script
+    assert "ETL_ARCH=\"$(uname -m 2>/dev/null || echo unknown-arch)\"" in batch_script
     assert "runtime venv interpreter failed smoke test; rerun setup job to rebuild" in batch_script
+    assert "host=$ETL_HOSTNAME arch=$ETL_ARCH" in batch_script
     assert "runtime package import failed in shared venv; refusing in-step pip repair during parallel execution" in batch_script
     assert "\"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"" not in batch_script
 

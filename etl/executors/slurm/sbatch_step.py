@@ -127,8 +127,11 @@ def render_step_script(
         if executor.verbose:
             chunk_runtime_bootstrap.append("log_step 'loading optional secrets file (values hidden)'")
         chunk_runtime_bootstrap.append("if [ -f \"$HOME/.secrets/etl\" ]; then source \"$HOME/.secrets/etl\"; fi")
+    chunk_runtime_bootstrap.append("ETL_HOSTNAME=\"$(hostname 2>/dev/null || echo unknown-host)\"")
+    chunk_runtime_bootstrap.append("ETL_ARCH=\"$(uname -m 2>/dev/null || echo unknown-arch)\"")
     chunk_runtime_bootstrap.append("if [ ! -x \"$VENV/bin/python\" ] || ! \"$VENV/bin/python\" -c 'import sys' >/dev/null 2>&1; then")
     chunk_runtime_bootstrap.append("  echo \"[etl][step] runtime venv interpreter failed smoke test; rerun setup job to rebuild: $VENV\" >&2")
+    chunk_runtime_bootstrap.append("  echo \"[etl][step] host=$ETL_HOSTNAME arch=$ETL_ARCH\" >&2")
     chunk_runtime_bootstrap.append("  exit 1")
     chunk_runtime_bootstrap.append("fi")
 
@@ -148,6 +151,7 @@ def render_step_script(
     chunk_runtime_ready.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
     chunk_runtime_ready.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
     chunk_runtime_ready.append("  echo \"[etl][step] runtime package import failed in shared venv; refusing in-step pip repair during parallel execution: $VENV\" >&2")
+    chunk_runtime_ready.append("  echo \"[etl][step] host=$ETL_HOSTNAME arch=$ETL_ARCH\" >&2")
     chunk_runtime_ready.append("  echo \"[etl][step] rerun the setup job to rebuild/install the venv on a compatible node type\" >&2")
     chunk_runtime_ready.append("  exit 1")
     chunk_runtime_ready.append("fi")
