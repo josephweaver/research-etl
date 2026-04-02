@@ -923,6 +923,13 @@ def test_slurm_hpcc_bootstrap_uses_portable_venv_and_loads_modules_before_activa
     setup_script = calls[0]["script_text"]
     batch_script = calls[1]["script_text"]
     assert "$PYTHON -m venv --copies \"$VENV\"" in setup_script
+    assert "ETL_SETUP_HOSTNAME=\"$(hostname 2>/dev/null || echo unknown-host)\"" in setup_script
+    assert "ETL_SETUP_ARCH=\"$(uname -m 2>/dev/null || echo unknown-arch)\"" in setup_script
+    assert "ETL_SETUP_CPU_MODEL=\"$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^ +/, \"\", $2); print $2; exit}' || echo unknown-cpu)\"" in setup_script
+    assert "ETL_SETUP_CPU_FLAGS=\"$(lscpu 2>/dev/null | awk -F: '/Flags/ {gsub(/^ +/, \"\", $2); print $2; exit}' || echo unknown-flags)\"" in setup_script
+    assert "ETL_VENV_INFO=\"$VENV/.etl_venv_build_info\"" in setup_script
+    assert "setup_hostname=$ETL_SETUP_HOSTNAME" in setup_script
+    assert "setup_cpu_flags=$ETL_SETUP_CPU_FLAGS" in setup_script
     assert "existing venv interpreter failed smoke test; rebuilding" in setup_script
     assert "refusing to remove venv outside ETL_REPO_ROOT" in setup_script
     assert "module load Python/3.11.3-GCCcore-12.3.0" in batch_script
@@ -930,8 +937,15 @@ def test_slurm_hpcc_bootstrap_uses_portable_venv_and_loads_modules_before_activa
     assert batch_script.index("module load Python/3.11.3-GCCcore-12.3.0") < batch_script.index("source \"$VENV/bin/activate\"")
     assert "ETL_HOSTNAME=\"$(hostname 2>/dev/null || echo unknown-host)\"" in batch_script
     assert "ETL_ARCH=\"$(uname -m 2>/dev/null || echo unknown-arch)\"" in batch_script
+    assert "ETL_CPU_MODEL=\"$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^ +/, \"\", $2); print $2; exit}' || echo unknown-cpu)\"" in batch_script
+    assert "ETL_CPU_FLAGS=\"$(lscpu 2>/dev/null | awk -F: '/Flags/ {gsub(/^ +/, \"\", $2); print $2; exit}' || echo unknown-flags)\"" in batch_script
+    assert "ETL_VENV_INFO=\"$VENV/.etl_venv_build_info\"" in batch_script
+    assert "if [ -f \"$ETL_VENV_INFO\" ]; then source \"$ETL_VENV_INFO\"; fi" in batch_script
     assert "runtime venv interpreter failed smoke test; rerun setup job to rebuild" in batch_script
-    assert "host=$ETL_HOSTNAME arch=$ETL_ARCH" in batch_script
+    assert "runtime host=$ETL_HOSTNAME arch=$ETL_ARCH cpu=$ETL_CPU_MODEL" in batch_script
+    assert "runtime cpu_flags=$ETL_CPU_FLAGS" in batch_script
+    assert "venv built on host=${setup_hostname:-unknown} arch=${setup_arch:-unknown} cpu=${setup_cpu_model:-unknown}" in batch_script
+    assert "venv build cpu_flags=${setup_cpu_flags}" in batch_script
     assert "runtime package import failed in shared venv; refusing in-step pip repair during parallel execution" in batch_script
     assert "\"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"" not in batch_script
 

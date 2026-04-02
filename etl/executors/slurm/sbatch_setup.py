@@ -268,6 +268,11 @@ def render_setup_script(
     chunk_venv_bootstrap.append(f"PYTHON={python_bin}")
     chunk_venv_bootstrap.append(f"VENV={venv_path}")
     chunk_venv_bootstrap.append(f"export ETL_REPO_ROOT={checkout_root}")
+    chunk_venv_bootstrap.append("ETL_SETUP_HOSTNAME=\"$(hostname 2>/dev/null || echo unknown-host)\"")
+    chunk_venv_bootstrap.append("ETL_SETUP_ARCH=\"$(uname -m 2>/dev/null || echo unknown-arch)\"")
+    chunk_venv_bootstrap.append("ETL_SETUP_CPU_MODEL=\"$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^ +/, \"\", $2); print $2; exit}' || echo unknown-cpu)\"")
+    chunk_venv_bootstrap.append("ETL_SETUP_CPU_FLAGS=\"$(lscpu 2>/dev/null | awk -F: '/Flags/ {gsub(/^ +/, \"\", $2); print $2; exit}' || echo unknown-flags)\"")
+    chunk_venv_bootstrap.append("ETL_VENV_INFO=\"$VENV/.etl_venv_build_info\"")
     executor._append_db_tunnel_lines(chunk_venv_bootstrap)
     if executor.load_secrets_file:
         if executor.verbose:
@@ -297,6 +302,14 @@ def render_setup_script(
     chunk_install.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
     chunk_install.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
     chunk_install.append("fi")
+    chunk_install.append("cat > \"$ETL_VENV_INFO\" <<EOF")
+    chunk_install.append("setup_hostname=$ETL_SETUP_HOSTNAME")
+    chunk_install.append("setup_arch=$ETL_SETUP_ARCH")
+    chunk_install.append("setup_cpu_model=$ETL_SETUP_CPU_MODEL")
+    chunk_install.append("setup_cpu_flags=$ETL_SETUP_CPU_FLAGS")
+    chunk_install.append("venv_path=$VENV")
+    chunk_install.append("repo_root=$ETL_REPO_ROOT")
+    chunk_install.append("EOF")
     if executor.verbose:
         chunk_finalize.append("log_step 'setup complete'")
     chunk_finalize.append("echo setup complete")
