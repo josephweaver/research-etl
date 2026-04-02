@@ -60,6 +60,8 @@ Implication:
 - Prefer creating HPCC virtual environments with `python -m venv --copies`.
 - For compatibility, create or refresh shared virtual environments from `dev-amd20` rather than from a newer or more specialized node type.
 - In job scripts, load the matching Python module before activating the virtual environment.
+- If a SLURM step job fails on `import etl.run_batch` or `pip install -e` with `Illegal instruction`, suspect node-type incompatibility in the shared venv before suspecting the pipeline logic.
+- Do not let parallel SLURM step jobs repair the shared venv in place. Rebuild or refresh the venv from the setup job on a compatible node type instead.
 
 ### Secret propagation for remote runs
 

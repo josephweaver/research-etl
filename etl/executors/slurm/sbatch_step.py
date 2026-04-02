@@ -147,7 +147,9 @@ def render_step_script(
     executor._append_db_tunnel_database_url_rewrite_lines(chunk_runtime_ready, python_expr="\"$VENV/bin/python\"")
     chunk_runtime_ready.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
     chunk_runtime_ready.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
-    chunk_runtime_ready.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
+    chunk_runtime_ready.append("  echo \"[etl][step] runtime package import failed in shared venv; refusing in-step pip repair during parallel execution: $VENV\" >&2")
+    chunk_runtime_ready.append("  echo \"[etl][step] rerun the setup job to rebuild/install the venv on a compatible node type\" >&2")
+    chunk_runtime_ready.append("  exit 1")
     chunk_runtime_ready.append("fi")
 
     env_workdir = Path(workdir).as_posix()

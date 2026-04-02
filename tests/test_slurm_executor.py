@@ -929,6 +929,8 @@ def test_slurm_hpcc_bootstrap_uses_portable_venv_and_loads_modules_before_activa
     assert "source \"$VENV/bin/activate\"" in batch_script
     assert batch_script.index("module load Python/3.11.3-GCCcore-12.3.0") < batch_script.index("source \"$VENV/bin/activate\"")
     assert "runtime venv interpreter failed smoke test; rerun setup job to rebuild" in batch_script
+    assert "runtime package import failed in shared venv; refusing in-step pip repair during parallel execution" in batch_script
+    assert "\"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"" not in batch_script
 
 
 def test_slurm_includes_db_tunnel_command_in_setup_and_batch_scripts(monkeypatch, tmp_path: Path) -> None:
