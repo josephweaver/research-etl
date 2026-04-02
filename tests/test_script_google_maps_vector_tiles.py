@@ -101,3 +101,23 @@ def test_tippecanoe_defaults_to_uncompressed_tiles(tmp_path: Path, monkeypatch: 
     assert len(captured) == 1
     assert "--no-tile-compression" in captured[0]
     assert result["output_tiles_dir"] == out_dir.resolve().as_posix()
+
+
+def test_export_tile_polygon_geojson_normalizes_integer_like_field_ids() -> None:
+    mod = _load_module(
+        "export_tile_polygon_geojson", ASSET_REPO / "scripts/yanroy/export_tile_polygon_geojson.py"
+    )
+
+    assert mod._normalize_field_id_text(1673.0) == "1673"
+    assert mod._normalize_field_id_text("1673.0") == "1673"
+    assert mod._normalize_field_id_text("1673") == "1673"
+
+
+def test_normalize_polygon_field_ids_coerces_integer_like_values() -> None:
+    mod = _load_module(
+        "normalize_polygon_field_ids", ASSET_REPO / "scripts/yanroy/normalize_polygon_field_ids.py"
+    )
+
+    assert mod._normalize_field_id(1673.0) == 1673
+    assert mod._normalize_field_id("1673.0") == 1673
+    assert mod._normalize_field_id("1673") == 1673
