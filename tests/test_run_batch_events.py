@@ -30,6 +30,29 @@ def _write_min_pipeline(path: Path) -> None:
     )
 
 
+def test_save_context_writes_atomically(monkeypatch, tmp_path: Path) -> None:
+    context_path = tmp_path / "context.json"
+    context_path.write_text('{"old": 1}', encoding="utf-8")
+
+    calls: list[tuple[str, str]] = []
+    real_replace = run_batch.os.replace
+
+    def _recording_replace(src, dst):
+        calls.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(run_batch.os, "replace", _recording_replace)
+
+    run_batch.save_context(context_path, {"new": 2})
+
+    assert run_batch.load_context(context_path) == {"new": 2}
+    assert len(calls) == 1
+    src, dst = calls[0]
+    assert dst == str(context_path)
+    assert Path(src).parent == context_path.parent
+    assert not any(context_path.parent.glob(f".{context_path.name}.*.tmp"))
+
+
 def test_run_batch_emits_completed_and_run_completed_events(monkeypatch, tmp_path: Path) -> None:
     pipeline_path = tmp_path / "pipeline.yml"
     _write_min_pipeline(pipeline_path)
