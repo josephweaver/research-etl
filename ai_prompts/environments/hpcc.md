@@ -63,6 +63,7 @@ Implication:
 - If a SLURM step job fails on `import etl.run_batch` or `pip install -e` with `Illegal instruction`, suspect node-type incompatibility in the shared venv before suspecting the pipeline logic.
 - Prefer family-specific virtual environments on heterogeneous HPCC hardware (for example separate `amr` and `skl` venvs) rather than one cluster-wide shared venv.
 - If step jobs lazily create family-specific venvs, guard creation/install with a lock so parallel jobs do not race while bootstrapping the same family cache.
+- Treat the family-specific venv approach as a temporary workaround for heterogeneous HPCC nodes; when remote execution moves to containers, remove this workaround rather than carrying both systems indefinitely.
 
 ### Secret propagation for remote runs
 

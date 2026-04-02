@@ -32,6 +32,8 @@ Unless an item is promoted because it is blocking crop-insurance or landcore exe
   - `foreach_glob` is convenient for local file fan-out but is not the right primitive for explicit dataset partitioning / remote batch parallelism; add a first-class partitioned fan-out mode that can drive parallel work from declared keys like `years`, `states`, or date windows without relying on filesystem discovery as the expansion mechanism
 - Runtime environment reuse:
   - avoid rebuilding `.venv` for every new immutable `research-etl-<sha>` checkout when dependencies are unchanged
+  - remove the temporary SLURM/HPCC per-node-family virtualenv workaround (`.venv-amr`, `.venv-skl`, etc. plus lockdir bootstrap) once containerized execution becomes the default remote runtime
+  - when removing that workaround, also delete the hostname-family detection, family-specific venv metadata stamping, and lazy in-step family-venv bootstrap logic from the SLURM executor
   - keep this deferred unless it becomes a direct blocker for crop-insurance or landcore execution
 - Transport-layer abstraction and cleanup:
   - transport lifecycle design
