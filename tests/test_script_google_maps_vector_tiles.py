@@ -113,6 +113,38 @@ def test_export_tile_polygon_geojson_normalizes_integer_like_field_ids() -> None
     assert mod._normalize_field_id_text("1673") == "1673"
 
 
+def test_export_tile_polygon_geojson_allows_empty_inputs(tmp_path: Path) -> None:
+    geopandas = pytest.importorskip("geopandas")
+    pandas = pytest.importorskip("pandas")
+
+    mod = _load_module(
+        "export_tile_polygon_geojson", ASSET_REPO / "scripts/yanroy/export_tile_polygon_geojson.py"
+    )
+
+    input_vector = tmp_path / "WELD_h17v12_2010_field_segments.gpkg"
+    output_dir = tmp_path / "geojson"
+    summary_json = tmp_path / "summary.json"
+
+    empty_gdf = geopandas.GeoDataFrame(
+        {"field_id": pandas.Series(dtype="object")},
+        geometry=geopandas.GeoSeries([], crs="EPSG:5070"),
+        crs="EPSG:5070",
+    )
+    empty_gdf.to_file(input_vector, driver="GPKG")
+
+    result = mod.export_tile_polygon_geojson(
+        input_vector=input_vector,
+        output_dir=output_dir,
+        summary_json=summary_json,
+    )
+
+    assert result["tile_id"] == "h17v12"
+    assert result["row_count"] == 0
+    assert result["empty_input"] is True
+    assert (output_dir / "h17v12.geojson").exists()
+    assert summary_json.exists()
+
+
 def test_normalize_polygon_field_ids_coerces_integer_like_values() -> None:
     mod = _load_module(
         "normalize_polygon_field_ids", ASSET_REPO / "scripts/yanroy/normalize_polygon_field_ids.py"
