@@ -261,3 +261,16 @@ def test_simplify_geojson_geometry_rejects_negative_tolerance(tmp_path: Path) ->
             output_vector=tmp_path / "output.geojson",
             tolerance=-1.0,
         )
+
+
+def test_build_google_maps_raster_tiles_tile_bounds_cover_world() -> None:
+    mod = _load_module(
+        "build_google_maps_raster_tiles", ASSET_REPO / "scripts/yanroy/build_google_maps_raster_tiles.py"
+    )
+
+    minx, miny, maxx, maxy = mod._tile_bounds_3857(0, 0, 0)
+
+    assert round(minx) == -20037508
+    assert round(miny) == -20037508
+    assert round(maxx) == 20037508
+    assert round(maxy) == 20037508
