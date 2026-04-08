@@ -1,0 +1,50 @@
+controller:
+  checkpoints_glob: "/mnt/gs21/scratch/weave151/etl/data/risk_model/fits/*/checkpoint.json"
+  state_path: "controler/state.json"
+  local_wave_dir: "controler/waves"
+  remote_wave_dir: "/mnt/gs21/scratch/weave151/etl/controler/waves"
+  remote_submit_dir: "/mnt/gs21/scratch/weave151/etl/controler/waves"
+  remote_log_dir: "/mnt/gs21/scratch/weave151/etl/controler/logs"
+  complete_markers:
+    - "process complete."
+  continue_markers:
+    - "resume to process the next batch"
+  max_submit: 350
+
+checkpoint:
+  fips_key: "fips"
+  log_path_key: "log_path"
+  status_key: "status"
+  completed_iter_key: "completed_iter"
+  target_iter_key: "target_iter"
+
+slurm:
+  environments_config: "config/environments.yml"
+  environment: "hpcc_msu"
+  job_name_prefix: "risk-fit-wave"
+  time: "04:00:00"
+  cpus_per_task: 2
+  mem: "8G"
+  array_max_parallel: 50
+  verbose: false
+
+worker:
+  mode: "etl_pipeline"
+  repo_root: "/mnt/gs21/scratch/weave151/etl/src/research-etl"
+  python_bin: "/mnt/gs21/scratch/weave151/etl/src/research-etl/.venv/bin/python"
+  cli_path: "cli.py"
+  bootstrap_lines:
+    - "source \"$HOME/.bashrc\" || true"
+  pipeline_path: "pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml"
+  executor: "local"
+  environments_config: "config/environments.yml"
+  env: "hpcc_msu_local"
+  project_id: "land_core"
+  flags:
+    - "--allow-workspace-source"
+    - "--allow-dirty-git"
+  vars:
+    county_fips: "{fips}"
+    fit_root: "/mnt/scratch/weave151/fits"
+  # Optional explicit ETL workdir override if you want ETL run records/logs outside the county fit dir.
+  # workdir: "/mnt/gs21/scratch/weave151/etl/work/controller-child/{fips}"
