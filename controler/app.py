@@ -73,6 +73,20 @@ class CountyRecord:
     checkpoint: dict[str, Any]
 
 
+def _single_county_record(fips: str) -> CountyRecord:
+    target = str(fips or "").strip()
+    return CountyRecord(
+        fips=target,
+        checkpoint_path=Path(""),
+        log_path=None,
+        status="pending",
+        completed_iter=None,
+        target_iter=None,
+        state_reason="manual_single",
+        checkpoint={},
+    )
+
+
 class ControllerApp:
     def __init__(self, config_path: str | Path) -> None:
         self.config_path = Path(config_path).expanduser().resolve()
@@ -355,7 +369,68 @@ class ControllerApp:
         cmd = str(self.worker_cfg.get("command_template") or "").strip()
         if not cmd:
             raise ValueError("worker.command_template is required")
-        return _format_map(cmd, mapping)
+        return self._maybe_wrap_timeout(_format_map(cmd, mapping))
+
+    def _bootstrap_submission_environment(self) -> None:
+        repo_root = str(self.worker_cfg.get("repo_root") or "").strip()
+        python_bin = str(self.worker_cfg.get("python_bin") or "").strip()
+        git_remote_url = str(self.exec_env.get("git_remote_url") or self.worker_cfg.get("git_remote_url") or "").strip()
+        pipeline_repo_root = str(self.worker_cfg.get("pipeline_repo_root") or "").strip()
+        pipeline_git_remote_url = str(self.worker_cfg.get("pipeline_git_remote_url") or "").strip()
+        if not repo_root or not python_bin:
+            return
+        venv_dir = str(Path(python_bin).expanduser().resolve().parent.parent)
+        requirements_path = f"{repo_root.rstrip('/')}/requirements.txt"
+        lines = [
+            "set -euo pipefail",
+            f"REPO_ROOT={shlex.quote(repo_root)}",
+            f"VENV_DIR={shlex.quote(venv_dir)}",
+            f"PYTHON_BIN={shlex.quote(python_bin)}",
+            f"GIT_REMOTE_URL={shlex.quote(git_remote_url)}",
+            "if [ ! -d \"$REPO_ROOT/.git\" ]; then",
+            "  if [ -z \"$GIT_REMOTE_URL\" ]; then",
+            "    echo \"missing git_remote_url and repo checkout: $REPO_ROOT\" >&2",
+            "    exit 1",
+            "  fi",
+            "  mkdir -p \"$(dirname \"$REPO_ROOT\")\"",
+            "  git clone \"$GIT_REMOTE_URL\" \"$REPO_ROOT\"",
+            "fi",
+            "if [ ! -x \"$PYTHON_BIN\" ]; then",
+            "  mkdir -p \"$VENV_DIR\"",
+            "  python3 -m venv \"$VENV_DIR\"",
+            "  \"$PYTHON_BIN\" -m pip install --upgrade pip",
+            f"  if [ -f {shlex.quote(requirements_path)} ]; then",
+            f"    \"$PYTHON_BIN\" -m pip install -r {shlex.quote(requirements_path)}",
+            "  fi",
+            "fi",
+        ]
+        if pipeline_repo_root and pipeline_git_remote_url:
+            lines.extend(
+                [
+                    f"PIPELINE_REPO_ROOT={shlex.quote(pipeline_repo_root)}",
+                    f"PIPELINE_GIT_REMOTE_URL={shlex.quote(pipeline_git_remote_url)}",
+                    "if [ ! -d \"$PIPELINE_REPO_ROOT/.git\" ]; then",
+                    "  mkdir -p \"$(dirname \"$PIPELINE_REPO_ROOT\")\"",
+                    "  git clone \"$PIPELINE_GIT_REMOTE_URL\" \"$PIPELINE_REPO_ROOT\"",
+                    "fi",
+                ]
+            )
+        self.transport.run_text("\n".join(lines), check=True)
+
+    def _maybe_wrap_timeout(self, command: str) -> str:
+        timeout_seconds_raw = self.worker_cfg.get("timeout_seconds")
+        if timeout_seconds_raw in (None, ""):
+            return command
+        timeout_seconds = int(timeout_seconds_raw)
+        if timeout_seconds <= 0:
+            return command
+        kill_after_seconds = int(self.worker_cfg.get("timeout_kill_after_seconds") or 300)
+        if kill_after_seconds < 0:
+            kill_after_seconds = 0
+        timeout_cmd = (
+            f"timeout --signal=TERM --kill-after={kill_after_seconds}s {timeout_seconds}s "
+        )
+        return timeout_cmd + command
 
     def _render_etl_pipeline_command(self, row: dict[str, Any]) -> str:
         python_bin = str(self.worker_cfg.get("python_bin") or "python").strip()
@@ -376,6 +451,12 @@ class ControllerApp:
         project_id = str(self.worker_cfg.get("project_id") or "").strip()
         if project_id:
             argv += ["--project-id", project_id]
+        pipeline_repo_root = str(self.worker_cfg.get("pipeline_repo_root") or "").strip()
+        pipeline_path = str(self.worker_cfg.get("pipeline_path") or "").strip()
+        if pipeline_repo_root and pipeline_path and not Path(pipeline_path).is_absolute():
+            pipeline_path = f"{pipeline_repo_root.rstrip('/')}/{pipeline_path.lstrip('/')}"
+        if pipeline_path:
+            argv[3] = pipeline_path
         plugins_dir = str(self.worker_cfg.get("plugins_dir") or "").strip()
         if plugins_dir:
             argv += ["--plugins-dir", plugins_dir]
@@ -391,7 +472,7 @@ class ControllerApp:
         for key, raw_value in runtime_vars.items():
             value = _format_map(str(raw_value), {**self.exec_env, **self.worker_cfg, **row})
             argv += ["--var", f"{key}={value}"]
-        return " ".join(shlex.quote(part) for part in argv)
+        return self._maybe_wrap_timeout(" ".join(shlex.quote(part) for part in argv))
 
     def _render_sbatch(self, *, wave_id: str, remote_manifest_path: str, remote_config_path: str, item_count: int) -> str:
         if item_count <= 0:
@@ -450,6 +531,7 @@ class ControllerApp:
         return manifest_path
 
     def run_once(self) -> dict[str, Any]:
+        self._bootstrap_submission_environment()
         state = self._load_state()
         eligible = self._eligible()
         if not eligible:
@@ -503,6 +585,48 @@ class ControllerApp:
             "eligible_count": len(rows),
             "job_id": str(handle.backend_run_id or ""),
             "wave_id": wave_id,
+            "manifest_local_path": local_manifest.as_posix(),
+            "manifest_remote_path": remote_manifest_path,
+        }
+
+    def run_one(self, fips: str) -> dict[str, Any]:
+        self._bootstrap_submission_environment()
+        county = _single_county_record(fips)
+        wave_id = self._wave_id()
+        row = {
+            "array_index": 0,
+            "fips": county.fips,
+            "checkpoint_path": "",
+            "log_path": "",
+        }
+        row["worker_command"] = self._render_worker_command(row)
+        local_manifest = self._write_manifest_local([row], wave_id)
+        remote_wave_dir = f"{self.paths.remote_wave_dir.rstrip('/')}/{wave_id}"
+        remote_manifest_path = f"{remote_wave_dir}/manifest.csv"
+        remote_config_path = f"{remote_wave_dir}/controller_config.yml"
+        self.transport.put_text(local_manifest.read_text(encoding="utf-8"), remote_manifest_path)
+        self.transport.put_text(self.config_path.read_text(encoding="utf-8"), remote_config_path)
+        sbatch_text = self._render_sbatch(
+            wave_id=wave_id,
+            remote_manifest_path=remote_manifest_path,
+            remote_config_path=remote_config_path,
+            item_count=1,
+        )
+        spec = WorkloadSpec(
+            name=f"controler-wave-{wave_id}",
+            script_text=sbatch_text,
+            backend_options={
+                "destination_dir": remote_wave_dir if remote_wave_dir else self.paths.remote_submit_dir,
+                "file_name": "wave.sbatch",
+            },
+        )
+        handle = self.provisioner.submit(spec)
+        return {
+            "submitted": True,
+            "eligible_count": 1,
+            "job_id": str(handle.backend_run_id or ""),
+            "wave_id": wave_id,
+            "fips": county.fips,
             "manifest_local_path": local_manifest.as_posix(),
             "manifest_remote_path": remote_manifest_path,
         }

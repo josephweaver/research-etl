@@ -17,6 +17,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run-once", help="Submit one new SLURM wave for eligible counties.")
     p_run.add_argument("--config", required=True)
 
+    p_single = sub.add_parser("run-one", help="Submit exactly one county by FIPS without checkpoint discovery.")
+    p_single.add_argument("--config", required=True)
+    p_single.add_argument("--fips", required=True)
+
     p_doctor = sub.add_parser("doctor", help="Validate checkpoint/log assumptions without submitting work.")
     p_doctor.add_argument("--config", required=True)
     p_doctor.add_argument("--fips", default=None)
@@ -41,6 +45,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "run-once":
         print(json.dumps(app.run_once(), indent=2))
+        return 0
+    if args.cmd == "run-one":
+        print(json.dumps(app.run_one(args.fips), indent=2))
         return 0
     if args.cmd == "doctor":
         print(json.dumps(app.doctor(args.fips), indent=2))

@@ -35,7 +35,9 @@ worker:
   cli_path: "cli.py"
   bootstrap_lines:
     - "source \"$HOME/.bashrc\" || true"
-  pipeline_path: "pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml"
+  pipeline_repo_root: "/mnt/gs21/scratch/weave151/etl/src/landcore-etl-pipelines"
+  pipeline_git_remote_url: "git@github.com:josephweaver/landcore-etl-pipelines.git"
+  pipeline_path: "/mnt/gs21/scratch/weave151/etl/src/landcore-etl-pipelines/pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml"
   executor: "local"
   environments_config: "config/environments.yml"
   env: "hpcc_msu_local"

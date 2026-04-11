@@ -12,3 +12,4 @@ dist/
 .pipeline_assets_cache
 /.tmp
 {basedir}/logs/bootstrap/web.log
+/controler/waves/
