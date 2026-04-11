@@ -371,14 +371,14 @@ class ControllerApp:
             raise ValueError("worker.command_template is required")
         return self._maybe_wrap_timeout(_format_map(cmd, mapping))
 
-    def _bootstrap_submission_environment(self) -> None:
+    def _bootstrap_submission_environment(self) -> dict[str, Any]:
         repo_root = str(self.worker_cfg.get("repo_root") or "").strip()
         python_bin = str(self.worker_cfg.get("python_bin") or "").strip()
         git_remote_url = str(self.exec_env.get("git_remote_url") or self.worker_cfg.get("git_remote_url") or "").strip()
         pipeline_repo_root = str(self.worker_cfg.get("pipeline_repo_root") or "").strip()
         pipeline_git_remote_url = str(self.worker_cfg.get("pipeline_git_remote_url") or "").strip()
         if not repo_root or not python_bin:
-            return
+            return {"prepared": False, "reason": "missing_repo_root_or_python_bin"}
         normalized_python_bin = python_bin.replace("\\", "/")
         if "/" in normalized_python_bin:
             venv_dir = normalized_python_bin.rsplit("/", 2)[0]
@@ -407,7 +407,7 @@ class ControllerApp:
             f"    \"$PYTHON_BIN\" -m pip install -r {shlex.quote(requirements_path)}",
             "  fi",
             "fi",
-        ]
+            ]
         if pipeline_repo_root and pipeline_git_remote_url:
             lines.extend(
                 [
@@ -420,6 +420,13 @@ class ControllerApp:
                 ]
             )
         self.transport.run_text("\n".join(lines), check=True)
+        return {
+            "prepared": True,
+            "repo_root": repo_root,
+            "python_bin": python_bin,
+            "pipeline_repo_root": pipeline_repo_root,
+            "pipeline_present": bool(pipeline_repo_root and pipeline_git_remote_url),
+        }
 
     def _maybe_wrap_timeout(self, command: str) -> str:
         timeout_seconds_raw = self.worker_cfg.get("timeout_seconds")
@@ -535,7 +542,6 @@ class ControllerApp:
         return manifest_path
 
     def run_once(self) -> dict[str, Any]:
-        self._bootstrap_submission_environment()
         state = self._load_state()
         eligible = self._eligible()
         if not eligible:
@@ -594,7 +600,6 @@ class ControllerApp:
         }
 
     def run_one(self, fips: str) -> dict[str, Any]:
-        self._bootstrap_submission_environment()
         county = _single_county_record(fips)
         wave_id = self._wave_id()
         row = {
@@ -634,6 +639,9 @@ class ControllerApp:
             "manifest_local_path": local_manifest.as_posix(),
             "manifest_remote_path": remote_manifest_path,
         }
+
+    def bootstrap(self) -> dict[str, Any]:
+        return self._bootstrap_submission_environment()
 
     def run_item(self, manifest_path: str | Path, index: int) -> dict[str, Any]:
         manifest = Path(manifest_path).expanduser().resolve()

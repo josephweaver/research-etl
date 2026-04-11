@@ -21,6 +21,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_single.add_argument("--config", required=True)
     p_single.add_argument("--fips", required=True)
 
+    p_bootstrap = sub.add_parser("bootstrap", help="Prepare remote repo checkouts and the Python venv once.")
+    p_bootstrap.add_argument("--config", required=True)
+
     p_doctor = sub.add_parser("doctor", help="Validate checkpoint/log assumptions without submitting work.")
     p_doctor.add_argument("--config", required=True)
     p_doctor.add_argument("--fips", default=None)
@@ -48,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "run-one":
         print(json.dumps(app.run_one(args.fips), indent=2))
+        return 0
+    if args.cmd == "bootstrap":
+        print(json.dumps(app.bootstrap(), indent=2))
         return 0
     if args.cmd == "doctor":
         print(json.dumps(app.doctor(args.fips), indent=2))
