@@ -64,7 +64,7 @@ projects:
         'h16v02','h16v03','h16v04','h16v05','h16v06',
         'h16v07','h16v08','h17v02','h17v03','h17v04',
         'h17v05','h17v06','h17v07','h17v08','h17v09',
-        'h17v10','h17v11','h17v12','h18v04','h18v05',
+        'h17v10','h17v11','h18v04','h18v05',
         'h18v06','h18v07','h18v08','h18v09','h18v10',
         'h18v11','h18v12','h19v04','h19v05','h19v06',
         'h19v07','h19v08','h19v09','h19v10','h19v12',
@@ -77,7 +77,7 @@ projects:
         'h24v06','h24v07','h24v08','h24v09','h24v10',
         'h25v07','h25v08','h25v09'
       ]
-
+# h17v12 was removed because it wsa empty.
   crop_insurance:
     vars:
       # programmatic: human/ownership label used by project-aware logic and templates.
