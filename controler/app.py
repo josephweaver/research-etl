@@ -462,10 +462,7 @@ class ControllerApp:
         project_id = str(self.worker_cfg.get("project_id") or "").strip()
         if project_id:
             argv += ["--project-id", project_id]
-        pipeline_repo_root = str(self.worker_cfg.get("pipeline_repo_root") or "").strip()
         pipeline_path = str(self.worker_cfg.get("pipeline_path") or "").strip()
-        if pipeline_repo_root and pipeline_path and not Path(pipeline_path).is_absolute():
-            pipeline_path = f"{pipeline_repo_root.rstrip('/')}/{pipeline_path.lstrip('/')}"
         if pipeline_path:
             argv[3] = pipeline_path
         plugins_dir = str(self.worker_cfg.get("plugins_dir") or "").strip()
