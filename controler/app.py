@@ -379,7 +379,11 @@ class ControllerApp:
         pipeline_git_remote_url = str(self.worker_cfg.get("pipeline_git_remote_url") or "").strip()
         if not repo_root or not python_bin:
             return
-        venv_dir = str(Path(python_bin).expanduser().resolve().parent.parent)
+        normalized_python_bin = python_bin.replace("\\", "/")
+        if "/" in normalized_python_bin:
+            venv_dir = normalized_python_bin.rsplit("/", 2)[0]
+        else:
+            venv_dir = ""
         requirements_path = f"{repo_root.rstrip('/')}/requirements.txt"
         lines = [
             "set -euo pipefail",
