@@ -48,4 +48,3 @@ worker:
   vars:
     county_fips: "{fips}"
     fit_root: "/mnt/scratch/weave151/fits"
-    fit_script_path: "/mnt/scratch/weave151/fits/Neighborhood_fit_chkptstanr.R"

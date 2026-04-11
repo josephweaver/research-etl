@@ -12,8 +12,15 @@ vars:
   county_input_csv: "{county_fit_dir}/county_data.csv"
   checkpoint_dir: "{run_dir}/chkpt"
   output_model_rds: "{county_fit_dir}/output_model"
-  fit_script_path: "/mnt/scratch/weave151/fits/Neighborhood_fit_chkptstanr.R"
+  fit_script_path: "{sys.projectdir}/scripts/model/Neighborhood_fit_chkptstanr.R"
   rscript_bin: "Rscript"
+  iter_warmup: 1000
+  iter_sampling: 1000
+  iter_per_chkpt: 100
+  chains: 2
+  seed: 1234
+  stop_after: ""
+  reset: 0
 
 dirs:
   workdir: "{run_dir}"
@@ -26,7 +33,7 @@ steps:
       script: "{fit_script_path}"
       python_bin: "{rscript_bin}"
       cwd: "{run_dir}"
-      script_args: "\"{county_input_csv}\""
+      script_args: "\"{county_input_csv}\" \"{checkpoint_dir}\" {iter_warmup} {iter_sampling} {iter_per_chkpt} {chains} {seed} \"{stop_after}\" {reset}"
       verbose: true
     resources:
       mem: "16G"

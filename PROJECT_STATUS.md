@@ -1,4 +1,4 @@
-# Project Status (2026-03-26)
+# Project Status (2026-04-07)
 
 ## What this file is for
 
@@ -28,9 +28,10 @@ Current engineering focus is limited to the `needed-now core` areas:
 
 ## Current focus
 
-- `sample.yml` is running in both `local` and `local-dev`
-- next execution target is HPCC and `hpcc_direct`
-- active stabilization work is immutable source checkout layout, pipeline asset resolution, runtime path correctness, validation, and logging/provenance
+- LandCore risk-model execution path on HPCC
+- county-neighborhood model-input generation in `../landcore-etl-pipelines`
+- chunked county fit orchestration through the lightweight `controler/`
+- active stabilization work is runtime path correctness, ETL child execution, SLURM submission flow, and resumable county fit handoff
 
 ## What is currently working
 
@@ -38,26 +39,51 @@ Current engineering focus is limited to the `needed-now core` areas:
 - immutable source layout is working locally with sibling checkouts under `.out/src`
 - runtime context and execution-mode cleanup has improved consistency between local modes
 - project pipeline assets can resolve through configured project sources instead of only repo-local paths
+- lightweight external controller scaffold exists under `controler/`
+- controller supports:
+  - `status`
+  - `doctor`
+  - `preview`
+  - `run-item`
+  - `run-once`
+- controller worker mode `etl_pipeline` now launches the ETL child pipeline instead of a raw shell worker command
+- ETL child pipeline exists at `pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml`
+- child pipeline now resolves the R script from the LandCore pipeline assets repo at `{sys.projectdir}/scripts/model/Neighborhood_fit_chkptstanr.R`
+- child pipeline now matches the checkpoint R script interface:
+  - `data_csv`
+  - `checkpoint_dir`
+  - `iter_warmup`
+  - `iter_sampling`
+  - `iter_per_chkpt`
+  - `chains`
+  - `seed`
+  - `stop_after`
+  - `reset`
+- in `../landcore-etl-pipelines`, the tillage model-input pipeline now writes county-neighborhood files plus a manifest instead of one giant CSV
 
 ## Current blockers / risks
 
 - HPCC runtime pathing and pipeline asset checkout freshness still need direct verification on real runs
-- remote workspace auto-commit/push behavior may still resolve the wrong repo path or a stale checkout in crop-insurance flows
-- remote execution is not yet proven end-to-end for the actual crop-insurance and landcore dataset pipelines
+- remote execution is not yet proven end-to-end for the actual landcore risk-model county fit flow
+- controller assumptions still rely on checkpoint files and logs being directly visible to the controller process
+- controller has not yet been wired to auto-discover county input CSVs from the county-neighborhood manifest
+- the in-flight model-input rebuild still needs validation once processing completes
 - there is still risk of drifting into architecture cleanup unless the change clearly serves one of the seven core areas
 
 ## Next execution steps
 
-- run `sample.yml` on `hpcc_msu` and `hpcc_msu_direct` and verify source checkout, working paths, and logs
-- run the next real crop-insurance pipeline on HPCC and confirm artifacts land in the intended output locations
-- run the next real landcore pipeline on HPCC and confirm the same
+- let the current LandCore tillage neighborhood-input rebuild finish on HPCC
+- verify outputs from `../landcore-etl-pipelines/pipelines/risk_model/tillage_covariates_model_input.yml`:
+  - `data/risk_model/model_input/county_model_input/<FIPS>/county_data.csv`
+  - `data/risk_model/model_input/county_model_input/<FIPS>/county_data.summary.json`
+  - `data/risk_model/model_input/county_model_input_manifest.csv`
+- update the ETL child pipeline to accept direct `county_input_csv` overrides if controller-side manifest-driven submission is needed
+- test one county manually through:
+  - `python -m controler.main preview --config controler/config.yml --fips <FIPS>`
+  - then the rendered `etl run ... pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml ...`
+- once one county works, test one controller wave with `python -m controler.main run-once --config controler/config.yml`
+- confirm checkpoint JSON path, log path field names, and completion/resume log markers on HPCC
 - treat failures as concrete runtime-context, path-resolution, validation, or provenance defects before doing broader cleanup
-- continue Lobell corn field-year verification on HPCC:
-  - steps 1-3 are confirmed good for the current debug target (`h18v05`, `2016`)
-  - still need to verify step 4 (`normalize_corn_field_year`) against the latest raw aggregate output
-  - current HPCC debug references:
-    - `/mnt/scratch/weave151/etl/work/by_tile_year_csv/corn_yield_h18v05_2016.csv`
-    - `/mnt/scratch/weave151/etl/work/lobell_corn_field_year/260326/230041-a9606475`
 
 ## Executor strategy
 
@@ -66,6 +92,25 @@ Current engineering focus is limited to the `needed-now core` areas:
 - Do not treat `hpcc_direct` and `slurm` as separate product tracks. The intent is for `hpcc_direct` to de-risk the same remote execution model that `slurm` will use.
 
 ## Recent progress
+
+### 2026-04-07
+
+- added a lightweight external controller under `controler/` for chunked county-fit resubmission
+- controller uses ETL execution environment config and `SlurmProvisioner`
+- controller supports diagnostics:
+  - `doctor`
+  - `preview`
+- controller worker mode now targets ETL child runs rather than raw shell workers
+- added ETL child pipeline:
+  - `pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml`
+- child pipeline now resolves the checkpointing R script from the LandCore assets repo copy:
+  - `../landcore-etl-pipelines/scripts/model/Neighborhood_fit_chkptstanr.R`
+- updated live controller config so it no longer overrides `fit_script_path` back to the old HPCC file location
+- in `../landcore-etl-pipelines`:
+  - `pipelines/yanroy/field_fips.yml` now uses canonical `tile_field_id`
+  - `pipelines/risk_model/tillage_covariates_model_input.yml` now filters to years `2005` to `2016`
+  - `assets/county_adjacency2010.csv` is now used to write per-county neighborhood model inputs instead of one giant file
+- current in-flight HPCC run is rebuilding the tillage neighborhood inputs
 
 ### 2026-03-26
 

@@ -42,6 +42,7 @@ For maintaining the prompt set itself:
 
 For "what is next?" or workflow status questions:
 
+- check [`PROJECT_STATUS.md`](/C:/Joe%20Local%20Only/College/Research/etl/PROJECT_STATUS.md) first for the active cross-repo execution checkpoint
 - use [`ai_prompts/pipeline_progress_checklist.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/pipeline_progress_checklist.md)
 
 ## Current Repo Scope
@@ -55,6 +56,7 @@ Related sibling repos commonly used from this workspace:
 - `../landcore-etl-pipelines`
 - `../landcore-data-catalog`
 - `../landcore-duckdb`
+- `../RiskModel-HPCC`
 
 ## Working Rule
 
