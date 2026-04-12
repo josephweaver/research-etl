@@ -75,6 +75,7 @@ def _git_current_branch(repo_path: Path) -> Optional[str]:
 def _resolve_pipeline_asset_refs(
     project_vars: Dict[str, Any],
     repo_root: Path,
+    pipeline_path: Optional[Path] = None,
     commandline_vars: Optional[Dict[str, Any]] = None,
 ) -> list[PipelineAssetRef]:
     try:
@@ -127,6 +128,25 @@ def _resolve_pipeline_asset_refs(
             repo_url=str(override.origin_url or first.repo_url or "").strip(),
             revision=str(override.revision or first.revision or "").strip() or "main",
         )
+    resolved_pipeline = Path(pipeline_path).resolve() if pipeline_path is not None else None
+    if resolved_pipeline is not None:
+        preferred_index: Optional[int] = None
+        for idx, overlay in enumerate(overlays):
+            local_repo_path = str(overlay.local_repo_path or "").strip()
+            if not local_repo_path:
+                continue
+            local = Path(local_repo_path).expanduser()
+            if not local.is_absolute():
+                local = (base_root / local).resolve()
+            pipelines_root = (local / overlay.pipelines_dir).resolve()
+            try:
+                resolved_pipeline.relative_to(pipelines_root)
+            except ValueError:
+                continue
+            preferred_index = idx
+            break
+        if preferred_index not in (None, 0):
+            overlays.insert(0, overlays.pop(preferred_index))
     return overlays
 
 
@@ -449,7 +469,12 @@ class SlurmRunSpecBuilder:
                     logdirs_to_create.append((base_logdir / label).as_posix())
                     start += chunk_size
 
-        pipeline_asset_refs = _resolve_pipeline_asset_refs(project_ns, source_repo_root, commandline_ns)
+        pipeline_asset_refs = _resolve_pipeline_asset_refs(
+            project_ns,
+            source_repo_root,
+            pipeline_input,
+            commandline_ns,
+        )
         etl_source = SourceRef(
             provider="git",
             repo_url=git_origin_url,
