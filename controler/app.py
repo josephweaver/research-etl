@@ -64,8 +64,8 @@ class ControllerPaths:
 @dataclass
 class CountyRecord:
     fips: str
-    checkpoint_path: Path
-    log_path: Path | None
+    checkpoint_path: str
+    log_path: str | None
     status: str
     completed_iter: int | None
     target_iter: int | None
@@ -77,7 +77,7 @@ def _single_county_record(fips: str) -> CountyRecord:
     target = str(fips or "").strip()
     return CountyRecord(
         fips=target,
-        checkpoint_path=Path(""),
+        checkpoint_path="",
         log_path=None,
         status="pending",
         completed_iter=None,
@@ -160,31 +160,84 @@ class ControllerApp:
     def _save_state(self, state: dict[str, Any]) -> None:
         _write_json(self.paths.state_path, state)
 
-    def _checkpoint_paths(self) -> list[Path]:
+    def _remote_python_bin(self) -> str:
+        return str(self.worker_cfg.get("python_bin") or "python3").strip() or "python3"
+
+    def _is_remote_controller(self) -> bool:
+        return isinstance(self.transport, SshTransport)
+
+    def _remote_run_json(self, script_body: str) -> Any:
+        py = self._remote_python_bin()
+        text = (
+            "set -euo pipefail\n"
+            f"{shlex.quote(py)} - <<'PY'\n"
+            f"{script_body}\n"
+            "PY\n"
+        )
+        result = self.transport.run_text(text, check=True)
+        return json.loads(str(result.stdout or "").strip() or "null")
+
+    def _path_exists(self, path_text: str) -> bool:
+        path_value = str(path_text or "").strip()
+        if not path_value:
+            return False
+        if self._is_remote_controller():
+            payload = self._remote_run_json(
+                "from pathlib import Path\n"
+                "import json\n"
+                f"path = Path({path_value!r})\n"
+                "print(json.dumps(path.exists()))"
+            )
+            return bool(payload)
+        return Path(path_value).expanduser().exists()
+
+    def _read_text(self, path_text: str) -> str:
+        path_value = str(path_text or "").strip()
+        if not path_value:
+            return ""
+        if self._is_remote_controller():
+            payload = self._remote_run_json(
+                "from pathlib import Path\n"
+                "import json\n"
+                f"path = Path({path_value!r})\n"
+                "text = path.read_text(encoding='utf-8', errors='replace') if path.exists() else ''\n"
+                "print(json.dumps(text))"
+            )
+            return str(payload or "")
+        return Path(path_value).expanduser().read_text(encoding="utf-8", errors="replace")
+
+    def _checkpoint_paths(self) -> list[str]:
         pattern = str(self.controller_cfg.get("checkpoints_glob") or "").strip()
         if not pattern:
             raise ValueError("controller.checkpoints_glob is required")
-        return sorted(Path(p).expanduser().resolve() for p in glob.glob(pattern))
+        if self._is_remote_controller():
+            payload = self._remote_run_json(
+                "import glob, json\n"
+                f"paths = sorted(glob.glob({pattern!r}))\n"
+                "print(json.dumps(paths))"
+            )
+            return [str(x) for x in list(payload or [])]
+        return [str(Path(p).expanduser().resolve().as_posix()) for p in glob.glob(pattern)]
 
-    def _read_log_state(self, log_path: Path | None) -> tuple[bool, bool]:
-        if log_path is None or not log_path.exists():
+    def _read_log_state(self, log_path: str | None) -> tuple[bool, bool]:
+        if log_path is None or not self._path_exists(log_path):
             return False, False
-        text = log_path.read_text(encoding="utf-8", errors="replace")
+        text = self._read_text(log_path)
         complete_markers = [str(x).lower() for x in list(self.controller_cfg.get("complete_markers") or ["process complete."])]
         continue_markers = [str(x).lower() for x in list(self.controller_cfg.get("continue_markers") or ["resume to process the next batch"])]
         lower = text.lower()
         return any(m in lower for m in complete_markers), any(m in lower for m in continue_markers)
 
-    def _county_from_checkpoint(self, path: Path) -> CountyRecord:
-        payload = _read_json(path)
+    def _county_from_checkpoint(self, path: str) -> CountyRecord:
+        payload = json.loads(self._read_text(path))
         fips_key = str(self.checkpoint_cfg.get("fips_key") or "fips")
         log_path_key = str(self.checkpoint_cfg.get("log_path_key") or "log_path")
         status_key = str(self.checkpoint_cfg.get("status_key") or "status")
         completed_iter_key = str(self.checkpoint_cfg.get("completed_iter_key") or "completed_iter")
         target_iter_key = str(self.checkpoint_cfg.get("target_iter_key") or "target_iter")
-        fips = str(payload.get(fips_key) or path.parent.name).strip()
+        fips = str(payload.get(fips_key) or Path(path).parent.name).strip()
         log_path_raw = str(payload.get(log_path_key) or "").strip()
-        log_path = Path(log_path_raw).expanduser().resolve() if log_path_raw else None
+        log_path = log_path_raw or None
         status = str(payload.get(status_key) or "").strip().lower()
         completed_iter = payload.get(completed_iter_key)
         target_iter = payload.get(target_iter_key)
@@ -266,8 +319,8 @@ class ControllerApp:
                     "active_slurm": county.fips in active,
                     "completed_iter": county.completed_iter,
                     "target_iter": county.target_iter,
-                    "checkpoint_path": county.checkpoint_path.as_posix(),
-                    "log_path": county.log_path.as_posix() if county.log_path else "",
+                    "checkpoint_path": county.checkpoint_path,
+                    "log_path": county.log_path or "",
                 }
             )
         return rows
@@ -276,8 +329,8 @@ class ControllerApp:
         target = str(fips or "").strip()
         try:
             county = self._county_by_fips(target)
-            checkpoint_path = county.checkpoint_path.as_posix()
-            log_path = county.log_path.as_posix() if county.log_path else ""
+            checkpoint_path = county.checkpoint_path
+            log_path = county.log_path or ""
             status = county.status
             reason = county.state_reason
         except KeyError:
@@ -320,11 +373,11 @@ class ControllerApp:
             rows.append(
                 {
                     "fips": county.fips,
-                    "checkpoint_exists": county.checkpoint_path.exists(),
-                    "checkpoint_path": county.checkpoint_path.as_posix(),
+                    "checkpoint_exists": self._path_exists(county.checkpoint_path),
+                    "checkpoint_path": county.checkpoint_path,
                     "missing_checkpoint_keys": missing_keys,
-                    "log_path": county.log_path.as_posix() if county.log_path else "",
-                    "log_exists": bool(county.log_path and county.log_path.exists()),
+                    "log_path": county.log_path or "",
+                    "log_exists": bool(county.log_path and self._path_exists(county.log_path)),
                     "log_complete_marker": log_complete,
                     "log_continue_marker": log_continue,
                     "status": county.status,
@@ -559,8 +612,8 @@ class ControllerApp:
             row = {
                 "array_index": idx,
                 "fips": county.fips,
-                "checkpoint_path": county.checkpoint_path.as_posix(),
-                "log_path": county.log_path.as_posix() if county.log_path else "",
+                "checkpoint_path": county.checkpoint_path,
+                "log_path": county.log_path or "",
             }
             row["worker_command"] = self._render_worker_command(row)
             rows.append(row)
