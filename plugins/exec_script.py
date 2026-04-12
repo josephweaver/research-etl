@@ -76,15 +76,8 @@ def run(args, ctx):
         check=False,
         timeout=timeout_seconds if timeout_seconds > 0 else None,
         env=dict(os.environ),
+        stream_output=True,
     )
-    if (proc.stdout or "").strip():
-        ctx.log(f"[exec_script] stdout: {(proc.stdout or '').strip()[:4000]}")
-    if (proc.stderr or "").strip():
-        ctx.log(f"[exec_script] stderr: {(proc.stderr or '').strip()[:4000]}")
-    if verbose and (proc.stdout or "").strip():
-        ctx.log("[exec_script] verbose stdout echoed")
-    if verbose and (proc.stderr or "").strip():
-        ctx.log("[exec_script] verbose stderr echoed")
     if proc.returncode != 0:
         raise RuntimeError(
             f"script failed rc={proc.returncode}: {(proc.stderr or proc.stdout or '').strip()[:1000]}"
