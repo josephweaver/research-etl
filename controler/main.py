@@ -13,9 +13,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_status = sub.add_parser("status", help="Print county controller status rows as JSON.")
     p_status.add_argument("--config", required=True)
+    p_status.add_argument("--fips-glob", default=None)
 
     p_run = sub.add_parser("run-once", help="Submit one new SLURM wave for eligible counties.")
     p_run.add_argument("--config", required=True)
+    p_run.add_argument("--fips-glob", default=None)
 
     p_single = sub.add_parser("run-one", help="Submit exactly one county by FIPS without checkpoint discovery.")
     p_single.add_argument("--config", required=True)
@@ -27,6 +29,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_doctor = sub.add_parser("doctor", help="Validate checkpoint/log assumptions without submitting work.")
     p_doctor.add_argument("--config", required=True)
     p_doctor.add_argument("--fips", default=None)
+    p_doctor.add_argument("--fips-glob", default=None)
 
     p_preview = sub.add_parser("preview", help="Show the resolved worker command for one county.")
     p_preview.add_argument("--config", required=True)
@@ -44,10 +47,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     app = ControllerApp(args.config)
     if args.cmd == "status":
-        print(json.dumps(app.status_rows(), indent=2))
+        print(json.dumps(app.status_rows(args.fips_glob), indent=2))
         return 0
     if args.cmd == "run-once":
-        print(json.dumps(app.run_once(), indent=2))
+        print(json.dumps(app.run_once(args.fips_glob), indent=2))
         return 0
     if args.cmd == "run-one":
         print(json.dumps(app.run_one(args.fips), indent=2))
@@ -56,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(app.bootstrap(), indent=2))
         return 0
     if args.cmd == "doctor":
-        print(json.dumps(app.doctor(args.fips), indent=2))
+        print(json.dumps(app.doctor(args.fips, args.fips_glob), indent=2))
         return 0
     if args.cmd == "preview":
         print(json.dumps(app.preview(args.fips), indent=2))

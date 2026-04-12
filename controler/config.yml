@@ -12,6 +12,9 @@ controller:
   continue_markers:
     - "resume to process the next batch"
   max_submit: 350
+  seed_county_dir: "/mnt/scratch/weave151/etl/data/risk_model/model_input/county_model_input"
+  seed_manifest_csv: "/mnt/gs21/scratch/weave151/etl/data/risk_model/model_input/county_model_input_manifest.csv"
+  seed_fips_key: "focal_fips"
 
 checkpoint:
   fips_key: "fips"

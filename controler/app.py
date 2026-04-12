@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import fnmatch
 import glob
 import json
+import io
 import shlex
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -219,6 +221,83 @@ class ControllerApp:
             return [str(x) for x in list(payload or [])]
         return [str(Path(p).expanduser().resolve().as_posix()) for p in glob.glob(pattern)]
 
+    def _seed_counties(self) -> list[CountyRecord]:
+        seed_dir = str(self.controller_cfg.get("seed_county_dir") or "").strip()
+        if seed_dir:
+            rows = self._seed_counties_from_dir(seed_dir)
+            if rows:
+                return rows
+        manifest_path = str(self.controller_cfg.get("seed_manifest_csv") or "").strip()
+        if not manifest_path:
+            return []
+        if not self._path_exists(manifest_path):
+            return []
+        fips_key = str(self.controller_cfg.get("seed_fips_key") or "focal_fips").strip() or "focal_fips"
+        text = self._read_text(manifest_path)
+        if not text.strip():
+            return []
+        reader = csv.DictReader(io.StringIO(text))
+        rows: list[CountyRecord] = []
+        seen: set[str] = set()
+        for row in reader:
+            fips = str((row or {}).get(fips_key) or "").strip()
+            if not fips or fips in seen:
+                continue
+            seen.add(fips)
+            rows.append(
+                CountyRecord(
+                    fips=fips,
+                    checkpoint_path="",
+                    log_path=None,
+                    status="pending",
+                    completed_iter=0,
+                    target_iter=None,
+                    state_reason="seed_manifest",
+                    checkpoint={"seed_manifest_csv": manifest_path},
+                )
+            )
+        return rows
+
+    def _seed_counties_from_dir(self, root_dir: str) -> list[CountyRecord]:
+        path_value = str(root_dir or "").strip()
+        if not path_value or not self._path_exists(path_value):
+            return []
+        if self._is_remote_controller():
+            payload = self._remote_run_json(
+                "from pathlib import Path\n"
+                "import json\n"
+                f"root = Path({path_value!r})\n"
+                "items = []\n"
+                "if root.exists():\n"
+                "    for child in sorted(root.iterdir()):\n"
+                "        if child.is_dir():\n"
+                "            items.append(child.name)\n"
+                "print(json.dumps(items))"
+            )
+            names = [str(x).strip() for x in list(payload or [])]
+        else:
+            names = [child.name for child in sorted(Path(path_value).expanduser().iterdir()) if child.is_dir()]
+        rows: list[CountyRecord] = []
+        seen: set[str] = set()
+        for name in names:
+            fips = str(name or "").strip()
+            if not fips or fips in seen:
+                continue
+            seen.add(fips)
+            rows.append(
+                CountyRecord(
+                    fips=fips,
+                    checkpoint_path="",
+                    log_path=None,
+                    status="pending",
+                    completed_iter=0,
+                    target_iter=None,
+                    state_reason="seed_dir",
+                    checkpoint={"seed_county_dir": path_value},
+                )
+            )
+        return rows
+
     def _read_log_state(self, log_path: str | None) -> tuple[bool, bool]:
         if log_path is None or not self._path_exists(log_path):
             return False, False
@@ -276,7 +355,17 @@ class ControllerApp:
         )
 
     def counties(self) -> list[CountyRecord]:
-        return [self._county_from_checkpoint(path) for path in self._checkpoint_paths()]
+        seeded = {county.fips: county for county in self._seed_counties()}
+        for path in self._checkpoint_paths():
+            county = self._county_from_checkpoint(path)
+            seeded[county.fips] = county
+        return [seeded[fips] for fips in sorted(seeded.keys())]
+
+    def _filter_counties(self, counties: list[CountyRecord], fips_glob: str | None = None) -> list[CountyRecord]:
+        pattern = str(fips_glob or "").strip()
+        if not pattern:
+            return counties
+        return [county for county in counties if fnmatch.fnmatch(county.fips, pattern)]
 
     def _county_by_fips(self, fips: str) -> CountyRecord:
         target = str(fips or "").strip()
@@ -306,11 +395,11 @@ class ControllerApp:
             self._save_state(state)
         return active
 
-    def status_rows(self) -> list[dict[str, Any]]:
+    def status_rows(self, fips_glob: str | None = None) -> list[dict[str, Any]]:
         state = self._load_state()
         active = self._active_fips(state)
         rows: list[dict[str, Any]] = []
-        for county in self.counties():
+        for county in self._filter_counties(self.counties(), fips_glob):
             rows.append(
                 {
                     "fips": county.fips,
@@ -354,8 +443,8 @@ class ControllerApp:
             "worker_command": self._render_worker_command(row),
         }
 
-    def doctor(self, fips: str | None = None) -> dict[str, Any]:
-        counties = self.counties()
+    def doctor(self, fips: str | None = None, fips_glob: str | None = None) -> dict[str, Any]:
+        counties = self._filter_counties(self.counties(), fips_glob)
         if fips:
             counties = [self._county_by_fips(fips)]
         rows: list[dict[str, Any]] = []
@@ -393,11 +482,11 @@ class ControllerApp:
             "rows": rows,
         }
 
-    def _eligible(self) -> list[CountyRecord]:
+    def _eligible(self, fips_glob: str | None = None) -> list[CountyRecord]:
         state = self._load_state()
         active = self._active_fips(state)
         eligible: list[CountyRecord] = []
-        for county in self.counties():
+        for county in self._filter_counties(self.counties(), fips_glob):
             if county.status == "complete":
                 continue
             if county.fips in active:
@@ -601,11 +690,11 @@ class ControllerApp:
             writer.writerows(rows)
         return manifest_path
 
-    def run_once(self) -> dict[str, Any]:
+    def run_once(self, fips_glob: str | None = None) -> dict[str, Any]:
         state = self._load_state()
-        eligible = self._eligible()
+        eligible = self._eligible(fips_glob=fips_glob)
         if not eligible:
-            return {"submitted": False, "eligible_count": 0, "job_id": "", "wave_id": ""}
+            return {"submitted": False, "eligible_count": 0, "job_id": "", "wave_id": "", "fips_glob": str(fips_glob or "")}
         wave_id = self._wave_id()
         rows: list[dict[str, Any]] = []
         for idx, county in enumerate(eligible):
@@ -655,6 +744,7 @@ class ControllerApp:
             "eligible_count": len(rows),
             "job_id": str(handle.backend_run_id or ""),
             "wave_id": wave_id,
+            "fips_glob": str(fips_glob or ""),
             "manifest_local_path": local_manifest.as_posix(),
             "manifest_remote_path": remote_manifest_path,
         }
