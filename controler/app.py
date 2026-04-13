@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections import defaultdict
 import fnmatch
 import glob
 import json
@@ -378,14 +379,79 @@ class ControllerApp:
         handle = ProvisionHandle(provisioner="slurm", backend_run_id=job_id, job_ids=[job_id])
         return self.provisioner.status(handle).state
 
+    def _submission_statuses(self, job_ids: list[str]) -> dict[str, ProvisionState]:
+        targets = [str(job_id or "").strip() for job_id in job_ids if str(job_id or "").strip()]
+        if not targets:
+            return {}
+        unique_targets = sorted(set(targets))
+        if len(unique_targets) == 1:
+            only = unique_targets[0]
+            return {only: self._submission_status(only)}
+        result = self.transport.run(
+            ["squeue", "-h", "-j", ",".join(unique_targets), "-o", "%i|%T"],
+            check=False,
+        )
+        states_by_job: dict[str, list[ProvisionState]] = defaultdict(list)
+        for raw_line in str(result.stdout or "").splitlines():
+            line = raw_line.strip()
+            if not line or "|" not in line:
+                continue
+            raw_job_id, raw_state = line.split("|", 1)
+            base_job_id = raw_job_id.strip().split("_", 1)[0]
+            if not base_job_id:
+                continue
+            states_by_job[base_job_id].append(self._map_provision_state(raw_state.strip()))
+        resolved: dict[str, ProvisionState] = {}
+        priority = [
+            ProvisionState.RUNNING,
+            ProvisionState.QUEUED,
+            ProvisionState.PROVISIONING,
+            ProvisionState.PENDING,
+            ProvisionState.SUCCEEDED,
+            ProvisionState.CANCELLED,
+            ProvisionState.FAILED,
+            ProvisionState.UNKNOWN,
+        ]
+        for job_id in unique_targets:
+            seen_states = states_by_job.get(job_id, [])
+            if not seen_states:
+                resolved[job_id] = ProvisionState.UNKNOWN
+                continue
+            for candidate in priority:
+                if candidate in seen_states:
+                    resolved[job_id] = candidate
+                    break
+            else:
+                resolved[job_id] = seen_states[0]
+        return resolved
+
+    @staticmethod
+    def _map_provision_state(raw_state: str) -> ProvisionState:
+        text = str(raw_state or "").strip().upper()
+        if not text:
+            return ProvisionState.UNKNOWN
+        if text in {"PENDING", "CONFIGURING", "RESIZING", "SUSPENDED"}:
+            return ProvisionState.QUEUED
+        if text in {"RUNNING", "COMPLETING", "STAGE_OUT"}:
+            return ProvisionState.RUNNING
+        if text.startswith("COMPLETED"):
+            return ProvisionState.SUCCEEDED
+        if text.startswith("CANCELLED"):
+            return ProvisionState.CANCELLED
+        if text in {"FAILED", "BOOT_FAIL", "DEADLINE", "NODE_FAIL", "OUT_OF_MEMORY", "PREEMPTED", "REVOKED", "TIMEOUT"}:
+            return ProvisionState.FAILED
+        return ProvisionState.UNKNOWN
+
     def _active_fips(self, state: dict[str, Any]) -> set[str]:
         active: set[str] = set()
         changed = False
-        for item in list(state.get("submissions") or []):
+        submissions = list(state.get("submissions") or [])
+        statuses = self._submission_statuses([str(item.get("job_id") or "") for item in submissions])
+        for item in submissions:
             job_id = str(item.get("job_id") or "").strip()
             if not job_id:
                 continue
-            status = self._submission_status(job_id)
+            status = statuses.get(job_id, ProvisionState.UNKNOWN)
             item["scheduler_state"] = str(status.value)
             item["checked_at"] = _utc_now()
             if status in {ProvisionState.QUEUED, ProvisionState.RUNNING}:
