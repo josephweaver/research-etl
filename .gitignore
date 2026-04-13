@@ -13,3 +13,4 @@ dist/
 /.tmp
 {basedir}/logs/bootstrap/web.log
 /controler/waves/
+controler/state.json
