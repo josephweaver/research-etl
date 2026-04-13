@@ -7,6 +7,7 @@ import glob
 import json
 import io
 import shlex
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +23,7 @@ from etl.execution_config import (
 )
 from etl.provisioners.base import ProvisionHandle, ProvisionState, WorkloadSpec
 from etl.provisioners.slurm import SlurmProvisioner
-from etl.transports import LocalProcessTransport, SshTransport
+from etl.transports import ExecutionOptions, LocalProcessTransport, SshTransport
 
 
 def _utc_now() -> str:
@@ -102,6 +103,12 @@ class ControllerApp:
         self.env_name, self.exec_env = self._load_exec_env()
         self.transport = self._build_transport()
         self.provisioner = SlurmProvisioner(self.transport)
+
+    def _progress(self, message: str) -> None:
+        text = str(message or "").rstrip()
+        if not text:
+            return
+        print(text, file=sys.stderr, flush=True)
 
     def _build_paths(self) -> ControllerPaths:
         state_path = Path(str(self.controller_cfg.get("state_path") or "controler/state.json")).expanduser().resolve()
@@ -214,6 +221,7 @@ class ControllerApp:
         if not pattern:
             raise ValueError("controller.checkpoints_glob is required")
         if self._is_remote_controller():
+            self._progress("scan checkpoints.")
             payload = self._remote_run_json(
                 "import glob, json\n"
                 f"paths = sorted(glob.glob({pattern!r}))\n"
@@ -264,6 +272,7 @@ class ControllerApp:
         if not path_value or not self._path_exists(path_value):
             return []
         if self._is_remote_controller():
+            self._progress("scan county input dir.")
             payload = self._remote_run_json(
                 "from pathlib import Path\n"
                 "import json\n"
@@ -379,18 +388,30 @@ class ControllerApp:
         handle = ProvisionHandle(provisioner="slurm", backend_run_id=job_id, job_ids=[job_id])
         return self.provisioner.status(handle).state
 
+    def _scheduler_query_timeout_seconds(self) -> float:
+        raw = self.controller_cfg.get("scheduler_query_timeout_seconds")
+        try:
+            value = float(raw) if raw not in (None, "") else 15.0
+        except (TypeError, ValueError):
+            value = 15.0
+        return max(1.0, value)
+
     def _submission_statuses(self, job_ids: list[str]) -> dict[str, ProvisionState]:
         targets = [str(job_id or "").strip() for job_id in job_ids if str(job_id or "").strip()]
         if not targets:
             return {}
         unique_targets = sorted(set(targets))
-        if len(unique_targets) == 1:
-            only = unique_targets[0]
-            return {only: self._submission_status(only)}
+        self._progress("query slurm" + ("." * len(unique_targets)))
         result = self.transport.run(
             ["squeue", "-h", "-j", ",".join(unique_targets), "-o", "%i|%T"],
             check=False,
+            options=ExecutionOptions(
+                total_timeout_seconds=self._scheduler_query_timeout_seconds(),
+                stream_output=False,
+            ),
         )
+        if result.timed_out or result.returncode != 0:
+            return {job_id: ProvisionState.UNKNOWN for job_id in unique_targets}
         states_by_job: dict[str, list[ProvisionState]] = defaultdict(list)
         for raw_line in str(result.stdout or "").splitlines():
             line = raw_line.strip()
