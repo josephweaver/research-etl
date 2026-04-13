@@ -216,19 +216,45 @@ class ControllerApp:
             return str(payload or "")
         return Path(path_value).expanduser().read_text(encoding="utf-8", errors="replace")
 
-    def _checkpoint_paths(self) -> list[str]:
-        pattern = str(self.controller_cfg.get("checkpoints_glob") or "").strip()
+    def _glob_patterns(self, config_key: str, fips_glob: str | None = None) -> list[str]:
+        pattern = str(self.controller_cfg.get(config_key) or "").strip()
         if not pattern:
-            raise ValueError("controller.checkpoints_glob is required")
+            return []
+        fips_pattern = str(fips_glob or "").strip()
+        if not fips_pattern:
+            return [pattern]
+        narrowed = pattern.replace("/fits/*/", f"/fits/{fips_pattern}/", 1)
+        if narrowed != pattern:
+            return [narrowed]
+        return [pattern]
+
+    def _glob_paths(self, patterns: list[str], *, label: str) -> list[str]:
         if self._is_remote_controller():
-            self._progress("scan checkpoints.")
+            self._progress(f"scan {label}" + ("." * len(patterns)))
             payload = self._remote_run_json(
                 "import glob, json\n"
-                f"paths = sorted(glob.glob({pattern!r}))\n"
+                f"patterns = {patterns!r}\n"
+                "paths = []\n"
+                "for pattern in patterns:\n"
+                "    paths.extend(glob.glob(pattern))\n"
+                "paths = sorted(set(paths))\n"
                 "print(json.dumps(paths))"
             )
             return [str(x) for x in list(payload or [])]
-        return [str(Path(p).expanduser().resolve().as_posix()) for p in glob.glob(pattern)]
+        paths: list[str] = []
+        for pattern in patterns:
+            paths.extend(str(Path(p).expanduser().resolve().as_posix()) for p in glob.glob(pattern))
+        return sorted(set(paths))
+
+    def _status_file_paths(self, fips_glob: str | None = None) -> list[str]:
+        patterns = self._glob_patterns("status_files_glob", fips_glob)
+        return self._glob_paths(patterns, label="status files") if patterns else []
+
+    def _checkpoint_paths(self, fips_glob: str | None = None) -> list[str]:
+        patterns = self._glob_patterns("checkpoints_glob", fips_glob)
+        if not patterns:
+            raise ValueError("controller.checkpoints_glob is required when controller.status_files_glob is not set")
+        return self._glob_paths(patterns, label="checkpoints")
 
     def _seed_counties(self) -> list[CountyRecord]:
         seed_dir = str(self.controller_cfg.get("seed_county_dir") or "").strip()
@@ -364,11 +390,39 @@ class ControllerApp:
             checkpoint=payload,
         )
 
-    def counties(self) -> list[CountyRecord]:
+    def _county_from_status_file(self, path: str) -> CountyRecord:
+        log_complete, log_continue = self._read_log_state(path)
+        fips = Path(path).parents[2].name
+        status = "pending"
+        reason = "status_file"
+        if log_complete:
+            status = "complete"
+            reason = "log_complete"
+        elif log_continue:
+            status = "needs_more"
+            reason = "log_continue"
+        return CountyRecord(
+            fips=fips,
+            checkpoint_path="",
+            log_path=path,
+            status=status,
+            completed_iter=None,
+            target_iter=None,
+            state_reason=reason,
+            checkpoint={"status_file": path},
+        )
+
+    def counties(self, fips_glob: str | None = None) -> list[CountyRecord]:
         seeded = {county.fips: county for county in self._seed_counties()}
-        for path in self._checkpoint_paths():
-            county = self._county_from_checkpoint(path)
-            seeded[county.fips] = county
+        status_paths = self._status_file_paths(fips_glob)
+        if status_paths:
+            for path in status_paths:
+                county = self._county_from_status_file(path)
+                seeded[county.fips] = county
+        else:
+            for path in self._checkpoint_paths(fips_glob):
+                county = self._county_from_checkpoint(path)
+                seeded[county.fips] = county
         return [seeded[fips] for fips in sorted(seeded.keys())]
 
     def _filter_counties(self, counties: list[CountyRecord], fips_glob: str | None = None) -> list[CountyRecord]:
@@ -379,7 +433,7 @@ class ControllerApp:
 
     def _county_by_fips(self, fips: str) -> CountyRecord:
         target = str(fips or "").strip()
-        for county in self.counties():
+        for county in self.counties(target):
             if county.fips == target:
                 return county
         raise KeyError(f"county not found for fips={target}")
@@ -508,7 +562,7 @@ class ControllerApp:
         state = self._load_state()
         active = self._active_fips(state)
         rows: list[dict[str, Any]] = []
-        for county in self._filter_counties(self.counties(), fips_glob):
+        for county in self._filter_counties(self.counties(fips_glob), fips_glob):
             rows.append(
                 {
                     "fips": county.fips,
@@ -553,7 +607,7 @@ class ControllerApp:
         }
 
     def doctor(self, fips: str | None = None, fips_glob: str | None = None) -> dict[str, Any]:
-        counties = self._filter_counties(self.counties(), fips_glob)
+        counties = self._filter_counties(self.counties(fips_glob), fips_glob)
         if fips:
             counties = [self._county_by_fips(fips)]
         rows: list[dict[str, Any]] = []
@@ -595,7 +649,7 @@ class ControllerApp:
         state = self._load_state()
         active = self._active_fips(state)
         eligible: list[CountyRecord] = []
-        for county in self._filter_counties(self.counties(), fips_glob):
+        for county in self._filter_counties(self.counties(fips_glob), fips_glob):
             if county.status == "complete":
                 continue
             if county.fips in active:

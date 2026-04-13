@@ -2,6 +2,7 @@ controller:
   # Assumption for first cut: one checkpoint JSON per county under the stable county run dir.
   # If your R checkpoint writer uses a different filename/location, update this glob.
   checkpoints_glob: "/mnt/scratch/weave151/fits/*/run/chkpt/checkpoint.json"
+  status_files_glob: "/mnt/scratch/weave151/fits/*/run/chkpt/run_status.txt"
   state_path: "controler/state.json"
   local_wave_dir: "controler/waves"
   remote_wave_dir: "/mnt/gs21/scratch/weave151/etl/controler/waves"
