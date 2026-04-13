@@ -467,7 +467,29 @@ class ControllerApp:
         active: set[str] = set()
         changed = False
         submissions = list(state.get("submissions") or [])
-        statuses = self._submission_statuses([str(item.get("job_id") or "") for item in submissions])
+        queryable_states = {
+            "",
+            "submitted",
+            ProvisionState.PENDING.value,
+            ProvisionState.PROVISIONING.value,
+            ProvisionState.QUEUED.value,
+            ProvisionState.RUNNING.value,
+        }
+        job_ids_to_query: list[str] = []
+        statuses: dict[str, ProvisionState] = {}
+        for item in submissions:
+            job_id = str(item.get("job_id") or "").strip()
+            cached_state = str(item.get("scheduler_state") or "").strip().lower()
+            if not job_id:
+                continue
+            if cached_state in queryable_states:
+                job_ids_to_query.append(job_id)
+                continue
+            try:
+                statuses[job_id] = ProvisionState(cached_state) if cached_state else ProvisionState.UNKNOWN
+            except ValueError:
+                statuses[job_id] = ProvisionState.UNKNOWN
+        statuses.update(self._submission_statuses(job_ids_to_query))
         for item in submissions:
             job_id = str(item.get("job_id") or "").strip()
             if not job_id:
