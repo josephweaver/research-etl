@@ -250,6 +250,62 @@ class ControllerApp:
         patterns = self._glob_patterns("status_files_glob", fips_glob)
         return self._glob_paths(patterns, label="status files") if patterns else []
 
+    def _status_file_rows(self, fips_glob: str | None = None) -> list[dict[str, str]]:
+        patterns = self._glob_patterns("status_files_glob", fips_glob)
+        if not patterns:
+            return []
+        if self._is_remote_controller():
+            self._progress("read status files" + ("." * len(patterns)))
+            complete_markers = [str(x).lower() for x in list(self.controller_cfg.get("complete_markers") or ["process complete."])]
+            continue_markers = [str(x).lower() for x in list(self.controller_cfg.get("continue_markers") or ["resume to process the next batch"])]
+            payload = self._remote_run_json(
+                "from pathlib import Path\n"
+                "import glob, json\n"
+                f"patterns = {patterns!r}\n"
+                f"complete_markers = {complete_markers!r}\n"
+                f"continue_markers = {continue_markers!r}\n"
+                "paths = []\n"
+                "for pattern in patterns:\n"
+                "    paths.extend(glob.glob(pattern))\n"
+                "rows = []\n"
+                "for path_text in sorted(set(paths)):\n"
+                "    path = Path(path_text)\n"
+                "    try:\n"
+                "        text = path.read_text(encoding='utf-8', errors='replace').lower()\n"
+                "    except Exception:\n"
+                "        text = ''\n"
+                "    rows.append({\n"
+                "        'path': path_text,\n"
+                "        'fips': path.parents[2].name,\n"
+                "        'complete': '1' if any(m in text for m in complete_markers) else '0',\n"
+                "        'continue': '1' if any(m in text for m in continue_markers) else '0',\n"
+                "    })\n"
+                "print(json.dumps(rows))"
+            )
+            return [
+                {
+                    "path": str((row or {}).get("path") or ""),
+                    "fips": str((row or {}).get("fips") or ""),
+                    "complete": str((row or {}).get("complete") or "0"),
+                    "continue": str((row or {}).get("continue") or "0"),
+                }
+                for row in list(payload or [])
+            ]
+        rows: list[dict[str, str]] = []
+        for path in self._status_file_paths(fips_glob):
+            text = Path(path).read_text(encoding="utf-8", errors="replace").lower()
+            complete_markers = [str(x).lower() for x in list(self.controller_cfg.get("complete_markers") or ["process complete."])]
+            continue_markers = [str(x).lower() for x in list(self.controller_cfg.get("continue_markers") or ["resume to process the next batch"])]
+            rows.append(
+                {
+                    "path": path,
+                    "fips": Path(path).parents[2].name,
+                    "complete": "1" if any(m in text for m in complete_markers) else "0",
+                    "continue": "1" if any(m in text for m in continue_markers) else "0",
+                }
+            )
+        return rows
+
     def _checkpoint_paths(self, fips_glob: str | None = None) -> list[str]:
         patterns = self._glob_patterns("checkpoints_glob", fips_glob)
         if not patterns:
@@ -292,6 +348,81 @@ class ControllerApp:
                 )
             )
         return rows
+
+    def _remote_counties(self, fips_glob: str | None = None) -> list[CountyRecord]:
+        seed_dir = str(self.controller_cfg.get("seed_county_dir") or "").strip()
+        status_patterns = self._glob_patterns("status_files_glob", fips_glob)
+        if not seed_dir:
+            return []
+        fips_pattern = str(fips_glob or "").strip()
+        self._progress("scan remote counties.")
+        complete_markers = [str(x).lower() for x in list(self.controller_cfg.get("complete_markers") or ["process complete."])]
+        continue_markers = [str(x).lower() for x in list(self.controller_cfg.get("continue_markers") or ["resume to process the next batch"])]
+        payload = self._remote_run_json(
+            "from pathlib import Path\n"
+            "import fnmatch, glob, json\n"
+            f"seed_dir = Path({seed_dir!r})\n"
+            f"fips_pattern = {fips_pattern!r}\n"
+            f"status_patterns = {status_patterns!r}\n"
+            f"complete_markers = {complete_markers!r}\n"
+            f"continue_markers = {continue_markers!r}\n"
+            "rows = {}\n"
+            "if seed_dir.exists():\n"
+            "    for child in sorted(seed_dir.iterdir()):\n"
+            "        if not child.is_dir():\n"
+            "            continue\n"
+            "        fips = child.name\n"
+            "        if fips_pattern and not fnmatch.fnmatch(fips, fips_pattern):\n"
+            "            continue\n"
+            "        rows[fips] = {\n"
+            "            'fips': fips,\n"
+            "            'checkpoint_path': '',\n"
+            "            'log_path': '',\n"
+            "            'status': 'pending',\n"
+            "            'reason': 'seed_dir',\n"
+            "        }\n"
+            "paths = []\n"
+            "for pattern in status_patterns:\n"
+            "    paths.extend(glob.glob(pattern))\n"
+            "for path_text in sorted(set(paths)):\n"
+            "    path = Path(path_text)\n"
+            "    try:\n"
+            "        text = path.read_text(encoding='utf-8', errors='replace').lower()\n"
+            "    except Exception:\n"
+            "        text = ''\n"
+            "    fips = path.parents[2].name\n"
+            "    status = 'pending'\n"
+            "    reason = 'status_file'\n"
+            "    if any(m in text for m in complete_markers):\n"
+            "        status = 'complete'\n"
+            "        reason = 'log_complete'\n"
+            "    elif any(m in text for m in continue_markers):\n"
+            "        status = 'needs_more'\n"
+            "        reason = 'log_continue'\n"
+            "    rows[fips] = {\n"
+            "        'fips': fips,\n"
+            "        'checkpoint_path': '',\n"
+            "        'log_path': path_text,\n"
+            "        'status': status,\n"
+            "        'reason': reason,\n"
+            "    }\n"
+            "print(json.dumps([rows[key] for key in sorted(rows)]))"
+        )
+        counties: list[CountyRecord] = []
+        for row in list(payload or []):
+            counties.append(
+                CountyRecord(
+                    fips=str((row or {}).get("fips") or "").strip(),
+                    checkpoint_path=str((row or {}).get("checkpoint_path") or "").strip(),
+                    log_path=str((row or {}).get("log_path") or "").strip() or None,
+                    status=str((row or {}).get("status") or "pending").strip(),
+                    completed_iter=None,
+                    target_iter=None,
+                    state_reason=str((row or {}).get("reason") or "seed_dir").strip(),
+                    checkpoint={},
+                )
+            )
+        return counties
 
     def _seed_counties_from_dir(self, root_dir: str) -> list[CountyRecord]:
         path_value = str(root_dir or "").strip()
@@ -412,12 +543,40 @@ class ControllerApp:
             checkpoint={"status_file": path},
         )
 
+    def _county_from_status_row(self, row: dict[str, str]) -> CountyRecord:
+        path = str((row or {}).get("path") or "").strip()
+        fips = str((row or {}).get("fips") or Path(path).parents[2].name).strip()
+        log_complete = str((row or {}).get("complete") or "0") == "1"
+        log_continue = str((row or {}).get("continue") or "0") == "1"
+        status = "pending"
+        reason = "status_file"
+        if log_complete:
+            status = "complete"
+            reason = "log_complete"
+        elif log_continue:
+            status = "needs_more"
+            reason = "log_continue"
+        return CountyRecord(
+            fips=fips,
+            checkpoint_path="",
+            log_path=path,
+            status=status,
+            completed_iter=None,
+            target_iter=None,
+            state_reason=reason,
+            checkpoint={"status_file": path},
+        )
+
     def counties(self, fips_glob: str | None = None) -> list[CountyRecord]:
+        if self._is_remote_controller():
+            remote_rows = self._remote_counties(fips_glob)
+            if remote_rows:
+                return remote_rows
         seeded = {county.fips: county for county in self._seed_counties()}
-        status_paths = self._status_file_paths(fips_glob)
-        if status_paths:
-            for path in status_paths:
-                county = self._county_from_status_file(path)
+        status_rows = self._status_file_rows(fips_glob)
+        if status_rows:
+            for row in status_rows:
+                county = self._county_from_status_row(row)
                 seeded[county.fips] = county
         else:
             for path in self._checkpoint_paths(fips_glob):
