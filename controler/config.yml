@@ -30,7 +30,7 @@ slurm:
   time: "04:00:00"
   cpus_per_task: 4
   mem: "16G"
-  array_max_parallel: 50
+  array_max_parallel: 100
   verbose: false
 
 worker:
