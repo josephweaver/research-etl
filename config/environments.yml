@@ -103,7 +103,7 @@ environments:
       - GCS_HMAC_SECRET
 
     # ---- Template-only variables (kept at the end on purpose) ----
-    basedir: /mnt/gs21/scratch/weave151/etl
+    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl
     workdir: "{basedir}/work"
     datadir: "{basedir}/data"
     logdir: "{basedir}/logs"
@@ -145,7 +145,7 @@ environments:
       - GCS_HMAC_SECRET
 
     # ---- Template-only variables (kept at the end on purpose) ----
-    basedir: /mnt/gs21/scratch/weave151/etl
+    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
@@ -159,7 +159,7 @@ environments:
     load_secrets_file: true
     db_mode: online
 
-    basedir: /mnt/gs21/scratch/weave151/etl
+    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
