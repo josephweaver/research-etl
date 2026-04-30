@@ -36,6 +36,12 @@ For pipeline debugging or failure analysis:
   - [`ai_prompts/environments/windows.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/environments/windows.md)
   - [`ai_prompts/environments/hpcc.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/environments/hpcc.md)
 
+For onboarding a new user to run their own LandCore checkpointed risk-model fit:
+
+- read [`docs/landcore_risk_model_onboarding.md`](/C:/Joe%20Local%20Only/College/Research/etl/docs/landcore_risk_model_onboarding.md)
+- then inspect the target pipeline copy in `../landcore-etl-pipelines/pipelines/risk_model/`
+- use the pipeline debugging guidance above if the first validation or run fails
+
 For maintaining the prompt set itself:
 
 - read [`ai_prompts/prompt_engineering_guidelines.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/prompt_engineering_guidelines.md)

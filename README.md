@@ -455,6 +455,12 @@ with the same top-level asset layout:
 
 Windows note: if `etl` is not found, use `python -m cli ...` or add your user scripts path (for example `%APPDATA%\Python\Python310\Scripts`) to `PATH`.
 
+#### LandCore risk-model onboarding
+
+For a minimal new-user path to copy, customize, validate, and run the
+checkpointed LandCore neighborhood risk-model fit, see
+`docs/landcore_risk_model_onboarding.md`.
+
 ## Database DDL bootstrap
 
 - Put database DDL migrations in `db/ddl/` using `.sql` files (for example `001_core_tables.sql`, `002_add_columns.sql`).
