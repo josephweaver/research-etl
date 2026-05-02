@@ -4,7 +4,7 @@ environments:
     executor: local
 
     # programmatic: how path normalization should behave during resolution.
-    path_style: windows
+    path_style: unix
 
     # programmatic: inherits the global default execution_mode=immutable.
     # This runs from pinned clean checkouts under {global.source_root}.
@@ -29,7 +29,7 @@ environments:
     executor: local
 
     # programmatic: how path normalization should behave during resolution.
-    path_style: windows
+    path_style: unix
 
     # programmatic: run directly from the current mutable development workspace.
     execution_mode: workspace
@@ -76,8 +76,8 @@ environments:
     remote_retry_delay_seconds: 2
     ssh_connect_timeout: 20
     ssh_strict_host_key_checking: accept-new
-    ssh_host: dev-amd20.passwordless
-    ssh_user: weave151
+    ssh_host: dev-amd20
+    ssh_user: f0108939
     # programmatic: immutable remote ETL and pipeline-asset checkouts live under src/.
     remote_repo: "{basedir}/src"
     source_root: "{basedir}/src"
@@ -103,7 +103,7 @@ environments:
       - GCS_HMAC_SECRET
 
     # ---- Template-only variables (kept at the end on purpose) ----
-    basedir: /mnt/gs21/scratch/weave151/etl
+    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl
     workdir: "{basedir}/work"
     datadir: "{basedir}/data"
     logdir: "{basedir}/logs"
@@ -145,7 +145,7 @@ environments:
       - GCS_HMAC_SECRET
 
     # ---- Template-only variables (kept at the end on purpose) ----
-    basedir: /mnt/gs21/scratch/weave151/etl
+    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
@@ -162,7 +162,7 @@ environments:
     load_secrets_file: true
     db_mode: online
 
-    basedir: /mnt/gs21/scratch/weave151/etl
+    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
