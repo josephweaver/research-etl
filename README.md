@@ -634,6 +634,25 @@ Select with `--environments-config config/environments.yml --env hpcc_alpha`.
 If `--executor local` is used and no `--env` is provided, the tool automatically uses `environments.local` when available.
 Each environment can declare `executor: local|slurm`; mismatched selections are rejected.
 
+Local environment names describe where the `etl run` process itself executes:
+
+- `local`: Windows local execution with Windows path normalization.
+- `unix_local`: Unix/macOS/Linux local execution with Unix path normalization.
+- `hpcc_local`: local execution from an HPCC shell or from inside a SLURM/controller worker.
+- `hpcc_msu`: remote HPCC SLURM submission target. Use this from Windows, macOS/Linux, or HPCC when the goal is to schedule through SLURM.
+
+Example workstation-to-HPCC submission:
+
+```bash
+python -m cli run pipelines/sample.yml --environments-config config/environments.yml --env hpcc_msu --verbose
+```
+
+Example HPCC-internal child run, already inside a scheduled worker:
+
+```bash
+python -m cli run pipelines/sample.yml --environments-config config/environments.yml --env hpcc_local --allow-workspace-source --allow-dirty-git
+```
+
 ### Remote execution (SLURM)
 
 Run the sample pipeline on the remote SLURM target:

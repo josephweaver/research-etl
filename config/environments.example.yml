@@ -13,6 +13,15 @@ environments:
     basedir: ../.out
     workdir: "{basedir}/work"
 
+  unix_local:
+    # Local execution on Unix/macOS/Linux paths. This does not submit to SLURM.
+    executor: local
+    path_style: unix
+    execution_mode: workspace
+    allow_workspace_source: true
+    basedir: ../.out
+    workdir: "{basedir}/work"
+
   hpcc_msu:
     executor: slurm
     name: dev
@@ -54,6 +63,18 @@ environments:
     # Optional: manage tunnel lifecycle with tmux (recommended when command should be cleaned up automatically).
     # db_tunnel_via_tmux: true
     # db_tunnel_session_prefix: "etl-db-tunnel"
+
+  hpcc_local:
+    # Local execution profile for commands already running on HPCC, usually
+    # inside a SLURM/controller worker. Use hpcc_msu to submit remote SLURM jobs.
+    executor: local
+    path_style: unix
+    execution_mode: workspace
+    allow_workspace_source: true
+    basedir: /mnt/gs21/scratch/YOUR_USER/etl
+    workdir: "{basedir}/work"
+    logdir: "{basedir}/logs"
+    datadir: "{basedir}/data"
   hpcc_beta:
     executor: slurm
     name: beta

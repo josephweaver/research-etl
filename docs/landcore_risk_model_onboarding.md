@@ -258,7 +258,7 @@ python -m cli validate ../landcore-etl-pipelines/pipelines/risk_model/neighborho
   --project-id land_core
 ```
 
-When running from HPCC, use the `hpcc_msu_local` style environment for child
+When running from HPCC, use the `hpcc_local` environment for child
 ETL runs: the child process is local to the compute node, even though the work
 is scheduled by SLURM.
 
@@ -571,7 +571,7 @@ worker:
   pipeline_path: "/mnt/gs21/scratch/weave151/etl/src/landcore-etl-pipelines/pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml"
   executor: "local"
   environments_config: "config/environments.yml"
-  env: "hpcc_msu_local"
+  env: "hpcc_local"
   project_id: "land_core"
   flags:
     - "--allow-workspace-source"

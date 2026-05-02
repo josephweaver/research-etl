@@ -150,7 +150,10 @@ environments:
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
 
-  hpcc_msu_local:
+  hpcc_local:
+    # programmatic: local executor profile for commands already running on HPCC.
+    # Use this inside SLURM/controller worker commands; use `hpcc_msu` to submit
+    # from a workstation to the remote HPCC SLURM scheduler.
     executor: local
     path_style: unix
     execution_mode: workspace
@@ -163,3 +166,35 @@ environments:
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
+
+  hpcc_msu_local:
+    # Compatibility alias for older controller configs. Prefer `hpcc_local`.
+    executor: local
+    path_style: unix
+    execution_mode: workspace
+    allow_workspace_source: true
+    propagate_db_secret: false
+    load_secrets_file: true
+    db_mode: online
+
+    basedir: /mnt/gs21/scratch/weave151/etl
+    workdir: "{basedir}/work"
+    logdir: "{basedir}/logs"
+    datadir: "{basedir}/data"
+
+  unix_local:
+    # programmatic: local executor profile for Unix/macOS/Linux workstations.
+    # This is for local execution with Unix path normalization, not SLURM submit.
+    executor: local
+    path_style: unix
+    execution_mode: workspace
+    allow_workspace_source: true
+    rclone_bin: "rclone"
+
+    # ---- Template-only variables (kept at the end on purpose) ----
+    basedir: "{global.basedir}"
+    workdir: "{basedir}/work"
+    logdir: "{basedir}/logs"
+    datadir: "{basedir}/data"
+    tmpdir: "{basedir}/tmp"
+    artifactsdir: "{basedir}/artifacts"

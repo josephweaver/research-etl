@@ -72,3 +72,9 @@ Implication:
   - `GCS_HMAC_KEY`
   - `GCS_HMAC_SECRET`
 - Do not rely on the default allowlist; configure explicit secret propagation in the executor environment settings.
+
+### HPCC target vs local profile
+
+- Use `hpcc_msu` when the operator wants `etl run` to submit work to HPCC through SLURM.
+- Use `hpcc_local` only when `etl run` is already executing on HPCC, for example inside a SLURM/controller worker command.
+- `hpcc_msu_local` is an older compatibility alias; prefer `hpcc_local` in new configs and docs.

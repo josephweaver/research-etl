@@ -40,7 +40,7 @@ worker:
   pipeline_path: "/mnt/gs21/scratch/weave151/etl/src/landcore-etl-pipelines/pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml"
   executor: "local"
   environments_config: "config/environments.yml"
-  env: "hpcc_msu_local"
+  env: "hpcc_local"
   project_id: "land_core"
   flags:
     - "--allow-workspace-source"
