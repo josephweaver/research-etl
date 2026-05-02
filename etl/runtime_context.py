@@ -36,6 +36,7 @@ from .execution_config import (
 )
 from .pipeline import PipelineError, parse_pipeline
 from .pipeline_assets import PipelineAssetError, resolve_pipeline_path_from_project_sources
+from .permissions import apply_process_umask
 from .projects import (
     ProjectConfigError,
     load_project_vars,
@@ -758,6 +759,7 @@ def apply_db_mode_from_exec_env(exec_env: Dict[str, Any]) -> None:
     verbose = exec_env.get("db_verbose")
     if verbose is not None:
         os.environ["ETL_DB_VERBOSE"] = "1" if parse_bool(verbose, default=False) else "0"
+    apply_process_umask(exec_env)
 
 
 def _resolve_max_passes(*, global_vars: Dict[str, Any], exec_env: Dict[str, Any]) -> int:

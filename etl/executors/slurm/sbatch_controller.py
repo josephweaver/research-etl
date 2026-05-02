@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shlex
+from ...permissions import shell_permissions_prelude
 
 
 def write_controller_sbatch(destination: Path, script_text: str) -> Path:
@@ -34,8 +35,11 @@ def render_controller_script(
         for extra in executor.env.sbatch_extra:
             lines.append(f"#SBATCH {extra}")
     lines.append("set -euo pipefail")
+    lines.extend(shell_permissions_prelude(getattr(executor, "env_config", {})))
     lines.append(f"mkdir -p {logdir}")
     lines.append(f"mkdir -p {workdir}")
+    lines.append(f"etl_fix_permissions {shlex.quote(logdir)}")
+    lines.append(f"etl_fix_permissions {shlex.quote(workdir)}")
     lines.append(f"CHILD_FILE={shlex.quote(child_jobs_file)}")
     lines.append(f"POLL={int(poll_seconds)}")
     lines.append(f"WAIT_CHILDREN={'1' if wait_children else '0'}")

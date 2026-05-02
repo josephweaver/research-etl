@@ -39,6 +39,12 @@ environments:
     job_limit: 1000
     array_task_limit: 1000
     max_parallel: 50
+    # Shared filesystem permission policy. On lab/group storage, use a group
+    # writable umask plus setgid directories so collaborators can clean up files.
+    shared_umask: "0002"
+    shared_group: "YOUR_LAB_GROUP"
+    chmod_group_writable: true
+    setgid_dirs: true
     step_max_retries: 1
     step_retry_delay_seconds: 2.0
     # Source provisioning for execution code:
@@ -71,6 +77,10 @@ environments:
     path_style: unix
     execution_mode: workspace
     allow_workspace_source: true
+    shared_umask: "0002"
+    shared_group: "YOUR_LAB_GROUP"
+    chmod_group_writable: true
+    setgid_dirs: true
     basedir: /mnt/gs21/scratch/YOUR_USER/etl
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"

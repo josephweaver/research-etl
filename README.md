@@ -683,6 +683,17 @@ When using `db_tunnel_mode: process`, prefer leaving `db_tunnel_via_tmux` off fo
 
 Pipeline asset resolution can be pinned to a stable shared cache path by setting `ETL_PIPELINE_ASSET_CACHE_ROOT` (for example `/mnt/scratch/weave151/etl`). This avoids per-run cache churn under transient work directories.
 
+On shared HPCC filesystems, configure group-safe file creation in the execution environment:
+
+```yaml
+shared_umask: "0002"
+shared_group: "Viens_AgroEco_Lab"
+chmod_group_writable: true
+setgid_dirs: true
+```
+
+Generated SLURM setup/step/controller scripts apply the umask before creating run directories, git checkouts, virtual environments, logs, and context files. They also best-effort repair group ownership/write bits and setgid bits on configured run roots so collaborators in the lab group can clean up or continue runs.
+
 ### SLURM setup (quick notes)
 - Ensure `sbatch`/`sacct` available on the submission host (login node).
 - Repository and data paths must be visible on the cluster filesystem (no code shipping yet).

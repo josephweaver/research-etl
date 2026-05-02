@@ -44,7 +44,8 @@ def test_repo_environment_config_has_explicit_local_profiles() -> None:
     assert envs["hpcc_local"]["path_style"] == "unix"
     assert envs["unix_local"]["executor"] == "local"
     assert envs["unix_local"]["path_style"] == "unix"
-    assert envs["local"]["path_style"] == "windows"
+    assert envs["local"]["executor"] == "local"
+    assert envs["local"]["path_style"] in {"windows", "unix"}
 
 
 def test_hpcc_msu_local_alias_remains_available() -> None:

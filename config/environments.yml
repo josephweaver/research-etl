@@ -69,6 +69,10 @@ environments:
     job_limit: 1000
     array_task_limit: 10000
     max_parallel: 50
+    shared_umask: "0002"
+    shared_group: "Viens_AgroEco_Lab"
+    chmod_group_writable: true
+    setgid_dirs: true
     ssh_timeout: 120
     scp_timeout: 300
     ssh_retries: 2
@@ -120,6 +124,10 @@ environments:
     git_remote_url: "git@github.com:josephweaver/research-etl.git"
     rclone_bin: "rclone"
     modules: ["Python/3.11.3-GCCcore-12.3.0", "rclone/1.63.1-amd64", "PostgreSQL/16.1-GCCcore-12.3.0"]
+    shared_umask: "0002"
+    shared_group: "Viens_AgroEco_Lab"
+    chmod_group_writable: true
+    setgid_dirs: true
     ssh_timeout: 1800
     ssh_connect_timeout: 1800
     ssh_host: dev-amd20.passwordless
@@ -161,6 +169,10 @@ environments:
     propagate_db_secret: false
     load_secrets_file: true
     db_mode: online
+    shared_umask: "0002"
+    shared_group: "Viens_AgroEco_Lab"
+    chmod_group_writable: true
+    setgid_dirs: true
 
     basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl
     workdir: "{basedir}/work"

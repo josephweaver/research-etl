@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shlex
+from ...permissions import shell_permissions_prelude
 from .template_engine import render_template_file
 
 
@@ -65,6 +66,7 @@ def render_step_script(
     logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
     sbatch_lines: list[str] = []
     chunk_runtime_flags: list[str] = []
+    chunk_permissions: list[str] = shell_permissions_prelude(getattr(executor, "env_config", {}))
     chunk_runtime_bootstrap: list[str] = []
     chunk_modules: list[str] = []
     chunk_runtime_ready: list[str] = []
@@ -109,6 +111,7 @@ def render_step_script(
     if executor.verbose:
         chunk_runtime_bootstrap.append("log_step 'creating log and work directories'")
     chunk_runtime_bootstrap.append(f"mkdir -p {logdir}")
+    chunk_runtime_bootstrap.append(f"etl_fix_permissions {shlex.quote(logdir)}")
     chunk_runtime_bootstrap.append(f"cd {checkout_root}")
     if executor.verbose:
         chunk_runtime_bootstrap.append("log_step 'activating runtime environment'")
@@ -177,6 +180,7 @@ def render_step_script(
     chunk_runtime_ready.append("ETL_SETUP_CPU_MODEL=\"$ETL_CPU_MODEL\"")
     chunk_runtime_ready.append("ETL_SETUP_CPU_FLAGS=\"$ETL_CPU_FLAGS\"")
     chunk_runtime_ready.append("printf 'setup_hostname=%q\\nsetup_arch=%q\\nsetup_cpu_model=%q\\nsetup_cpu_flags=%q\\nvenv_path=%q\\nrepo_root=%q\\n' \"$ETL_SETUP_HOSTNAME\" \"$ETL_SETUP_ARCH\" \"$ETL_SETUP_CPU_MODEL\" \"$ETL_SETUP_CPU_FLAGS\" \"$VENV\" \"$ETL_REPO_ROOT\" > \"$ETL_VENV_INFO\"")
+    chunk_runtime_ready.append('etl_fix_permissions "$VENV"')
     chunk_runtime_ready.append("release_venv_lock")
     chunk_runtime_ready.append("if [ -f \"$ETL_VENV_INFO\" ]; then source \"$ETL_VENV_INFO\"; fi")
     if executor.verbose:
@@ -188,6 +192,7 @@ def render_step_script(
     if executor.verbose:
         chunk_step_scope.append("log_step 'ensuring step workdir exists'")
     chunk_step_scope.append(f"mkdir -p {env_workdir}")
+    chunk_step_scope.append(f"etl_fix_permissions {shlex.quote(env_workdir)}")
     if executor.verbose:
         chunk_step_scope.append("log_step 'switching to step workdir'")
     chunk_step_scope.append(f"cd {env_workdir}")
@@ -267,6 +272,7 @@ def render_step_script(
         {
             "sbatch_lines": "\n".join(sbatch_lines),
             "chunk_runtime_flags": _render_chunk("runtime_flags", chunk_runtime_flags),
+            "chunk_permissions": _render_chunk("permissions", chunk_permissions),
             "chunk_runtime_bootstrap": _render_chunk("runtime_bootstrap", _with_chunk_logs(chunk_runtime_bootstrap, "runtime_bootstrap", executor.verbose)),
             "chunk_modules": _render_chunk("modules", _with_chunk_logs(chunk_modules, "modules", executor.verbose)),
             "chunk_runtime_ready": _render_chunk("runtime_ready", _with_chunk_logs(chunk_runtime_ready, "runtime_ready", executor.verbose)),

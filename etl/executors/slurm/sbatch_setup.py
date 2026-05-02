@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import shlex
 from ...common.parsing import parse_bool
+from ...permissions import shell_permissions_prelude
 from .template_engine import render_template_file
 from ...source_control import CheckoutSpec, checkout
 
@@ -57,6 +58,7 @@ def render_setup_script(
     logdir = logdir or (Path(workdir) / "slurm_logs").as_posix()
     sbatch_lines: list[str] = []
     chunk_runtime_flags: list[str] = []
+    chunk_permissions: list[str] = shell_permissions_prelude(getattr(executor, "env_config", {}))
     chunk_dirs: list[str] = []
     chunk_modules: list[str] = []
     chunk_source_checkout: list[str] = []
@@ -109,6 +111,8 @@ def render_setup_script(
         chunk_dirs.append(f"mkdir -p {d}")
     for d in logdirs_to_create:
         chunk_dirs.append(f"mkdir -p {d}")
+    for d in [logdir, workdir, *workdirs_to_create, *logdirs_to_create]:
+        chunk_dirs.append(f"etl_fix_permissions {shlex.quote(str(d))}")
     if executor.env.modules:
         for mod in executor.env.modules:
             if executor.verbose:
@@ -203,6 +207,7 @@ def render_setup_script(
         chunk_asset_overlays.append(f"ASSET_REF_{idx}={shlex.quote(ref)}")
         chunk_asset_overlays.append("ASSET_CACHE_ROOT=${ETL_PIPELINE_ASSET_CACHE_ROOT:-$(dirname \"$CHECKOUT_ROOT\")}")
         chunk_asset_overlays.append("mkdir -p \"$ASSET_CACHE_ROOT\"")
+        chunk_asset_overlays.append('etl_fix_permissions "$ASSET_CACHE_ROOT"')
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"$(basename \"$ASSET_URL_{idx}\")\"")
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"${{ASSET_REPO_NAME_{idx}%.git}}\"")
         chunk_asset_overlays.append(f"ASSET_REPO_NAME_{idx}=\"$(printf '%s' \"$ASSET_REPO_NAME_{idx}\" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/^-+//; s/-+$//')\"")
@@ -299,6 +304,7 @@ def render_setup_script(
     chunk_venv_bootstrap.append("  rebuild_venv")
     chunk_venv_bootstrap.append("fi")
     chunk_venv_bootstrap.append("if [ ! -f \"$VENV/bin/activate\" ]; then echo \"[etl][setup] venv activation script missing: $VENV/bin/activate\" >&2; exit 1; fi")
+    chunk_venv_bootstrap.append('etl_fix_permissions "$VENV"')
     if executor.verbose:
         chunk_install.append("log_step 'installing requirements if present'")
     chunk_install.append(f"if [ -f \"{req_path}\" ]; then \"$VENV/bin/python\" -m pip install -r \"{req_path}\"; fi")
@@ -307,6 +313,8 @@ def render_setup_script(
     chunk_install.append("  \"$VENV/bin/python\" -m pip install --no-deps -e \"$ETL_REPO_ROOT\"")
     chunk_install.append("fi")
     chunk_install.append("printf 'setup_hostname=%q\\nsetup_arch=%q\\nsetup_cpu_model=%q\\nsetup_cpu_flags=%q\\nvenv_path=%q\\nrepo_root=%q\\n' \"$ETL_SETUP_HOSTNAME\" \"$ETL_SETUP_ARCH\" \"$ETL_SETUP_CPU_MODEL\" \"$ETL_SETUP_CPU_FLAGS\" \"$VENV\" \"$ETL_REPO_ROOT\" > \"$ETL_VENV_INFO\"")
+    chunk_install.append('etl_fix_permissions "$VENV"')
+    chunk_install.append(f"etl_fix_permissions {shlex.quote(checkout_root)}")
     if executor.verbose:
         chunk_finalize.append("log_step 'setup complete'")
     chunk_finalize.append("echo setup complete")
@@ -316,6 +324,7 @@ def render_setup_script(
         {
             "sbatch_lines": "\n".join(sbatch_lines),
             "chunk_runtime_flags": _render_chunk("runtime_flags", chunk_runtime_flags),
+            "chunk_permissions": _render_chunk("permissions", chunk_permissions),
             "chunk_dirs": _render_chunk("dirs", _with_chunk_logs(chunk_dirs, "dirs", executor.verbose)),
             "chunk_modules": _render_chunk("modules", _with_chunk_logs(chunk_modules, "modules", executor.verbose)),
             "chunk_source_checkout": _render_chunk("source_checkout", _with_chunk_logs(chunk_source_checkout, "source_checkout", executor.verbose)),

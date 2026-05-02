@@ -14,12 +14,20 @@ environments:
     job_limit: 1000
     array_task_limit: 10000
     max_parallel: 50
+    shared_umask: "0002"
+    shared_group: "Viens_AgroEco_Lab"
+    chmod_group_writable: true
+    setgid_dirs: true
     remote_repo: "{basedir}/src"
     source_root: "{basedir}/src"
     db_sync_queue_dir: "{workdir}/db_sync_queue/pending"
     propagate_db_secret: false
     load_secrets_file: true
     db_mode: online
+    shared_umask: "0002"
+    shared_group: "Viens_AgroEco_Lab"
+    chmod_group_writable: true
+    setgid_dirs: true
     basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl_weave151
     workdir: "{basedir}/work"
     datadir: "{basedir}/data"
