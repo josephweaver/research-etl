@@ -18,6 +18,7 @@ import copy
 import logging
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -830,11 +831,24 @@ def _build_bootstrap_logging(
     logger_name: str,
 ) -> LoggingContext:
     bootstrap_log_file = _resolve_bootstrap_log_file(global_vars=global_vars, label=label)
-    bootstrap_logger = configure_app_logger(
-        logger_name=logger_name,
-        log_file=bootstrap_log_file,
-        force=True,
-    )
+    try:
+        bootstrap_logger = configure_app_logger(
+            logger_name=logger_name,
+            log_file=bootstrap_log_file,
+            force=True,
+        )
+    except OSError:
+        fallback_root = Path(
+            str(os.environ.get("ETL_BOOTSTRAP_LOG_DIR") or "").strip()
+            or (Path(tempfile.gettempdir()) / "research-etl" / "bootstrap_logs")
+        )
+        bootstrap_log_file = (fallback_root.expanduser() / f"{label}.log").resolve()
+        bootstrap_logger = configure_app_logger(
+            logger_name=logger_name,
+            log_file=bootstrap_log_file,
+            force=True,
+        )
+        bootstrap_logger.warning("Bootstrap log path was not writable; using fallback %s", bootstrap_log_file)
     return LoggingContext(
         bootstrap_log_file=bootstrap_log_file,
         bootstrap_logger=bootstrap_logger,

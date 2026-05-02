@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import etl.pipeline_assets as pipeline_assets
+import etl.runtime_context as runtime_context
 from etl.runtime_context import (
     RuntimeContextRequest,
     apply_db_mode_from_exec_env,
@@ -167,3 +168,29 @@ def test_build_runtime_context_tracks_control_env_for_remote_target(monkeypatch,
     assert ctx.control_env_name == "unix_local"
     assert ctx.pipeline_path == pipeline_file.resolve()
     assert ctx.project_vars["pipeline_asset_sources"][0]["local_repo_path"] == shared.as_posix()
+
+
+def test_bootstrap_logging_falls_back_when_configured_path_denied(monkeypatch, tmp_path: Path) -> None:
+    calls: list[Path] = []
+    real_configure = runtime_context.configure_app_logger
+    fallback_root = tmp_path / "fallback-bootstrap"
+    monkeypatch.setenv("ETL_BOOTSTRAP_LOG_DIR", str(fallback_root))
+
+    def fake_configure_app_logger(**kwargs):
+        path = Path(kwargs["log_file"])
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError("denied")
+        return real_configure(**kwargs)
+
+    monkeypatch.setattr(runtime_context, "configure_app_logger", fake_configure_app_logger)
+
+    logging_ctx = runtime_context._build_bootstrap_logging(
+        global_vars={"logdir": "/not/writable/logs"},
+        label="cli-run",
+        logger_name="test-bootstrap-fallback",
+    )
+
+    assert calls[0].as_posix().endswith("/not/writable/logs/bootstrap/cli-run.log")
+    assert logging_ctx.bootstrap_log_file == (fallback_root / "cli-run.log").resolve()
+    assert logging_ctx.bootstrap_log_file.exists()

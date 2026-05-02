@@ -11,6 +11,7 @@ cd /mnt/research/Viens_AgroEco_Lab/projects
 ```bash
 module load Python/3.11.3-GCCcore-12.3.0 rclone/1.63.1-amd64 PostgreSQL/16.1-GCCcore-12.3.0
 umask 0002
+export ETL_BOOTSTRAP_LOG_DIR="$HOME/.cache/research-etl/bootstrap_logs"
 
 git config --global user.name "Your Name"
 git config --global user.email "you@example.edu"
