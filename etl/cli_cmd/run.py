@@ -290,6 +290,11 @@ def _submit_pipeline_run(
         pipeline_inside_repo = False
     global_vars = vars_ctx.global_vars()
     exec_env = vars_ctx.env_vars()
+    submit_exec_env = dict(exec_env)
+    if args.executor == "slurm" and str(vars_ctx.control_env.get("slurm_submit_mode") or "").strip().lower() == "local":
+        for key in ("ssh_host", "ssh_user", "ssh_jump"):
+            submit_exec_env.pop(key, None)
+        submit_exec_env["sync"] = False
     commandline_vars = vars_ctx.commandline_vars()
     parse_context_vars = vars_ctx.parse_context_vars
     try:
@@ -395,7 +400,7 @@ def _submit_pipeline_run(
         pipeline_remote_hint = pipeline_asset_match.pipeline_remote_hint
     if args.executor == "slurm":
         executor = SlurmExecutor(
-            env_config=exec_env,
+            env_config=submit_exec_env,
             repo_root=repo_root,
             plugins_dir=plugins_dir_path,
             workdir=Path(resolved_workdir),
@@ -414,7 +419,7 @@ def _submit_pipeline_run(
         )
     elif args.executor == "hpcc_direct":
         executor = HpccDirectExecutor(
-            env_config=exec_env,
+            env_config=submit_exec_env,
             repo_root=repo_root,
             plugins_dir=plugins_dir_path,
             workdir=Path(resolved_workdir),
@@ -445,7 +450,7 @@ def _submit_pipeline_run(
             str(pipeline_path),
             context={
                 "pipeline": pipeline,
-                "execution_env": exec_env,
+                "execution_env": submit_exec_env,
                 "resume_run_id": resume_run_id,
                 "provenance": provenance,
                 "repo_root": repo_root,

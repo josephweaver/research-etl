@@ -645,25 +645,25 @@ Local environment names describe where the `etl run` process itself executes:
 Example workstation-to-HPCC submission:
 
 ```bash
-python -m cli run pipelines/sample.yml --environments-config config/environments.yml --env hpcc_msu --verbose
+python -m cli run ../shared-etl-pipelines/pipelines/sample.yml --environments-config config/environments.yml --env hpcc_msu --control-env auto --project-id land_core --verbose
 ```
 
 Example HPCC-internal child run, already inside a scheduled worker:
 
 ```bash
-python -m cli run pipelines/sample.yml --environments-config config/environments.yml --env hpcc_local --allow-workspace-source --allow-dirty-git
+python -m cli run ../shared-etl-pipelines/pipelines/sample.yml --environments-config config/environments.yml --env hpcc_local --control-env auto --project-id land_core --allow-workspace-source --allow-dirty-git
 ```
 
 ### Remote execution (SLURM)
 
 Run the sample pipeline on the remote SLURM target:
 ```powershell
-etl run pipelines/sample.yml --executor slurm --environments-config config/environments.yml --env hpcc_msu --verbose
+etl run ../shared-etl-pipelines/pipelines/sample.yml --environments-config config/environments.yml --env hpcc_msu --control-env auto --project-id land_core --verbose
 ```
 
 Preview submission without executing jobs:
 ```powershell
-etl run pipelines/sample.yml --executor slurm --environments-config config/environments.yml --env hpcc_msu --verbose --dry-run
+etl run ../shared-etl-pipelines/pipelines/sample.yml --environments-config config/environments.yml --env hpcc_msu --control-env auto --project-id land_core --verbose --dry-run
 ```
 
 On remote submissions, the SLURM executor ensures `~/.secrets/etl` exists on the login host with `chmod 600`, writes/updates `export ETL_DATABASE_URL=...` in that file when local `ETL_DATABASE_URL` is available, and generated batch scripts source `~/.secrets/etl` so jobs inherit the DB URL. If the current shell does not contain the variable, Windows `setx` values are also checked from User/Machine environment entries. If neither local nor remote secret value exists, submission fails with a clear error.

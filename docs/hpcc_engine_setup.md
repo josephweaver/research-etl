@@ -37,23 +37,30 @@ rclone lsd <remote-name>:
 If HPCC cannot open a browser, run `rclone authorize "drive"` locally and paste
 the token into the HPCC `rclone config` prompt.
 
-## Smoke Test
+## Smoke Tests
+
+From Windows/macOS/Linux workstation:
+
+```bash
+python -m cli run ../shared-etl-pipelines/pipelines/sample.yml \
+  --environments-config config/environments.yml \
+  --env hpcc_msu \
+  --control-env auto \
+  --project-id land_core \
+  --ignore-dependencies \
+  --verbose
+```
+
+From an HPCC shell:
 
 ```bash
 cd /mnt/research/Viens_AgroEco_Lab/projects/research-etl
 source .venv/bin/activate
 
 python -m cli run ../shared-etl-pipelines/pipelines/sample.yml \
-  --global-config config/global.hpcc_dev.yml \
-  --projects-config config/projects.hpcc_workspace.yml \
-  --environments-config config/environments.hpcc_workspace.yml \
   --env hpcc_msu \
-  --control-env hpcc_msu_local \
+  --control-env auto \
   --project-id land_core \
-  --execution-mode workspace \
-  --execution-source workspace \
-  --allow-workspace-source \
-  --allow-dirty-git \
   --ignore-dependencies \
   --verbose
 ```
@@ -73,6 +80,19 @@ Expected log line:
 
 ## Appendix: SSH Keys
 
+User machine to HPCC:
+
+```bash
+ssh-keygen -t ed25519 -C "you@example.edu"
+ssh-copy-id your_netid@hpcc.msu.edu
+ssh your_netid@hpcc.msu.edu
+```
+
+If `ssh-copy-id` is unavailable, append the local `~/.ssh/id_ed25519.pub`
+contents to `~/.ssh/authorized_keys` on HPCC.
+
+HPCC to GitHub:
+
 ```bash
 ssh-keygen -t ed25519 -C "you@example.edu"
 chmod 700 ~/.ssh
@@ -83,3 +103,12 @@ ssh -T git@github.com
 ```
 
 Add the printed public key to GitHub under `Settings -> SSH and GPG keys`.
+
+HPCC jobs to HPCC login node:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_hpc -C "hpcc-etl"
+cat ~/.ssh/id_ed25519_hpc.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys ~/.ssh/id_ed25519_hpc
+ssh -i ~/.ssh/id_ed25519_hpc your_netid@hpcc.msu.edu hostname
+```

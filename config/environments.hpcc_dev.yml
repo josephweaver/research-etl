@@ -42,6 +42,7 @@ environments:
     projects_root: /mnt/research/Viens_AgroEco_Lab/projects
     executor: local
     path_style: unix
+    slurm_submit_mode: local
     execution_mode: workspace
     allow_workspace_source: true
     propagate_db_secret: false

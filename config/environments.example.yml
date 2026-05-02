@@ -26,6 +26,7 @@ environments:
     # Local execution on Unix/macOS/Linux paths. This does not submit to SLURM.
     executor: local
     path_style: unix
+    slurm_submit_mode: local
     execution_mode: workspace
     allow_workspace_source: true
     basedir: ../.out
