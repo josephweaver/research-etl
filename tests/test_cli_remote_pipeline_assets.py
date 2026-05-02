@@ -302,3 +302,4 @@ def test_submit_pipeline_run_overlays_hpcc_control_paths_for_local_sbatch(
     assert env_config["workdir"] == "/mnt/gs21/scratch/weave151/etl/work"
     assert env_config["source_root"] == "/mnt/gs21/scratch/weave151/etl/src"
     assert env_config["remote_repo"] == "/mnt/gs21/scratch/weave151/etl/src"
+    assert captured["executor_kwargs"]["workdir"] == Path("/mnt/gs21/scratch/weave151/etl/work")

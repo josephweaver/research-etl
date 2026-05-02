@@ -384,6 +384,7 @@ def _submit_pipeline_run(
     allow_workspace_source = runtime_settings.policy.allow_workspace_source
     source_bundle = args.source_bundle or runtime_settings.source_bundle
     source_snapshot = args.source_snapshot or runtime_settings.source_snapshot
+    executor_workdir = Path(str(submit_exec_env.get("workdir") or resolved_workdir))
     if args.executor in {"slurm", "hpcc_direct"} and not pipeline_inside_repo:
         if execution_source == "workspace":
             execution_source = str(exec_env.get("execution_source") or "auto").strip().lower() or "auto"
@@ -407,7 +408,7 @@ def _submit_pipeline_run(
             env_config=submit_exec_env,
             repo_root=repo_root,
             plugins_dir=plugins_dir_path,
-            workdir=Path(resolved_workdir),
+            workdir=executor_workdir,
             global_config=Path(args.global_config) if args.global_config else None,
             projects_config=Path(args.projects_config) if getattr(args, "projects_config", None) else None,
             environments_config=Path(args.environments_config) if args.environments_config else None,
@@ -426,7 +427,7 @@ def _submit_pipeline_run(
             env_config=submit_exec_env,
             repo_root=repo_root,
             plugins_dir=plugins_dir_path,
-            workdir=Path(resolved_workdir),
+            workdir=executor_workdir,
             global_config=Path(args.global_config) if args.global_config else None,
             projects_config=Path(args.projects_config) if getattr(args, "projects_config", None) else None,
             environments_config=Path(args.environments_config) if args.environments_config else None,
@@ -437,7 +438,7 @@ def _submit_pipeline_run(
     else:
         executor = LocalExecutor(
             plugin_dir=plugins_dir_path,
-            workdir=Path(resolved_workdir),
+            workdir=executor_workdir,
             dry_run=args.dry_run,
             max_retries=int(exec_env.get("step_max_retries", 0)),
             retry_delay_seconds=float(exec_env.get("step_retry_delay_seconds", 0.0)),
