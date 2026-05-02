@@ -1,0 +1,15 @@
+# HPCC-dev global config for the shared /mnt/research checkout.
+# Avoids ../.out because that directory may be owned by another lab user.
+resolve_max_passes: 10
+etl_git_remote_url: "git@github.com:josephweaver/research-etl.git"
+execution_mode: immutable
+enable_run_context_snapshots: false
+enable_artifact_tracking: false
+source_root: "/mnt/gs21/scratch/Viens_AgroEco_Lab/etl_weave151/src"
+basedir: "/mnt/gs21/scratch/Viens_AgroEco_Lab/etl_weave151"
+workdir: "{basedir}/work"
+logdir: "{basedir}/logs"
+datadir: "{basedir}/data"
+tmpdir: "{basedir}/tmp"
+artifactsdir: "{basedir}/artifacts"
+bindir: "."

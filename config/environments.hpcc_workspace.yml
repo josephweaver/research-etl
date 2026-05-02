@@ -1,0 +1,42 @@
+environments:
+  hpcc_msu:
+    executor: slurm
+    path_style: unix
+    git_remote_url: git@github.com:josephweaver/research-etl.git
+    execution_source: workspace
+    allow_workspace_source: true
+    host: hpcc.msu.edu
+    rclone_bin: rclone
+    time: 01:00:00
+    cpus_per_task: 2
+    mem: 8G
+    modules:
+    - Python/3.11.3-GCCcore-12.3.0
+    - rclone/1.63.1-amd64
+    - PostgreSQL/16.1-GCCcore-12.3.0
+    job_limit: 1000
+    array_task_limit: 10000
+    max_parallel: 50
+    remote_repo: /mnt/research/Viens_AgroEco_Lab/projects/research-etl
+    source_root: /mnt/research/Viens_AgroEco_Lab/projects
+    db_sync_queue_dir: '{workdir}/db_sync_queue/pending'
+    propagate_db_secret: false
+    load_secrets_file: false
+    db_mode: offline
+    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl_weave151
+    workdir: '{basedir}/work'
+    datadir: '{basedir}/data'
+    logdir: '{basedir}/logs'
+    allow_non_git_source: true
+  hpcc_msu_local:
+    executor: local
+    path_style: unix
+    execution_mode: workspace
+    allow_workspace_source: true
+    propagate_db_secret: false
+    load_secrets_file: true
+    db_mode: online
+    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl_weave151
+    workdir: '{basedir}/work'
+    logdir: '{basedir}/logs'
+    datadir: '{basedir}/data'
