@@ -192,10 +192,14 @@ environments:
     chmod_group_writable: true
     setgid_dirs: true
 
-    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl
+    basedir: /mnt/gs21/scratch/{local_env.USER}/etl
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
+    tmpdir: "{basedir}/tmp"
+    artifactsdir: "{basedir}/artifacts"
+    source_root: "{basedir}/src"
+    remote_repo: "{basedir}/src"
 
   hpcc_msu_local:
     role: local
