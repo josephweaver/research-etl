@@ -1,5 +1,8 @@
 environments:
   local:
+    role: local
+    detect:
+      os: windows
     # programmatic: which executor implementation to use.
     executor: local
 
@@ -25,6 +28,9 @@ environments:
     artifactsdir: "{basedir}/artifacts"
 
   local-dev:
+    role: local
+    detect:
+      os: windows
     # programmatic: which executor implementation to use.
     executor: local
 
@@ -50,6 +56,7 @@ environments:
     artifactsdir: "{basedir}/artifacts"
 
   hpcc_msu:
+    role: remote
     # programmatic: remote executor type.
     executor: slurm
     path_style: unix
@@ -113,6 +120,7 @@ environments:
     logdir: "{basedir}/logs"
 
   hpcc_msu_direct:
+    role: remote
     # programmatic: remote direct-execution executor type.
     executor: hpcc_direct
     propagate_db_secret: false
@@ -159,6 +167,11 @@ environments:
     datadir: "{basedir}/data"
 
   hpcc_local:
+    role: local
+    detect:
+      os: unix
+      path_exists: /mnt/research/Viens_AgroEco_Lab/projects
+    projects_root: /mnt/research/Viens_AgroEco_Lab/projects
     # programmatic: local executor profile for commands already running on HPCC.
     # Use this inside SLURM/controller worker commands; use `hpcc_msu` to submit
     # from a workstation to the remote HPCC SLURM scheduler.
@@ -180,6 +193,7 @@ environments:
     datadir: "{basedir}/data"
 
   hpcc_msu_local:
+    role: local
     # Compatibility alias for older controller configs. Prefer `hpcc_local`.
     executor: local
     path_style: unix
@@ -195,6 +209,9 @@ environments:
     datadir: "{basedir}/data"
 
   unix_local:
+    role: local
+    detect:
+      os: unix
     # programmatic: local executor profile for Unix/macOS/Linux workstations.
     # This is for local execution with Unix path normalization, not SLURM submit.
     executor: local

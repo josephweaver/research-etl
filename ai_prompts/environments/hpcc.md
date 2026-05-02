@@ -76,5 +76,7 @@ Implication:
 ### HPCC target vs local profile
 
 - Use `hpcc_msu` when the operator wants `etl run` to submit work to HPCC through SLURM.
+- `--env` is the remote scheduler target. `--control-env` is the machine where
+  the command is being launched; use `auto` unless debugging path resolution.
 - Use `hpcc_local` only when `etl run` is already executing on HPCC, for example inside a SLURM/controller worker command.
 - `hpcc_msu_local` is an older compatibility alias; prefer `hpcc_local` in new configs and docs.

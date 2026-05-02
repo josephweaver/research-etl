@@ -476,7 +476,7 @@ checkpointed LandCore neighborhood risk-model fit, see
 
 - `etl plugins list [-d plugins/]` â€“ list discovered plugins.  
 - `etl validate <pipeline.yml> [--global-config config/global.yml]` â€“ parse and validate pipeline syntax/templating.  
-- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --projects-config ... --environments-config ... --env name --project-id <project_id> --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.  
+- `etl run <pipeline.yml> [--executor local|slurm --global-config ... --projects-config ... --environments-config ... --env name --control-env auto|name --project-id <project_id> --plugins-dir plugins --workdir .runs --dry-run --max-retries N --retry-delay-seconds S --resume-run-id <run_id> --execution-source auto|git_remote|git_bundle|snapshot|workspace --source-bundle <path> --source-snapshot <path> --allow-workspace-source --allow-dirty-git]` - run locally or submit SLURM jobs.
   - Workdir precedence: `--workdir` (CLI) -> pipeline `workdir` -> execution env `workdir` -> global config `workdir` -> `.runs`.
   - If `requires_pipelines` is set in the target pipeline, missing successful dependencies are run first automatically.
   - SLURM executor submits setup + dependent batch/array jobs with `parallel_with`/`foreach` respected; job/array limits can be set in environments config or env vars.  
@@ -633,6 +633,7 @@ environments:
 Select with `--environments-config config/environments.yml --env hpcc_alpha`.
 If `--executor local` is used and no `--env` is provided, the tool automatically uses `environments.local` when available.
 Each environment can declare `executor: local|slurm`; mismatched selections are rejected.
+For remote submissions, `--env` is the scheduler target and `--control-env` is the local machine profile; omit `--control-env` to auto-detect it.
 
 Local environment names describe where the `etl run` process itself executes:
 

@@ -11,6 +11,7 @@ from pathlib import Path
 import etl.execution_config as ec
 from etl.execution_config import resolve_execution_config_path
 from etl.execution_config import load_execution_config
+from etl.execution_config import detect_control_environment
 
 
 def test_resolve_execution_config_path_uses_etl_repo_root_for_relative_path(tmp_path: Path, monkeypatch) -> None:
@@ -39,6 +40,8 @@ def test_resolve_execution_config_path_uses_module_repo_root(tmp_path: Path, mon
 def test_repo_environment_config_has_explicit_local_profiles() -> None:
     envs = load_execution_config(Path("config/environments.yml"))
 
+    assert envs["hpcc_msu"]["role"] == "remote"
+    assert envs["hpcc_local"]["role"] == "local"
     assert envs["hpcc_msu"]["executor"] == "slurm"
     assert envs["hpcc_local"]["executor"] == "local"
     assert envs["hpcc_local"]["path_style"] == "unix"
@@ -53,3 +56,28 @@ def test_hpcc_msu_local_alias_remains_available() -> None:
 
     assert envs["hpcc_msu_local"]["executor"] == "local"
     assert envs["hpcc_msu_local"]["path_style"] == "unix"
+
+
+def test_detect_control_environment_prefers_selected_local() -> None:
+    envs = {
+        "local": {"role": "local", "executor": "local"},
+        "hpcc_msu": {"role": "remote", "executor": "slurm"},
+    }
+
+    assert detect_control_environment(envs, selected_env_name="local") == "local"
+
+
+def test_detect_control_environment_validates_explicit_control() -> None:
+    envs = {
+        "unix_local": {"role": "local", "executor": "local"},
+        "hpcc_msu": {"role": "remote", "executor": "slurm"},
+    }
+
+    assert (
+        detect_control_environment(
+            envs,
+            selected_env_name="hpcc_msu",
+            explicit_control_env="unix_local",
+        )
+        == "unix_local"
+    )

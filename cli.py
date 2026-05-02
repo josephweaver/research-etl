@@ -108,6 +108,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
                 projects_config=Path(args.projects_config) if getattr(args, "projects_config", None) else None,
                 environments_config=Path(args.environments_config) if getattr(args, "environments_config", None) else None,
                 env_name=str(env_name).strip() if env_name else None,
+                control_env_name=str(getattr(args, "control_env", "") or "").strip() or None,
                 pipeline_path=Path(args.pipeline) if getattr(args, "pipeline", None) else None,
                 project_id=str(getattr(args, "project_id", "") or "").strip() or None,
                 commandline_var_entries=list(getattr(args, "var", []) or []),

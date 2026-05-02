@@ -32,11 +32,13 @@ from etl.projects import (
 from etl.source_control import merge_source_commandline_vars
 from etl.provenance import collect_run_provenance
 from etl.runtime_context import (
+    apply_control_project_paths,
     apply_db_mode_from_exec_env,
     build_resolved_runtime_settings,
     collect_secret_vars,
     merge_context_with_secrets,
     parse_cli_var_overrides,
+    resolve_pipeline_assets_cache_root,
 )
 from etl.tracking import load_runs, load_latest_run_context_snapshot
 from etl.variable_solver import VariableSolver
@@ -48,6 +50,7 @@ class RunVariableContext:
 
     solver: VariableSolver
     parse_context_vars: Dict[str, Any]
+    control_env: Dict[str, Any]
 
     def global_vars(self) -> Dict[str, Any]:
         return dict(self.solver.get("global", {}, resolve=False) or {})
@@ -87,6 +90,11 @@ def register_run_args(
         default=None,
     )
     p_run.add_argument("--env", help="Execution environment name (from environments config)", default=None)
+    p_run.add_argument(
+        "--control-env",
+        default="auto",
+        help="Local/control environment for the machine running etl (default: auto-detect).",
+    )
     p_run.add_argument("--project-id", default=None, help="Project partition id override (default inferred from pipeline metadata/path).")
     p_run.add_argument("--plugins-dir", default="plugins", help="Directory containing plugins")
     p_run.add_argument("--workdir", default=None, help="Directory to store run artifacts (overrides pipeline/env/global workdir).")
@@ -165,6 +173,7 @@ def _build_run_variable_context(
     env_vars: Dict[str, Any],
     commandline_vars: Dict[str, Any],
     parse_context_vars: Dict[str, Any],
+    control_env: Dict[str, Any] | None = None,
 ) -> RunVariableContext:
     max_passes = _resolve_solver_max_passes(global_vars=global_vars, env_vars=env_vars)
     if base_solver is not None:
@@ -179,6 +188,7 @@ def _build_run_variable_context(
     return RunVariableContext(
         solver=solver,
         parse_context_vars=dict(parse_context_vars or {}),
+        control_env=dict(control_env or {}),
     )
 
 
@@ -304,6 +314,7 @@ def _submit_pipeline_run(
                 project_id=project_id,
                 projects_config_path=Path(args.projects_config),
             )
+            project_vars = apply_control_project_paths(project_vars, control_env=vars_ctx.control_env)
         except ProjectConfigError as exc:
             print(f"Projects config error: {exc}", file=sys.stderr)
             return 1
@@ -372,7 +383,7 @@ def _submit_pipeline_run(
             pipeline_path,
             project_vars=project_vars,
             repo_root=repo_root,
-            cache_root=runtime_settings.paths.source_root,
+            cache_root=resolve_pipeline_assets_cache_root(global_vars=global_vars, exec_env=vars_ctx.control_env or exec_env),
         )
         if pipeline_asset_match is None:
             print(
@@ -599,6 +610,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         env_vars=exec_env,
         commandline_vars=commandline_vars,
         parse_context_vars=parse_context_vars,
+        control_env=dict(getattr(base_ctx, "control_env", {}) or {}),
     )
     pipeline_path = Path(getattr(base_ctx, "pipeline_path", None) or args.pipeline)
     if not pipeline_path.exists():

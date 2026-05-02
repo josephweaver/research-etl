@@ -1,5 +1,8 @@
 environments:
   local:
+    role: local
+    detect:
+      os: windows
     executor: local
     path_style: windows
     # Inherits the global default execution_mode=immutable.
@@ -7,6 +10,9 @@ environments:
     workdir: "{basedir}/work"
 
   local-dev:
+    role: local
+    detect:
+      os: windows
     executor: local
     path_style: windows
     execution_mode: workspace
@@ -14,6 +20,9 @@ environments:
     workdir: "{basedir}/work"
 
   unix_local:
+    role: local
+    detect:
+      os: unix
     # Local execution on Unix/macOS/Linux paths. This does not submit to SLURM.
     executor: local
     path_style: unix
@@ -23,6 +32,7 @@ environments:
     workdir: "{basedir}/work"
 
   hpcc_msu:
+    role: remote
     executor: slurm
     name: dev
     rclone_bin: rclone
@@ -71,6 +81,11 @@ environments:
     # db_tunnel_session_prefix: "etl-db-tunnel"
 
   hpcc_local:
+    role: local
+    detect:
+      os: unix
+      path_exists: /mnt/research/Viens_AgroEco_Lab/projects
+    projects_root: /mnt/research/Viens_AgroEco_Lab/projects
     # Local execution profile for commands already running on HPCC, usually
     # inside a SLURM/controller worker. Use hpcc_msu to submit remote SLURM jobs.
     executor: local
@@ -86,6 +101,7 @@ environments:
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
   hpcc_beta:
+    role: remote
     executor: slurm
     name: beta
     rclone_bin: rclone

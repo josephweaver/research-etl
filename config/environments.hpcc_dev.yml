@@ -1,5 +1,6 @@
 environments:
   hpcc_msu:
+    role: remote
     executor: slurm
     path_style: unix
     git_remote_url: "git@github.com:josephweaver/research-etl.git"
@@ -34,6 +35,11 @@ environments:
     logdir: "{basedir}/logs"
 
   hpcc_msu_local:
+    role: local
+    detect:
+      os: unix
+      path_exists: /mnt/research/Viens_AgroEco_Lab/projects
+    projects_root: /mnt/research/Viens_AgroEco_Lab/projects
     executor: local
     path_style: unix
     execution_mode: workspace

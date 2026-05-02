@@ -14,6 +14,8 @@ each with its own SLURM settings and paths.
 from __future__ import annotations
 
 from pathlib import Path
+import platform
+import socket
 from typing import Any, Dict, Optional
 
 import yaml
@@ -148,6 +150,113 @@ def validate_environment_executor(env_name: str, env: Dict[str, Any], *, executo
         )
 
 
+def _env_role(env: Dict[str, Any]) -> str:
+    return str(env.get("role") or env.get("environment_role") or env.get("environment_type") or "").strip().lower()
+
+
+def environment_is_local(env: Dict[str, Any]) -> bool:
+    """Return true when an environment describes the process running `etl`."""
+    role = _env_role(env)
+    if role in {"local", "control", "both", "worker"}:
+        return True
+    if role in {"remote", "target", "scheduler"}:
+        return False
+    return str(env.get("executor") or "").strip().lower() == "local"
+
+
+def local_environment_facts() -> Dict[str, Any]:
+    system = platform.system().lower()
+    os_name = "windows" if system == "windows" else system
+    return {
+        "os": os_name,
+        "is_windows": os.name == "nt",
+        "is_posix": os.name == "posix",
+        "hostname": socket.gethostname(),
+        "cwd": Path.cwd().resolve().as_posix(),
+    }
+
+
+def _detect_rule_matches(rule: Dict[str, Any], facts: Dict[str, Any]) -> bool:
+    expected_os = str(rule.get("os") or "").strip().lower()
+    if expected_os:
+        aliases = {
+            "unix": {"linux", "darwin", "posix"},
+            "posix": {"linux", "darwin", "posix"},
+            "mac": {"darwin"},
+            "macos": {"darwin"},
+            "windows": {"windows"},
+        }
+        allowed = aliases.get(expected_os, {expected_os})
+        fact_os = str(facts.get("os") or "").strip().lower()
+        if fact_os not in allowed and not (expected_os in {"unix", "posix"} and bool(facts.get("is_posix"))):
+            return False
+
+    host_re = str(rule.get("hostname_regex") or rule.get("host_regex") or "").strip()
+    if host_re and not re.search(host_re, str(facts.get("hostname") or ""), flags=re.IGNORECASE):
+        return False
+
+    paths_raw = rule.get("path_exists") or rule.get("paths_exist") or []
+    paths = paths_raw if isinstance(paths_raw, list) else [paths_raw]
+    for raw in paths:
+        text = str(raw or "").strip()
+        if text and not Path(text).expanduser().exists():
+            return False
+
+    cwd_contains = str(rule.get("cwd_contains") or "").strip()
+    if cwd_contains and cwd_contains not in str(facts.get("cwd") or ""):
+        return False
+
+    env_var = str(rule.get("env_var") or "").strip()
+    if env_var and not str(os.environ.get(env_var) or "").strip():
+        return False
+
+    return True
+
+
+def detect_control_environment(
+    envs: Dict[str, Dict[str, Any]],
+    *,
+    selected_env_name: Optional[str] = None,
+    explicit_control_env: Optional[str] = None,
+) -> Optional[str]:
+    """Select the local/control environment for the current process."""
+    requested = str(explicit_control_env or os.environ.get("ETL_CONTROL_ENV") or "").strip()
+    if requested and requested.lower() != "auto":
+        if requested not in envs:
+            raise ExecutionConfigError(f"Control env '{requested}' not found in config")
+        if not environment_is_local(envs.get(requested, {}) or {}):
+            raise ExecutionConfigError(f"Control env '{requested}' is not marked local/control")
+        return requested
+
+    if selected_env_name and selected_env_name in envs:
+        selected = envs.get(selected_env_name, {}) or {}
+        if environment_is_local(selected):
+            return selected_env_name
+
+    facts = local_environment_facts()
+    for name, env in envs.items():
+        if not environment_is_local(env or {}):
+            continue
+        detect = (env or {}).get("detect")
+        rules = detect if isinstance(detect, list) else ([detect] if isinstance(detect, dict) else [])
+        if rules and any(_detect_rule_matches(rule, facts) for rule in rules if isinstance(rule, dict)):
+            return str(name)
+
+    if bool(facts.get("is_windows")) and "local" in envs and environment_is_local(envs["local"]):
+        return "local"
+    if not bool(facts.get("is_windows")):
+        for candidate in ("hpcc_local", "unix_local", "local"):
+            env = envs.get(candidate)
+            if env and environment_is_local(env):
+                detect = env.get("detect")
+                if candidate == "hpcc_local" and detect:
+                    rules = detect if isinstance(detect, list) else ([detect] if isinstance(detect, dict) else [])
+                    if not any(_detect_rule_matches(rule, facts) for rule in rules if isinstance(rule, dict)):
+                        continue
+                return candidate
+    return None
+
+
 def apply_execution_env_overrides(env: Dict[str, Any]) -> Dict[str, Any]:
     """
     Apply environment-variable overrides for common SLURM limits/concurrency.
@@ -205,6 +314,9 @@ __all__ = [
     "apply_execution_env_overrides",
     "resolve_execution_config_path",
     "validate_environment_executor",
+    "detect_control_environment",
+    "environment_is_local",
+    "local_environment_facts",
     "resolve_execution_env_templates",
     "ExecutionConfigError",
 ]

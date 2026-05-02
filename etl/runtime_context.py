@@ -29,11 +29,13 @@ from .expr import try_eval_expr_text
 from .execution_config import (
     ExecutionConfigError,
     apply_execution_env_overrides,
+    detect_control_environment,
     load_execution_config,
     resolve_execution_config_path,
     resolve_execution_env_templates,
     validate_environment_executor,
 )
+from .git_checkout import infer_repo_name
 from .pipeline import PipelineError, parse_pipeline
 from .pipeline_assets import PipelineAssetError, resolve_pipeline_path_from_project_sources
 from .permissions import apply_process_umask
@@ -611,11 +613,13 @@ class RuntimeContext:
     projects_config_path: Optional[Path]
     environments_config_path: Optional[Path]
     env_name: Optional[str]
+    control_env_name: Optional[str]
     selected_executor: Optional[str]
     pipeline_path: Optional[Path]
     project_id: Optional[str]
     local_env_vars: Dict[str, str]
     global_vars: Dict[str, Any]
+    control_env: Dict[str, Any]
     exec_env: Dict[str, Any]
     project_vars: Dict[str, Any]
     commandline_vars: Dict[str, Any]
@@ -662,6 +666,7 @@ class RuntimeContextRequest:
     projects_config: Optional[Path] = None
     environments_config: Optional[Path] = None
     env_name: Optional[str] = None
+    control_env_name: Optional[str] = None
     executor: Optional[str] = None
     pipeline_path: Optional[Path] = None
     project_id: Optional[str] = None
@@ -769,6 +774,44 @@ def _resolve_max_passes(*, global_vars: Dict[str, Any], exec_env: Dict[str, Any]
     except Exception:
         value = 20
     return max(1, min(100, value))
+
+
+def _repo_sibling_path(repo_url: str, *, control_env: Dict[str, Any]) -> str:
+    projects_root = str(control_env.get("projects_root") or "").strip()
+    root = Path(projects_root).expanduser() if projects_root else determine_projects_dir()
+    return (root / infer_repo_name(repo_url)).as_posix()
+
+
+def apply_control_project_paths(project_vars: Dict[str, Any], *, control_env: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill missing asset local_repo_path values for submit-side resolution."""
+    out = copy.deepcopy(project_vars or {})
+    if not control_env:
+        return out
+    role = str(
+        control_env.get("role") or control_env.get("environment_role") or control_env.get("environment_type") or ""
+    ).strip().lower()
+    executor = str(control_env.get("executor") or "").strip().lower()
+    if role in {"remote", "target", "scheduler"} or executor != "local":
+        return out
+
+    sources = out.get("pipeline_asset_sources")
+    if isinstance(sources, list):
+        patched_sources = []
+        for raw in sources:
+            if not isinstance(raw, dict):
+                patched_sources.append(raw)
+                continue
+            item = copy.deepcopy(raw)
+            repo_url = str(item.get("repo_url") or item.get("url") or "").strip()
+            if repo_url and not str(item.get("local_repo_path") or item.get("local_path") or "").strip():
+                item["local_repo_path"] = _repo_sibling_path(repo_url, control_env=control_env)
+            patched_sources.append(item)
+        out["pipeline_asset_sources"] = patched_sources
+
+    legacy_repo = str(out.get("pipeline_assets_repo_url") or "").strip()
+    if legacy_repo and not str(out.get("pipeline_assets_local_repo_path") or "").strip():
+        out["pipeline_assets_local_repo_path"] = _repo_sibling_path(legacy_repo, control_env=control_env)
+    return out
 
 
 def _resolve_bootstrap_log_file(
@@ -887,10 +930,18 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
     selected_env_name = str(req.env_name or "").strip() or None
     selected_executor = str(req.executor or "").strip().lower() or None
 
+    envs: Dict[str, Dict[str, Any]] = {}
     exec_env: Dict[str, Any] = {}
-    if environments_config_path and selected_env_name:
+    control_env_name: Optional[str] = None
+    control_env: Dict[str, Any] = {}
+    if environments_config_path:
         try:
             envs = load_execution_config(environments_config_path)
+        except ExecutionConfigError as exc:
+            raise RuntimeContextError(f"Environments config error: {exc}") from exc
+
+    if environments_config_path and selected_env_name:
+        try:
             exec_env = dict(envs.get(selected_env_name, {}) or {})
             if not exec_env:
                 raise RuntimeContextError(f"Execution env '{selected_env_name}' not found in config")
@@ -901,6 +952,20 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
             raise RuntimeContextError(f"Environments config error: {exc}") from exc
     elif selected_env_name and not environments_config_path:
         raise RuntimeContextError("Environments config error: `env_name` provided but no environments config was found.")
+
+    if environments_config_path and envs:
+        try:
+            control_env_name = detect_control_environment(
+                envs,
+                selected_env_name=selected_env_name,
+                explicit_control_env=req.control_env_name,
+            )
+            if control_env_name:
+                control_env = dict(envs.get(control_env_name, {}) or {})
+                control_env = apply_execution_env_overrides(control_env)
+                control_env = resolve_execution_env_templates(control_env, global_vars=global_vars)
+        except ExecutionConfigError as exc:
+            raise RuntimeContextError(f"Control environment config error: {exc}") from exc
 
     if not selected_executor:
         env_executor = str(exec_env.get("executor") or "").strip().lower()
@@ -932,13 +997,14 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
             project_vars = load_project_vars(project_id=project_id, projects_config_path=projects_config_path)
         except ProjectConfigError as exc:
             raise RuntimeContextError(f"Projects config error: {exc}") from exc
+        project_vars = apply_control_project_paths(project_vars, control_env=control_env)
 
         try:
             pipeline_path = resolve_pipeline_path_from_project_sources(
                 pipeline_path,
                 project_vars=project_vars,
                 repo_root=Path(".").resolve(),
-                cache_root=resolve_pipeline_assets_cache_root(global_vars=global_vars, exec_env=exec_env),
+                cache_root=resolve_pipeline_assets_cache_root(global_vars=global_vars, exec_env=control_env or exec_env),
             )
         except PipelineAssetError as exc:
             raise RuntimeContextError(f"Pipeline asset resolution error: {exc}") from exc
@@ -962,6 +1028,7 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
             project_vars = load_project_vars(project_id=project_id, projects_config_path=projects_config_path)
         except ProjectConfigError as exc:
             raise RuntimeContextError(f"Projects config error: {exc}") from exc
+        project_vars = apply_control_project_paths(project_vars, control_env=control_env)
         try:
             pipeline_obj = parse_pipeline(
                 pipeline_path,
@@ -974,8 +1041,9 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
             raise RuntimeContextError(f"Invalid pipeline: {exc}") from exc
 
     logging_ctx.bootstrap_logger.info(
-        "Bootstrap context loaded env=%s executor=%s project_id=%s",
+        "Bootstrap context loaded env=%s control_env=%s executor=%s project_id=%s",
         selected_env_name or "",
+        control_env_name or "",
         selected_executor or "",
         project_id or "",
     )
@@ -997,14 +1065,14 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
     control_catalog, control_solver = _build_variable_catalog(
         global_vars=global_vars,
         local_env_vars=local_env_vars,
-        exec_env={},
+        exec_env=control_env,
         project_vars=project_vars,
         commandline_vars=commandline_vars,
         parse_context_vars=parse_context_vars,
         pipeline=pipeline_obj,
         project_id=project_id,
-        env_name="control",
-        executor="local",
+        env_name=control_env_name or "control",
+        executor=str(control_env.get("executor") or "local"),
         app_path=determine_app_path(),
         pipeline_path=pipeline_path,
     )
@@ -1018,11 +1086,13 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
         projects_config_path=projects_config_path,
         environments_config_path=environments_config_path,
         env_name=selected_env_name,
+        control_env_name=control_env_name,
         selected_executor=selected_executor,
         pipeline_path=pipeline_path.resolve() if pipeline_path else None,
         project_id=project_id,
         local_env_vars=local_env_vars,
         global_vars=global_vars,
+        control_env=control_env,
         exec_env=exec_env,
         project_vars=project_vars,
         commandline_vars=commandline_vars,
@@ -1048,6 +1118,7 @@ __all__ = [
     "collect_secret_vars",
     "merge_context_with_secrets",
     "apply_db_mode_from_exec_env",
+    "apply_control_project_paths",
     "ResolvedExecutionPolicy",
     "ResolvedRuntimePaths",
     "ResolvedRuntimeSettings",
