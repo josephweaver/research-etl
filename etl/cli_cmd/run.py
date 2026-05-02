@@ -295,6 +295,10 @@ def _submit_pipeline_run(
         for key in ("ssh_host", "ssh_user", "ssh_jump"):
             submit_exec_env.pop(key, None)
         submit_exec_env["sync"] = False
+        for key in ("basedir", "workdir", "logdir", "datadir", "tmpdir", "artifactsdir", "source_root", "remote_repo"):
+            value = vars_ctx.control_env.get(key)
+            if value is not None and str(value).strip():
+                submit_exec_env[key] = value
     commandline_vars = vars_ctx.commandline_vars()
     parse_context_vars = vars_ctx.parse_context_vars
     try:

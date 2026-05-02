@@ -161,10 +161,14 @@ environments:
       - GCS_HMAC_SECRET
 
     # ---- Template-only variables (kept at the end on purpose) ----
-    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl
+    basedir: /mnt/gs21/scratch/{local_env.USER}/etl
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
+    tmpdir: "{basedir}/tmp"
+    artifactsdir: "{basedir}/artifacts"
+    source_root: "{basedir}/src"
+    remote_repo: "{basedir}/src"
 
   hpcc_local:
     role: local
@@ -205,10 +209,14 @@ environments:
     load_secrets_file: true
     db_mode: online
 
-    basedir: /mnt/gs21/scratch/weave151/etl
+    basedir: /mnt/gs21/scratch/{local_env.USER}/etl
     workdir: "{basedir}/work"
     logdir: "{basedir}/logs"
     datadir: "{basedir}/data"
+    tmpdir: "{basedir}/tmp"
+    artifactsdir: "{basedir}/artifacts"
+    source_root: "{basedir}/src"
+    remote_repo: "{basedir}/src"
 
   unix_local:
     role: local

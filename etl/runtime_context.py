@@ -943,6 +943,7 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
 
     selected_env_name = str(req.env_name or "").strip() or None
     selected_executor = str(req.executor or "").strip().lower() or None
+    local_env_vars = dict(req.local_env_vars or {str(k): str(v) for k, v in os.environ.items()})
 
     envs: Dict[str, Dict[str, Any]] = {}
     exec_env: Dict[str, Any] = {}
@@ -961,7 +962,11 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
                 raise RuntimeContextError(f"Execution env '{selected_env_name}' not found in config")
             validate_environment_executor(selected_env_name, exec_env, executor=selected_executor)
             exec_env = apply_execution_env_overrides(exec_env)
-            exec_env = resolve_execution_env_templates(exec_env, global_vars=global_vars)
+            exec_env = resolve_execution_env_templates(
+                exec_env,
+                global_vars=global_vars,
+                local_env_vars=local_env_vars,
+            )
         except ExecutionConfigError as exc:
             raise RuntimeContextError(f"Environments config error: {exc}") from exc
     elif selected_env_name and not environments_config_path:
@@ -977,7 +982,11 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
             if control_env_name:
                 control_env = dict(envs.get(control_env_name, {}) or {})
                 control_env = apply_execution_env_overrides(control_env)
-                control_env = resolve_execution_env_templates(control_env, global_vars=global_vars)
+                control_env = resolve_execution_env_templates(
+                    control_env,
+                    global_vars=global_vars,
+                    local_env_vars=local_env_vars,
+                )
         except ExecutionConfigError as exc:
             raise RuntimeContextError(f"Control environment config error: {exc}") from exc
 
@@ -986,8 +995,6 @@ def build_runtime_context(req: RuntimeContextRequest) -> RuntimeContext:
         selected_executor = env_executor or None
 
     apply_db_mode_from_exec_env(exec_env)
-    local_env_vars = dict(req.local_env_vars or {str(k): str(v) for k, v in os.environ.items()})
-
     if req.commandline_vars is not None:
         commandline_vars = dict(req.commandline_vars or {})
     else:

@@ -170,6 +170,44 @@ def test_build_runtime_context_tracks_control_env_for_remote_target(monkeypatch,
     assert ctx.project_vars["pipeline_asset_sources"][0]["local_repo_path"] == shared.as_posix()
 
 
+def test_control_env_templates_can_use_local_env_vars(tmp_path: Path) -> None:
+    repo_root = tmp_path / "research-etl"
+    cfg = repo_root / "config"
+    cfg.mkdir(parents=True)
+    (cfg / "global.yml").write_text("basedir: ./out\n", encoding="utf-8")
+    (cfg / "environments.yml").write_text(
+        "\n".join(
+            [
+                "environments:",
+                "  hpcc_local:",
+                "    role: local",
+                "    executor: local",
+                "    path_style: unix",
+                "    basedir: /mnt/gs21/scratch/{local_env.USER}/etl",
+                "    workdir: '{basedir}/work'",
+                "  hpcc_msu:",
+                "    role: remote",
+                "    executor: slurm",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    ctx = build_runtime_context(
+        RuntimeContextRequest(
+            global_config=cfg / "global.yml",
+            environments_config=cfg / "environments.yml",
+            env_name="hpcc_msu",
+            control_env_name="hpcc_local",
+            local_env_vars={"USER": "monica"},
+        )
+    )
+
+    assert ctx.control_env["basedir"] == "/mnt/gs21/scratch/monica/etl"
+    assert ctx.control_env["workdir"] == "/mnt/gs21/scratch/monica/etl/work"
+
+
 def test_bootstrap_logging_falls_back_when_configured_path_denied(monkeypatch, tmp_path: Path) -> None:
     calls: list[Path] = []
     real_configure = runtime_context.configure_app_logger

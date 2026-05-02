@@ -289,6 +289,7 @@ def resolve_execution_env_templates(
     env: Dict[str, Any],
     *,
     global_vars: Optional[Dict[str, Any]] = None,
+    local_env_vars: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Resolve templated execution env values (for example `{basedir}/jobs`)
@@ -301,6 +302,7 @@ def resolve_execution_env_templates(
     ctx: Dict[str, Any] = {}
     ctx = _merge_with_namespace(ctx, "global", global_vars or {})
     ctx = _merge_with_namespace(ctx, "globals", global_vars or {})
+    ctx = _merge_with_namespace(ctx, "local_env", local_env_vars or {})
     ctx = _merge_with_namespace(ctx, "env", env)
     resolved = _resolve_context_iterative(ctx, max_passes=max_passes)
     env_resolved = resolved.get("env")
