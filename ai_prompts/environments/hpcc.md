@@ -54,6 +54,17 @@ Implication:
 - Remote HPCC setup depends on `requirements.txt`.
 - Dependency changes needed by remote jobs must be added there, not only installed locally.
 
+### Interrupted immutable source checkouts
+
+- A cached checkout can retain a `.git` directory even when an interrupted clone left
+  the repository metadata incomplete.
+- Treat the checkout as corrupt unless
+  `git -C <checkout> rev-parse --is-inside-work-tree` succeeds.
+- Remove and reclone only that immutable cache directory; the requested revision is
+  pinned and can be reconstructed from its remote.
+- A typical symptom is `fatal: not a git repository` during the setup job's
+  `git fetch`, before any pipeline step runs.
+
 ### Python virtualenv portability across node types
 
 - ICER documents `Illegal instruction` failures when a virtualenv or pip-installed packages are created on one node type and reused on another.

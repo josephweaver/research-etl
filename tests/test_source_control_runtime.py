@@ -3,7 +3,27 @@ from __future__ import annotations
 from pathlib import Path
 
 import etl.source_control.runtime as rt
-from etl.source_control import SourceExecutionSpec
+from etl.source_control import CheckoutSpec, SourceExecutionSpec
+
+
+def test_checkout_rebuilds_cache_when_git_metadata_is_corrupt() -> None:
+    commands = "\n".join(
+        rt.checkout(
+            CheckoutSpec(
+                repo_url="https://example.test/pipelines.git",
+                revision="abc123",
+                checkout_root="/tmp/pipelines-abc123",
+            )
+        )
+    )
+
+    assert (
+        'if [ -e "$CHECKOUT_ROOT" ] && '
+        '! git -C "$CHECKOUT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; '
+        'then rm -rf "$CHECKOUT_ROOT"; fi'
+    ) in commands
+    assert 'if [ ! -d "$CHECKOUT_ROOT" ]; then git clone --no-checkout' in commands
+    assert '[ ! -d "$CHECKOUT_ROOT/.git" ]' not in commands
 
 
 def test_merge_source_commandline_vars_seeds_etl_and_pipeline_defaults(monkeypatch, tmp_path: Path) -> None:
