@@ -522,6 +522,7 @@ steps:
 **Preferred Fix**
 - Guard shared virtualenv creation/install, immutable source checkout mutation, asset checkout mutation, and shared asset-index updates with `flock`.
 - Put each lock file outside any directory that the protected operation may replace.
+- Put the lock root on a filesystem whose advisory locks coordinate across compute nodes. On MSU HPCC, use the NFS home filesystem rather than `/mnt/gs21` GPFS.
 - Use a bounded wait and print the lock pathname on timeout. Kernel-owned locks are released automatically when a process exits; the lock file itself does not need deletion.
 
 **Prompt Rule**

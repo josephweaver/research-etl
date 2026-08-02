@@ -946,12 +946,14 @@ def test_slurm_hpcc_bootstrap_uses_portable_venv_and_loads_modules_before_activa
     assert "VENV=\"$VENV_BASE-$ETL_NODE_FAMILY\"" in batch_script
     assert "ETL_VENV_INFO=\"$VENV/.etl_venv_build_info\"" in batch_script
     assert "ETL_LOCK_WAIT_SECONDS=${ETL_LOCK_WAIT_SECONDS:-900}" in setup_script
-    assert "ETL_CHECKOUT_LOCKFILE=\"${CHECKOUT_ROOT}.lock\"" in setup_script
+    assert "ETL_LOCK_ROOT=${ETL_LOCK_ROOT:-$HOME/.cache/research-etl/locks}" in setup_script
+    assert "ETL_CHECKOUT_LOCKFILE=\"$(etl_lockfile_for \"$CHECKOUT_ROOT\")\"" in setup_script
     assert "flock -w \"$ETL_LOCK_WAIT_SECONDS\" 8" in setup_script
-    assert "ETL_VENV_LOCKFILE=\"$VENV.lock\"" in setup_script
+    assert "ETL_VENV_LOCKFILE=\"$(etl_lockfile_for \"$VENV\")\"" in setup_script
     assert "flock -w \"$ETL_LOCK_WAIT_SECONDS\" 9" in setup_script
     assert "ETL_LOCK_WAIT_SECONDS=${ETL_LOCK_WAIT_SECONDS:-900}" in batch_script
-    assert "ETL_VENV_LOCKFILE=\"$VENV.lock\"" in batch_script
+    assert "ETL_LOCK_ROOT=${ETL_LOCK_ROOT:-$HOME/.cache/research-etl/locks}" in batch_script
+    assert "ETL_VENV_LOCKFILE=\"$(etl_lockfile_for \"$VENV\")\"" in batch_script
     assert "flock -w \"$ETL_LOCK_WAIT_SECONDS\" 9" in batch_script
     assert ".lockdir" not in batch_script
     assert "if [ -f \"$ETL_VENV_INFO\" ]; then source \"$ETL_VENV_INFO\"; fi" in batch_script
@@ -1093,9 +1095,9 @@ def test_slurm_asset_overlays_clone_to_sibling_cache_root(monkeypatch, tmp_path:
 
     setup_script = calls[0]["script_text"]
     assert "ASSET_CACHE_ROOT=${ETL_PIPELINE_ASSET_CACHE_ROOT:-$(dirname \"$CHECKOUT_ROOT\")}" in setup_script
-    assert "ETL_ASSET_LOCKFILE=\"${ASSET_DIR_0}.lock\"" in setup_script
+    assert "ETL_ASSET_LOCKFILE=\"$(etl_lockfile_for \"${ASSET_DIR_0}\")\"" in setup_script
     assert "flock -w \"$ETL_LOCK_WAIT_SECONDS\" 7" in setup_script
-    assert "ETL_ASSET_INDEX_LOCKFILE=\"$ASSET_CACHE_ROOT/.asset_ref_index.lock\"" in setup_script
+    assert "ETL_ASSET_INDEX_LOCKFILE=\"$(etl_lockfile_for \"$ASSET_CACHE_ROOT/.asset_ref_index.json\")\"" in setup_script
     assert "flock -w \"$ETL_LOCK_WAIT_SECONDS\" 6" in setup_script
     assert "$CHECKOUT_ROOT/.pipeline_assets/src_0" not in setup_script
     assert "ln -sfn" in setup_script

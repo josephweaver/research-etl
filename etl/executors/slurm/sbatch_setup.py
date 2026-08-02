@@ -107,6 +107,10 @@ def render_setup_script(
         chunk_runtime_flags.append("log_step 'setup bootstrap started'")
     chunk_runtime_flags.append(f"ETL_LOCK_WAIT_SECONDS=${{ETL_LOCK_WAIT_SECONDS:-{lock_wait_seconds}}}")
     chunk_runtime_flags.append("command -v flock >/dev/null 2>&1 || { echo \"[etl][setup] flock is required for shared checkout and venv locking\" >&2; exit 1; }")
+    chunk_runtime_flags.append("command -v sha256sum >/dev/null 2>&1 || { echo \"[etl][setup] sha256sum is required for shared lock keys\" >&2; exit 1; }")
+    chunk_runtime_flags.append("ETL_LOCK_ROOT=${ETL_LOCK_ROOT:-$HOME/.cache/research-etl/locks}")
+    chunk_runtime_flags.append("mkdir -p \"$ETL_LOCK_ROOT\"")
+    chunk_runtime_flags.append("etl_lockfile_for(){ printf '%s' \"$1\" | sha256sum | awk -v root=\"$ETL_LOCK_ROOT\" '{print root \"/\" $1 \".lock\"}'; }")
     if executor.verbose:
         chunk_dirs.append("log_step 'creating setup directories'")
     chunk_dirs.append(f"echo \"[etl][setup][paths] workdir={workdir}\"")
@@ -142,7 +146,7 @@ def render_setup_script(
     chunk_source_checkout.append(f"SOURCE_BUNDLE={source_bundle_q}")
     chunk_source_checkout.append(f"SOURCE_SNAPSHOT={source_snapshot_q}")
     chunk_source_checkout.append("mkdir -p \"$(dirname \"$CHECKOUT_ROOT\")\"")
-    chunk_source_checkout.append("ETL_CHECKOUT_LOCKFILE=\"${CHECKOUT_ROOT}.lock\"")
+    chunk_source_checkout.append("ETL_CHECKOUT_LOCKFILE=\"$(etl_lockfile_for \"$CHECKOUT_ROOT\")\"")
     chunk_source_checkout.append("exec 8>\"$ETL_CHECKOUT_LOCKFILE\"")
     chunk_source_checkout.append("if ! flock -w \"$ETL_LOCK_WAIT_SECONDS\" 8; then echo \"[etl][setup][source] timed out waiting for checkout lock: $ETL_CHECKOUT_LOCKFILE\" >&2; exit 1; fi")
     # Pre-1.0 simplified source path: default to linear git_remote flow.
@@ -233,7 +237,7 @@ def render_setup_script(
         chunk_asset_overlays.append(f"if [ -z \"$ASSET_COMMIT_{idx}\" ]; then echo \"[etl][setup][assets] could not resolve commit for $ASSET_URL_{idx} ref=$ASSET_REF_{idx}\" >&2; exit 1; fi")
         chunk_asset_overlays.append(f"ASSET_SHORT_SHA_{idx}=\"$(printf '%s' \"$ASSET_COMMIT_{idx}\" | cut -c1-12)\"")
         chunk_asset_overlays.append(f"{asset_dir_var}=\"$ASSET_CACHE_ROOT/${{ASSET_REPO_NAME_{idx}}}-${{ASSET_SHORT_SHA_{idx}}}\"")
-        chunk_asset_overlays.append(f"ETL_ASSET_LOCKFILE=\"${{{asset_dir_var}}}.lock\"")
+        chunk_asset_overlays.append(f"ETL_ASSET_LOCKFILE=\"$(etl_lockfile_for \"${{{asset_dir_var}}}\")\"")
         chunk_asset_overlays.append("exec 7>\"$ETL_ASSET_LOCKFILE\"")
         chunk_asset_overlays.append("if ! flock -w \"$ETL_LOCK_WAIT_SECONDS\" 7; then echo \"[etl][setup][assets] timed out waiting for asset checkout lock: $ETL_ASSET_LOCKFILE\" >&2; exit 1; fi")
         chunk_asset_overlays.extend(
@@ -250,7 +254,7 @@ def render_setup_script(
         chunk_asset_overlays.append("flock -u 7")
         chunk_asset_overlays.append("exec 7>&-")
         chunk_asset_overlays.append(f"CHECKOUT_ROOT={shlex.quote(checkout_root)}")
-        chunk_asset_overlays.append("ETL_ASSET_INDEX_LOCKFILE=\"$ASSET_CACHE_ROOT/.asset_ref_index.lock\"")
+        chunk_asset_overlays.append("ETL_ASSET_INDEX_LOCKFILE=\"$(etl_lockfile_for \"$ASSET_CACHE_ROOT/.asset_ref_index.json\")\"")
         chunk_asset_overlays.append("exec 6>\"$ETL_ASSET_INDEX_LOCKFILE\"")
         chunk_asset_overlays.append("if ! flock -w \"$ETL_LOCK_WAIT_SECONDS\" 6; then echo \"[etl][setup][assets] timed out waiting for asset index lock: $ETL_ASSET_INDEX_LOCKFILE\" >&2; exit 1; fi")
         chunk_asset_overlays.append(
@@ -304,7 +308,7 @@ def render_setup_script(
     chunk_venv_bootstrap.append("if [ -z \"$ETL_NODE_FAMILY\" ]; then ETL_NODE_FAMILY=\"$ETL_SETUP_ARCH\"; fi")
     chunk_venv_bootstrap.append("VENV=\"$VENV_BASE-$ETL_NODE_FAMILY\"")
     chunk_venv_bootstrap.append("ETL_VENV_INFO=\"$VENV/.etl_venv_build_info\"")
-    chunk_venv_bootstrap.append("ETL_VENV_LOCKFILE=\"$VENV.lock\"")
+    chunk_venv_bootstrap.append("ETL_VENV_LOCKFILE=\"$(etl_lockfile_for \"$VENV\")\"")
     chunk_venv_bootstrap.append("exec 9>\"$ETL_VENV_LOCKFILE\"")
     chunk_venv_bootstrap.append("if ! flock -w \"$ETL_LOCK_WAIT_SECONDS\" 9; then echo \"[etl][setup] timed out waiting for venv lock: $ETL_VENV_LOCKFILE\" >&2; exit 1; fi")
     executor._append_db_tunnel_lines(chunk_venv_bootstrap)
