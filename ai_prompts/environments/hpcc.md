@@ -74,6 +74,10 @@ Implication:
 - If a SLURM step job fails on `import etl.run_batch` or `pip install -e` with `Illegal instruction`, suspect node-type incompatibility in the shared venv before suspecting the pipeline logic.
 - Prefer family-specific virtual environments on heterogeneous HPCC hardware (for example separate `amr` and `skl` venvs) rather than one cluster-wide shared venv.
 - If step jobs lazily create family-specific venvs, guard creation/install with a lock so parallel jobs do not race while bootstrapping the same family cache.
+- Use bounded `flock` locks for shared venv creation and cached source/asset checkouts. A lock-file pathname may remain after a job exits, but the kernel releases the lock automatically when the process is canceled, times out, or exits.
+- Do not use an unbounded `mkdir <path>.lockdir` loop for shared HPCC state. An interrupted owner leaves the directory behind and every later job can wait until its wall-clock limit.
+- Do not decide that a `flock` lock is stale merely because its lock file exists. File existence is not lock ownership; probe it with `flock -n` or allow the configured bounded wait to report a timeout.
+- Generated SLURM scripts default to a 900-second lock wait. Override it per environment with `lock_wait_seconds` or per submission with the `ETL_LOCK_WAIT_SECONDS` environment variable when a known checkout/install legitimately needs longer.
 - Treat the family-specific venv approach as a temporary workaround for heterogeneous HPCC nodes; when remote execution moves to containers, remove this workaround rather than carrying both systems indefinitely.
 
 ### Secret propagation for remote runs

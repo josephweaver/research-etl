@@ -72,6 +72,10 @@ def render_step_script(
     chunk_runtime_ready: list[str] = []
     chunk_step_scope: list[str] = []
     chunk_run_batch: list[str] = []
+    try:
+        lock_wait_seconds = max(1, int(getattr(executor, "env_config", {}).get("lock_wait_seconds", 900)))
+    except (TypeError, ValueError):
+        lock_wait_seconds = 900
     eff_time = str(sbatch_time or executor.env.time or "").strip() or None
     eff_cpus = sbatch_cpus_per_task if sbatch_cpus_per_task not in (None, 0) else executor.env.cpus_per_task
     eff_mem = str(sbatch_mem or executor.env.mem or "").strip() or None
@@ -108,6 +112,8 @@ def render_step_script(
         chunk_runtime_flags.append("ETL_VERBOSE=1")
         chunk_runtime_flags.append("log_step(){ [ \"$ETL_VERBOSE\" = \"1\" ] && echo \"[etl][$(date -u +%Y-%m-%dT%H:%M:%SZ)] $1\"; }")
         chunk_runtime_flags.append("log_step 'batch bootstrap started'")
+    chunk_runtime_flags.append(f"ETL_LOCK_WAIT_SECONDS=${{ETL_LOCK_WAIT_SECONDS:-{lock_wait_seconds}}}")
+    chunk_runtime_flags.append("command -v flock >/dev/null 2>&1 || { echo \"[etl][step] flock is required for shared venv locking\" >&2; exit 1; }")
     if executor.verbose:
         chunk_runtime_bootstrap.append("log_step 'creating log and work directories'")
     chunk_runtime_bootstrap.append(f"mkdir -p {logdir}")
@@ -149,9 +155,9 @@ def render_step_script(
             chunk_modules.append("log_step 'activating conda environment'")
         chunk_modules.append(f"source activate {executor.env.conda_env}")
     chunk_runtime_ready.append(f"REQ_PATH={shlex.quote(req_path)}")
-    chunk_runtime_ready.append("ETL_VENV_LOCKDIR=\"$VENV.lockdir\"")
-    chunk_runtime_ready.append("acquire_venv_lock(){ while ! mkdir \"$ETL_VENV_LOCKDIR\" 2>/dev/null; do sleep 2; done; }")
-    chunk_runtime_ready.append("release_venv_lock(){ rmdir \"$ETL_VENV_LOCKDIR\" 2>/dev/null || true; }")
+    chunk_runtime_ready.append("ETL_VENV_LOCKFILE=\"$VENV.lock\"")
+    chunk_runtime_ready.append("exec 9>\"$ETL_VENV_LOCKFILE\"")
+    chunk_runtime_ready.append("if ! flock -w \"$ETL_LOCK_WAIT_SECONDS\" 9; then echo \"[etl][step] timed out waiting for venv lock: $ETL_VENV_LOCKFILE\" >&2; exit 1; fi")
     chunk_runtime_ready.append("rebuild_venv(){")
     chunk_runtime_ready.append("  if [ -d \"$VENV\" ]; then")
     chunk_runtime_ready.append("    case \"$VENV\" in")
@@ -161,7 +167,6 @@ def render_step_script(
     chunk_runtime_ready.append("  fi")
     chunk_runtime_ready.append("  $PYTHON -m venv --copies \"$VENV\"")
     chunk_runtime_ready.append("}")
-    chunk_runtime_ready.append("acquire_venv_lock")
     if executor.verbose:
         chunk_runtime_ready.append("log_step 'ensuring family-specific runtime venv exists'")
     chunk_runtime_ready.append("if [ ! -f \"$VENV/bin/activate\" ]; then rebuild_venv; fi")
@@ -169,7 +174,7 @@ def render_step_script(
     chunk_runtime_ready.append("  echo \"[etl][step] existing family venv interpreter failed smoke test; rebuilding: $VENV\" >&2")
     chunk_runtime_ready.append("  rebuild_venv")
     chunk_runtime_ready.append("fi")
-    chunk_runtime_ready.append("if [ ! -f \"$VENV/bin/activate\" ]; then echo \"[etl][step] venv activation script missing: $VENV/bin/activate\" >&2; release_venv_lock; exit 1; fi")
+    chunk_runtime_ready.append("if [ ! -f \"$VENV/bin/activate\" ]; then echo \"[etl][step] venv activation script missing: $VENV/bin/activate\" >&2; exit 1; fi")
     chunk_runtime_ready.append("if [ -f \"$REQ_PATH\" ]; then \"$VENV/bin/python\" -m pip install -r \"$REQ_PATH\"; fi")
     chunk_runtime_ready.append(f"export PYTHONPATH={checkout_root}:${{PYTHONPATH:-}}")
     chunk_runtime_ready.append("if ! \"$VENV/bin/python\" -c 'import etl.run_batch' >/dev/null 2>&1; then")
@@ -181,7 +186,8 @@ def render_step_script(
     chunk_runtime_ready.append("ETL_SETUP_CPU_FLAGS=\"$ETL_CPU_FLAGS\"")
     chunk_runtime_ready.append("printf 'setup_hostname=%q\\nsetup_arch=%q\\nsetup_cpu_model=%q\\nsetup_cpu_flags=%q\\nvenv_path=%q\\nrepo_root=%q\\n' \"$ETL_SETUP_HOSTNAME\" \"$ETL_SETUP_ARCH\" \"$ETL_SETUP_CPU_MODEL\" \"$ETL_SETUP_CPU_FLAGS\" \"$VENV\" \"$ETL_REPO_ROOT\" > \"$ETL_VENV_INFO\"")
     chunk_runtime_ready.append('etl_fix_permissions "$VENV"')
-    chunk_runtime_ready.append("release_venv_lock")
+    chunk_runtime_ready.append("flock -u 9")
+    chunk_runtime_ready.append("exec 9>&-")
     chunk_runtime_ready.append("if [ -f \"$ETL_VENV_INFO\" ]; then source \"$ETL_VENV_INFO\"; fi")
     if executor.verbose:
         chunk_runtime_ready.append("log_step 'activating venv after module setup'")

@@ -66,6 +66,10 @@ def render_setup_script(
     chunk_venv_bootstrap: list[str] = []
     chunk_install: list[str] = []
     chunk_finalize: list[str] = []
+    try:
+        lock_wait_seconds = max(1, int(getattr(executor, "env_config", {}).get("lock_wait_seconds", 900)))
+    except (TypeError, ValueError):
+        lock_wait_seconds = 900
     setup_time = str(executor.env.setup_time or executor.env.time or "00:10:00").strip() or "00:10:00"
     setup_cpus = int(executor.env.cpus_per_task or 0) or None
     setup_mem = str(executor.env.mem or "").strip() or None
@@ -101,6 +105,8 @@ def render_setup_script(
         chunk_runtime_flags.append("ETL_VERBOSE=1")
         chunk_runtime_flags.append("log_step(){ [ \"$ETL_VERBOSE\" = \"1\" ] && echo \"[etl][$(date -u +%Y-%m-%dT%H:%M:%SZ)] $1\"; }")
         chunk_runtime_flags.append("log_step 'setup bootstrap started'")
+    chunk_runtime_flags.append(f"ETL_LOCK_WAIT_SECONDS=${{ETL_LOCK_WAIT_SECONDS:-{lock_wait_seconds}}}")
+    chunk_runtime_flags.append("command -v flock >/dev/null 2>&1 || { echo \"[etl][setup] flock is required for shared checkout and venv locking\" >&2; exit 1; }")
     if executor.verbose:
         chunk_dirs.append("log_step 'creating setup directories'")
     chunk_dirs.append(f"echo \"[etl][setup][paths] workdir={workdir}\"")
@@ -135,6 +141,10 @@ def render_setup_script(
     chunk_source_checkout.append(f"REPO_SHA={repo_sha_q}")
     chunk_source_checkout.append(f"SOURCE_BUNDLE={source_bundle_q}")
     chunk_source_checkout.append(f"SOURCE_SNAPSHOT={source_snapshot_q}")
+    chunk_source_checkout.append("mkdir -p \"$(dirname \"$CHECKOUT_ROOT\")\"")
+    chunk_source_checkout.append("ETL_CHECKOUT_LOCKFILE=\"${CHECKOUT_ROOT}.lock\"")
+    chunk_source_checkout.append("exec 8>\"$ETL_CHECKOUT_LOCKFILE\"")
+    chunk_source_checkout.append("if ! flock -w \"$ETL_LOCK_WAIT_SECONDS\" 8; then echo \"[etl][setup][source] timed out waiting for checkout lock: $ETL_CHECKOUT_LOCKFILE\" >&2; exit 1; fi")
     # Pre-1.0 simplified source path: default to linear git_remote flow.
     if mode in {"git_remote", "auto"}:
         chunk_source_checkout.append(f"[ -n {repo_url_q} ] && [ -n {repo_sha_q} ] || {{ echo \"[etl][setup][source] missing repo_url or repo_sha for git_remote\" >&2; exit 1; }}")
@@ -223,6 +233,9 @@ def render_setup_script(
         chunk_asset_overlays.append(f"if [ -z \"$ASSET_COMMIT_{idx}\" ]; then echo \"[etl][setup][assets] could not resolve commit for $ASSET_URL_{idx} ref=$ASSET_REF_{idx}\" >&2; exit 1; fi")
         chunk_asset_overlays.append(f"ASSET_SHORT_SHA_{idx}=\"$(printf '%s' \"$ASSET_COMMIT_{idx}\" | cut -c1-12)\"")
         chunk_asset_overlays.append(f"{asset_dir_var}=\"$ASSET_CACHE_ROOT/${{ASSET_REPO_NAME_{idx}}}-${{ASSET_SHORT_SHA_{idx}}}\"")
+        chunk_asset_overlays.append(f"ETL_ASSET_LOCKFILE=\"${{{asset_dir_var}}}.lock\"")
+        chunk_asset_overlays.append("exec 7>\"$ETL_ASSET_LOCKFILE\"")
+        chunk_asset_overlays.append("if ! flock -w \"$ETL_LOCK_WAIT_SECONDS\" 7; then echo \"[etl][setup][assets] timed out waiting for asset checkout lock: $ETL_ASSET_LOCKFILE\" >&2; exit 1; fi")
         chunk_asset_overlays.extend(
             checkout(
                 CheckoutSpec(
@@ -234,7 +247,12 @@ def render_setup_script(
                 )
             )
         )
+        chunk_asset_overlays.append("flock -u 7")
+        chunk_asset_overlays.append("exec 7>&-")
         chunk_asset_overlays.append(f"CHECKOUT_ROOT={shlex.quote(checkout_root)}")
+        chunk_asset_overlays.append("ETL_ASSET_INDEX_LOCKFILE=\"$ASSET_CACHE_ROOT/.asset_ref_index.lock\"")
+        chunk_asset_overlays.append("exec 6>\"$ETL_ASSET_INDEX_LOCKFILE\"")
+        chunk_asset_overlays.append("if ! flock -w \"$ETL_LOCK_WAIT_SECONDS\" 6; then echo \"[etl][setup][assets] timed out waiting for asset index lock: $ETL_ASSET_INDEX_LOCKFILE\" >&2; exit 1; fi")
         chunk_asset_overlays.append(
             "python3 - <<PY\n"
             "import json\n"
@@ -254,6 +272,8 @@ def render_setup_script(
             "index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + '\\n', encoding='utf-8')\n"
             "PY"
         )
+        chunk_asset_overlays.append("flock -u 6")
+        chunk_asset_overlays.append("exec 6>&-")
         chunk_asset_overlays.append(
             f"if [ \"$ASSET_PIPELINES_LINKED\" = \"0\" ] && [ -d \"${asset_dir_var}/{pipelines_dir}\" ]; then "
             "rm -rf \"$CHECKOUT_ROOT/pipelines\"; "
@@ -268,6 +288,8 @@ def render_setup_script(
             "ASSET_SCRIPTS_LINKED=1; "
             "fi"
         )
+    chunk_asset_overlays.append("flock -u 8")
+    chunk_asset_overlays.append("exec 8>&-")
     if executor.verbose:
         chunk_venv_bootstrap.append("log_step 'bootstrapping venv'")
     chunk_venv_bootstrap.append(f"PYTHON={python_bin}")
@@ -282,6 +304,9 @@ def render_setup_script(
     chunk_venv_bootstrap.append("if [ -z \"$ETL_NODE_FAMILY\" ]; then ETL_NODE_FAMILY=\"$ETL_SETUP_ARCH\"; fi")
     chunk_venv_bootstrap.append("VENV=\"$VENV_BASE-$ETL_NODE_FAMILY\"")
     chunk_venv_bootstrap.append("ETL_VENV_INFO=\"$VENV/.etl_venv_build_info\"")
+    chunk_venv_bootstrap.append("ETL_VENV_LOCKFILE=\"$VENV.lock\"")
+    chunk_venv_bootstrap.append("exec 9>\"$ETL_VENV_LOCKFILE\"")
+    chunk_venv_bootstrap.append("if ! flock -w \"$ETL_LOCK_WAIT_SECONDS\" 9; then echo \"[etl][setup] timed out waiting for venv lock: $ETL_VENV_LOCKFILE\" >&2; exit 1; fi")
     executor._append_db_tunnel_lines(chunk_venv_bootstrap)
     if executor.load_secrets_file:
         if executor.verbose:
@@ -315,6 +340,8 @@ def render_setup_script(
     chunk_install.append("printf 'setup_hostname=%q\\nsetup_arch=%q\\nsetup_cpu_model=%q\\nsetup_cpu_flags=%q\\nvenv_path=%q\\nrepo_root=%q\\n' \"$ETL_SETUP_HOSTNAME\" \"$ETL_SETUP_ARCH\" \"$ETL_SETUP_CPU_MODEL\" \"$ETL_SETUP_CPU_FLAGS\" \"$VENV\" \"$ETL_REPO_ROOT\" > \"$ETL_VENV_INFO\"")
     chunk_install.append('etl_fix_permissions "$VENV"')
     chunk_install.append(f"etl_fix_permissions {shlex.quote(checkout_root)}")
+    chunk_install.append("flock -u 9")
+    chunk_install.append("exec 9>&-")
     if executor.verbose:
         chunk_finalize.append("log_step 'setup complete'")
     chunk_finalize.append("echo setup complete")
