@@ -1020,10 +1020,12 @@ class ControllerApp:
         python_bin = str(self.worker_cfg.get("python_bin") or "python").strip()
         bootstrap_lines = [str(x) for x in list(self.worker_cfg.get("bootstrap_lines") or []) if str(x).strip()]
         lines = ["#!/bin/bash --login"]
-        if self.exec_env.get("partition"):
-            lines.append(f"#SBATCH -p {self.exec_env['partition']}")
-        if self.exec_env.get("account"):
-            lines.append(f"#SBATCH -A {self.exec_env['account']}")
+        partition = str(self.slurm_cfg.get("partition") or self.exec_env.get("partition") or "").strip()
+        account = str(self.slurm_cfg.get("account") or self.exec_env.get("account") or "").strip()
+        if partition:
+            lines.append(f"#SBATCH -p {partition}")
+        if account:
+            lines.append(f"#SBATCH -A {account}")
         lines.append(f"#SBATCH -t {time_limit}")
         lines.append(f"#SBATCH -c {cpus}")
         lines.append(f"#SBATCH --mem={mem}")

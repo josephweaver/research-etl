@@ -84,3 +84,30 @@ def test_bootstrap_uses_configured_git_refs() -> None:
     assert "GIT_REF=etl-branch" in app.transport.script
     assert "PIPELINE_GIT_REF=pipeline-branch" in app.transport.script
     assert 'git clone --branch "$ref" --single-branch' in app.transport.script
+
+
+def test_sbatch_allows_controller_partition_override() -> None:
+    app = _local_app()
+    app.slurm_cfg = {
+        "partition": "general-long",
+        "time": "48:00:00",
+        "cpus_per_task": 4,
+        "mem": "16G",
+    }
+    app.exec_env = {"partition": "general-short"}
+    app.paths = type(
+        "Paths",
+        (),
+        {"remote_log_dir": "/logs"},
+    )()
+    app.worker_cfg = {"python_bin": "/repo/.venv/bin/python", "repo_root": "/repo"}
+
+    script = app._render_sbatch(
+        wave_id="test",
+        remote_manifest_path="/waves/manifest.csv",
+        remote_config_path="/waves/config.yml",
+        item_count=1,
+    )
+
+    assert "#SBATCH -p general-long" in script
+    assert "#SBATCH -t 48:00:00" in script
