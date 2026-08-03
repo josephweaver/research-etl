@@ -415,6 +415,14 @@ def parse_pipeline(
     ctx = solver.resolved_context()
 
     vars_interp = _resolve_iterative(vars_section, ctx, max_passes=resolve_max_passes)
+    # Runtime/CLI values have highest precedence, including for scalar pipeline
+    # defaults that do not contain placeholders. The solver context above lets
+    # overrides influence derived values; this merge also replaces the declared
+    # value itself (for example, ``iter_warmup: 250``).
+    if context_vars:
+        for key in vars_section:
+            if key in context_vars:
+                vars_interp[key] = copy.deepcopy(context_vars[key])
 
     ctx_dirs = copy.deepcopy(ctx)
     ctx_dirs.update(copy.deepcopy(vars_interp))

@@ -66,6 +66,32 @@ def test_parse_pipeline_precedence_global_env_pipe_and_flat_overrides(tmp_path: 
     assert pipeline.steps[0].script == "echo.py msg=/env/pipe|/global|/env|/env/pipe"
 
 
+def test_context_overrides_scalar_pipeline_default(tmp_path: Path) -> None:
+    p = tmp_path / "p.yml"
+    p.write_text(
+        "\n".join(
+            [
+                "vars:",
+                "  iter_warmup: 250",
+                "  chains: 3",
+                "steps:",
+                "  - name: s1",
+                '    script: "fit.py --warmup {iter_warmup} --chains {chains}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    pipeline = parse_pipeline(
+        p,
+        context_vars={"iter_warmup": "1000", "chains": "4"},
+    )
+
+    assert pipeline.vars["iter_warmup"] == "1000"
+    assert pipeline.vars["chains"] == "4"
+    assert pipeline.steps[0].script == "fit.py --warmup 1000 --chains 4"
+
+
 def test_parse_pipeline_supports_globals_namespace_alias(tmp_path: Path) -> None:
     p = tmp_path / "p.yml"
     p.write_text(
