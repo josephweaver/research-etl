@@ -46,5 +46,12 @@ Important limitation:
 - if you run the controller from a workstation, use shared or remote-visible paths for manifests, checkpoints, repo root, and logs
 
 Diagnostics:
-- `doctor` checks checkpoint/log assumptions and reports missing keys or missing log paths
-- `preview` renders the exact worker command for a county without submitting anything
+- `doctor` checks checkpoint/log assumptions, input roots, and required remote worker files
+- `preview` renders the exact worker command and its preflight result without submitting anything
+- `run-one` and `run-once` refuse to submit when worker preflight fails
+
+Before the first submission (and after changing either configured Git branch), run
+`bootstrap`. The controller keeps dedicated stable checkouts under its configured
+source directory and checks out `worker.git_ref` and `worker.pipeline_git_ref`.
+County seed directories are only considered runnable when they contain the
+configured `seed_county_file_name` (normally `county_data.csv`).

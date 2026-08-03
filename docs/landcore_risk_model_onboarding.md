@@ -64,8 +64,8 @@ Quick lookup:
 - risk-model pipeline YAMLs: `landcore-etl-pipelines/pipelines/risk_model/`
 - LandCore project scripts: `landcore-etl-pipelines/scripts/`
 - risk-model R/Python scripts: `landcore-etl-pipelines/scripts/model/`
-- model input data on HPCC: `/mnt/gs21/scratch/weave151/etl/data/risk_model/model_input/county_model_input/`
-- model fit outputs/checkpoints on HPCC: `/mnt/scratch/weave151/fits/`
+- model input data on HPCC: `/mnt/gs21/scratch/weave151/etl/data/risk_model/model_input/county_model_input_v2/`
+- `tillage_prop_01` fit outputs/checkpoints on HPCC: `/mnt/scratch/weave151/fits/tillage_prop_01/`
 
 For the checkpointed risk-model fit, the most important files are:
 
@@ -316,12 +316,12 @@ Open your copy and review these variables first:
 
 ```yaml
 vars:
-  dataset_id: model.landcore_neighborhood_fit_chkptstanr_child_v1
-  name: landcore_neighborhood_fit_chkptstanr_child
+  dataset_id: model.landcore_neighborhood_fit_chkptstanr_child_v2
+  name: landcore_neighborhood_fit_chkptstanr_child_tillage_prop_01
   county_fips: "00000"
-  fit_root: "/mnt/scratch/weave151/fits"
-  model_input_root: "/mnt/gs21/scratch/weave151/etl/data/risk_model/model_input/county_model_input"
-  fit_script_path: "/mnt/gs21/scratch/weave151/etl/src/landcore-etl-pipelines/scripts/model/Neighborhood_fit_chkptstanr.R"
+  fit_root: "/mnt/scratch/weave151/fits/tillage_prop_01"
+  model_input_root: "/mnt/gs21/scratch/weave151/etl/data/risk_model/model_input/county_model_input_v2"
+  fit_script_path: "/mnt/gs21/scratch/weave151/etl/controler/src/landcore-etl-pipelines/scripts/model/Neighborhood_fit_chkptstanr.R"
   iter_warmup: 250
   iter_sampling: 2500
   iter_per_chkpt: 250
@@ -490,8 +490,7 @@ Inspect the input CSV columns. The script expects at least:
 ```text
 unscaled_yield
 tile_field_ID
-tillage_0_prop
-tillage_1_prop
+tillage_prop_01
 nccpi3corn
 vpdmax_7
 year
@@ -546,12 +545,13 @@ The active config shape should look like this in spirit:
 
 ```yaml
 controller:
-  checkpoints_glob: "/mnt/scratch/weave151/fits/*/run/chkpt/checkpoint.json"
-  status_files_glob: "/mnt/scratch/weave151/fits/*/run/chkpt/run_status.txt"
+  checkpoints_glob: "/mnt/scratch/weave151/fits/tillage_prop_01/*/run/chkpt/checkpoint.json"
+  status_files_glob: "/mnt/scratch/weave151/fits/tillage_prop_01/*/run/chkpt/run_status.txt"
   local_wave_dir: "controler/waves"
   remote_wave_dir: "/mnt/gs21/scratch/weave151/etl/controler/waves"
   remote_log_dir: "/mnt/gs21/scratch/weave151/etl/controler/logs"
-  seed_county_dir: "/mnt/scratch/weave151/etl/data/risk_model/model_input/county_model_input"
+  seed_county_dir: "/mnt/gs21/scratch/weave151/etl/data/risk_model/model_input/county_model_input_v2"
+  seed_county_file_name: "county_data.csv"
   max_submit: 350
 
 slurm:
@@ -565,10 +565,10 @@ slurm:
 
 worker:
   mode: "etl_pipeline"
-  repo_root: "/mnt/gs21/scratch/weave151/etl/src/research-etl"
-  python_bin: "/mnt/gs21/scratch/weave151/etl/src/research-etl/.venv/bin/python"
+  repo_root: "/mnt/gs21/scratch/weave151/etl/controler/src/research-etl"
+  python_bin: "/mnt/gs21/scratch/weave151/etl/controler/src/research-etl/.venv/bin/python"
   cli_path: "cli.py"
-  pipeline_path: "/mnt/gs21/scratch/weave151/etl/src/landcore-etl-pipelines/pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml"
+  pipeline_path: "/mnt/gs21/scratch/weave151/etl/controler/src/landcore-etl-pipelines/pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml"
   executor: "local"
   environments_config: "config/environments.yml"
   env: "hpcc_local"
@@ -578,7 +578,7 @@ worker:
     - "--allow-dirty-git"
   vars:
     county_fips: "{fips}"
-    fit_root: "/mnt/scratch/weave151/fits"
+    fit_root: "/mnt/scratch/weave151/fits/tillage_prop_01"
 ```
 
 Controller dry checks:
