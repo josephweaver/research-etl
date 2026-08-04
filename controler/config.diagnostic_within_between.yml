@@ -67,7 +67,7 @@ worker:
     iter_per_chkpt: "250"
     chains: "4"
     model_variant: "within_between"
-    year_reference: "2000"
+    year_reference: "2005"
     year_effect: "fixed"
     year_trend_origin: "2005"
     wall_clock_limit_seconds: "250000"

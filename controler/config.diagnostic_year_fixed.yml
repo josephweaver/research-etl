@@ -50,7 +50,7 @@ worker:
     chains: "4"
     model_variant: "within_between"
     year_effect: "fixed"
-    year_reference: "2017"
+    year_reference: "2016"
     year_trend_origin: "2005"
     wall_clock_limit_seconds: "250000"
     wall_clock_margin_seconds: "1800"
