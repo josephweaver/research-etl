@@ -1,39 +1,24 @@
 controller:
-  remote_python_bin: "python3"
-  checkpoints_glob: "/mnt/scratch/weave151/fits/tillage_prop_01_within_between_diagnostic/*/run/chkpt/checkpoint.json"
-  status_files_glob: "/mnt/scratch/weave151/fits/tillage_prop_01_within_between_diagnostic/*/run/chkpt/run_status.txt"
-  state_path: "controler/state.diagnostic_within_between.json"
+  checkpoints_glob: "/mnt/scratch/weave151/fits/year_effect_diagnostic/trend/*/run/chkpt/checkpoint.json"
+  status_files_glob: "/mnt/scratch/weave151/fits/year_effect_diagnostic/trend/*/run/chkpt/run_status.txt"
+  state_path: "controler/state.diagnostic_year_trend.json"
   local_wave_dir: "controler/waves"
   remote_wave_dir: "/mnt/gs21/scratch/weave151/etl/controler/waves"
   remote_submit_dir: "/mnt/gs21/scratch/weave151/etl/controler/waves"
   remote_log_dir: "/mnt/gs21/scratch/weave151/etl/controler/logs"
-  complete_markers:
-    - "process complete."
-  continue_markers:
-    - "resume to process the next batch"
   max_submit: 2
   seed_county_dir: "/mnt/gs21/scratch/weave151/etl/data/risk_model/model_input/county_model_input_v2"
   seed_county_file_name: "county_data.csv"
-  seed_manifest_csv: "/mnt/gs21/scratch/weave151/etl/data/risk_model/model_input/county_model_input_v2_manifest.csv"
-  seed_fips_key: "focal_fips"
-
-checkpoint:
-  fips_key: "fips"
-  log_path_key: "log_path"
-  status_key: "status"
-  completed_iter_key: "completed_iter"
-  target_iter_key: "target_iter"
 
 slurm:
   environments_config: "config/environments.yml"
   environment: "hpcc_msu"
   partition: "general-long"
-  job_name_prefix: "risk-fit-within-between"
+  job_name_prefix: "risk-year-trend"
   time: "3-00:00:00"
   cpus_per_task: 4
   mem: "16G"
   array_max_parallel: 2
-  verbose: false
 
 worker:
   mode: "etl_pipeline"
@@ -41,34 +26,30 @@ worker:
   python_bin: "/mnt/gs21/scratch/weave151/etl/controler/src/research-etl/.venv/bin/python"
   git_ref: "agent/update-hpcc-submission-profile"
   cli_path: "cli.py"
-  bootstrap_lines:
-    - "source \"$HOME/.bashrc\" || true"
+  bootstrap_lines: ["source \"$HOME/.bashrc\" || true"]
   pipeline_repo_root: "/mnt/gs21/scratch/weave151/etl/controler/src/landcore-etl-pipelines"
   pipeline_git_remote_url: "git@github.com:josephweaver/landcore-etl-pipelines.git"
   pipeline_git_ref: "agent/repo-organization"
   pipeline_path: "/mnt/gs21/scratch/weave151/etl/controler/src/landcore-etl-pipelines/pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml"
   required_paths:
     - "/mnt/gs21/scratch/weave151/etl/controler/src/research-etl/cli.py"
-    - "/mnt/gs21/scratch/weave151/etl/controler/src/research-etl/controler/main.py"
     - "/mnt/gs21/scratch/weave151/etl/controler/src/landcore-etl-pipelines/pipelines/risk_model/neighborhood_fit_chkptstanr_child.yml"
     - "/mnt/gs21/scratch/weave151/etl/controler/src/landcore-etl-pipelines/scripts/model/Neighborhood_fit_chkptstanr.R"
   executor: "local"
   environments_config: "config/environments.yml"
   env: "hpcc_local"
   project_id: "land_core"
-  flags:
-    - "--allow-workspace-source"
-    - "--allow-dirty-git"
+  flags: ["--allow-workspace-source", "--allow-dirty-git"]
   vars:
     county_fips: "{fips}"
-    fit_root: "/mnt/scratch/weave151/fits/tillage_prop_01_within_between_diagnostic"
+    fit_root: "/mnt/scratch/weave151/fits/year_effect_diagnostic/trend"
     iter_warmup: "1000"
     iter_sampling: "2500"
     iter_per_chkpt: "250"
     chains: "4"
     model_variant: "within_between"
-    year_reference: "2000"
-    year_effect: "fixed"
+    year_effect: "trend"
+    year_reference: "2017"
     year_trend_origin: "2005"
     wall_clock_limit_seconds: "250000"
     wall_clock_margin_seconds: "1800"
