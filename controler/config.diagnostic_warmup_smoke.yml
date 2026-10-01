@@ -1,10 +1,8 @@
 controller:
   remote_python_bin: "python3"
-  # Assumption for first cut: one checkpoint JSON per county under the stable county run dir.
-  # If your R checkpoint writer uses a different filename/location, update this glob.
-  checkpoints_glob: "/mnt/scratch/weave151/fits/tillage_prop_01/*/run/chkpt/checkpoint.json"
-  status_files_glob: "/mnt/scratch/weave151/fits/tillage_prop_01/*/run/chkpt/run_status.txt"
-  state_path: "controler/state.json"
+  checkpoints_glob: "/mnt/scratch/weave151/fits/tillage_prop_01_warmup_smoke/*/run/chkpt/checkpoint.json"
+  status_files_glob: "/mnt/scratch/weave151/fits/tillage_prop_01_warmup_smoke/*/run/chkpt/run_status.txt"
+  state_path: "controler/state.diagnostic_warmup_smoke.json"
   local_wave_dir: "controler/waves"
   remote_wave_dir: "/mnt/gs21/scratch/weave151/etl/controler/waves"
   remote_submit_dir: "/mnt/gs21/scratch/weave151/etl/controler/waves"
@@ -13,7 +11,7 @@ controller:
     - "process complete."
   continue_markers:
     - "resume to process the next batch"
-  max_submit: 350
+  max_submit: 1
   seed_county_dir: "/mnt/gs21/scratch/weave151/etl/data/risk_model/model_input/county_model_input_v2"
   seed_county_file_name: "county_data.csv"
   seed_manifest_csv: "/mnt/gs21/scratch/weave151/etl/data/risk_model/model_input/county_model_input_v2_manifest.csv"
@@ -29,11 +27,12 @@ checkpoint:
 slurm:
   environments_config: "config/environments.yml"
   environment: "hpcc_msu"
-  job_name_prefix: "risk-fit-wave"
-  time: "04:00:00"
+  partition: "general-long"
+  job_name_prefix: "risk-fit-warmup-smoke"
+  time: "3-00:00:00"
   cpus_per_task: 4
   mem: "16G"
-  array_max_parallel: 100
+  array_max_parallel: 1
   verbose: false
 
 worker:
@@ -62,4 +61,12 @@ worker:
     - "--allow-dirty-git"
   vars:
     county_fips: "{fips}"
-    fit_root: "/mnt/scratch/weave151/fits/tillage_prop_01"
+    fit_root: "/mnt/scratch/weave151/fits/tillage_prop_01_warmup_smoke"
+    iter_warmup: "1000"
+    iter_sampling: "2500"
+    iter_per_chkpt: "250"
+    chains: "4"
+    stop_after: "1000"
+    wall_clock_limit_seconds: "250000"
+    wall_clock_margin_seconds: "1800"
+

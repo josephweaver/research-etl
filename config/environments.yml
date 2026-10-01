@@ -87,8 +87,8 @@ environments:
     remote_retry_delay_seconds: 2
     ssh_connect_timeout: 20
     ssh_strict_host_key_checking: accept-new
-    ssh_host: dev-amd20
-    ssh_user: f0108939
+    ssh_host: dev-amd20.passwordless
+    ssh_user: weave151
     # programmatic: immutable remote ETL and pipeline-asset checkouts live under src/.
     remote_repo: "{basedir}/src"
     source_root: "{basedir}/src"
@@ -114,7 +114,7 @@ environments:
       - GCS_HMAC_SECRET
 
     # ---- Template-only variables (kept at the end on purpose) ----
-    basedir: /mnt/gs21/scratch/Viens_AgroEco_Lab/etl
+    basedir: /mnt/gs21/scratch/weave151/etl
     workdir: "{basedir}/work"
     datadir: "{basedir}/data"
     logdir: "{basedir}/logs"

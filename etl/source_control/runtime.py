@@ -183,19 +183,19 @@ def checkout(
         f"REPO_REVISION={revision}",
     ]
     lines.extend(channel.render(shell, "mkdir -p \"$(dirname \\\"$CHECKOUT_ROOT\\\")\""))
-    lines.extend(channel.render(shell, "if [ ! -d \"$CHECKOUT_ROOT\" ]; then mkdir -p \"$CHECKOUT_ROOT\"; fi"))
     lines.extend(
         channel.render(
             shell,
-            "if [ -d \"$CHECKOUT_ROOT\" ] && [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then rm -rf \"$CHECKOUT_ROOT\"; fi"
-            ,
+            "if [ -e \"$CHECKOUT_ROOT\" ] && "
+            "! git -C \"$CHECKOUT_ROOT\" rev-parse --is-inside-work-tree >/dev/null 2>&1; "
+            "then rm -rf \"$CHECKOUT_ROOT\"; fi",
             options=ExecutionOptions(log_callback=None),
         )
     )
     lines.extend(
         channel.render(
             shell,
-            "if [ ! -d \"$CHECKOUT_ROOT/.git\" ]; then git clone --no-checkout \"$REPO_URL\" \"$CHECKOUT_ROOT\"; fi",
+            "if [ ! -d \"$CHECKOUT_ROOT\" ]; then git clone --no-checkout \"$REPO_URL\" \"$CHECKOUT_ROOT\"; fi",
             on_error="\"[etl][source_control] git clone failed\"",
             options=ExecutionOptions(log_callback=None),
         )

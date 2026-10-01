@@ -171,7 +171,7 @@ class ControllerApp:
         _write_json(self.paths.state_path, state)
 
     def _remote_python_bin(self) -> str:
-        return str(self.worker_cfg.get("python_bin") or "python3").strip() or "python3"
+        return str(self.controller_cfg.get("remote_python_bin") or "python3").strip() or "python3"
 
     def _is_remote_controller(self) -> bool:
         return isinstance(self.transport, SshTransport)
@@ -351,6 +351,7 @@ class ControllerApp:
 
     def _remote_counties(self, fips_glob: str | None = None) -> list[CountyRecord]:
         seed_dir = str(self.controller_cfg.get("seed_county_dir") or "").strip()
+        seed_file_name = str(self.controller_cfg.get("seed_county_file_name") or "county_data.csv").strip()
         status_patterns = self._glob_patterns("status_files_glob", fips_glob)
         if not seed_dir:
             return []
@@ -362,6 +363,7 @@ class ControllerApp:
             "from pathlib import Path\n"
             "import fnmatch, glob, json\n"
             f"seed_dir = Path({seed_dir!r})\n"
+            f"seed_file_name = {seed_file_name!r}\n"
             f"fips_pattern = {fips_pattern!r}\n"
             f"status_patterns = {status_patterns!r}\n"
             f"complete_markers = {complete_markers!r}\n"
@@ -370,6 +372,8 @@ class ControllerApp:
             "if seed_dir.exists():\n"
             "    for child in sorted(seed_dir.iterdir()):\n"
             "        if not child.is_dir():\n"
+            "            continue\n"
+            "        if seed_file_name and not (child / seed_file_name).is_file():\n"
             "            continue\n"
             "        fips = child.name\n"
             "        if fips_pattern and not fnmatch.fnmatch(fips, fips_pattern):\n"
@@ -426,6 +430,7 @@ class ControllerApp:
 
     def _seed_counties_from_dir(self, root_dir: str) -> list[CountyRecord]:
         path_value = str(root_dir or "").strip()
+        seed_file_name = str(self.controller_cfg.get("seed_county_file_name") or "county_data.csv").strip()
         if not path_value or not self._path_exists(path_value):
             return []
         if self._is_remote_controller():
@@ -434,16 +439,21 @@ class ControllerApp:
                 "from pathlib import Path\n"
                 "import json\n"
                 f"root = Path({path_value!r})\n"
+                f"seed_file_name = {seed_file_name!r}\n"
                 "items = []\n"
                 "if root.exists():\n"
                 "    for child in sorted(root.iterdir()):\n"
-                "        if child.is_dir():\n"
+                "        if child.is_dir() and (not seed_file_name or (child / seed_file_name).is_file()):\n"
                 "            items.append(child.name)\n"
                 "print(json.dumps(items))"
             )
             names = [str(x).strip() for x in list(payload or [])]
         else:
-            names = [child.name for child in sorted(Path(path_value).expanduser().iterdir()) if child.is_dir()]
+            names = [
+                child.name
+                for child in sorted(Path(path_value).expanduser().iterdir())
+                if child.is_dir() and (not seed_file_name or (child / seed_file_name).is_file())
+            ]
         rows: list[CountyRecord] = []
         seen: set[str] = set()
         for name in names:
@@ -763,6 +773,30 @@ class ControllerApp:
             "checkpoint_path": checkpoint_path,
             "log_path": log_path,
             "worker_command": self._render_worker_command(row),
+            "preflight": self._worker_preflight(),
+        }
+
+    def _worker_preflight(self) -> dict[str, Any]:
+        required_paths = [
+            str(path).strip()
+            for path in list(self.worker_cfg.get("required_paths") or [])
+            if str(path).strip()
+        ]
+        python_bin = str(self.worker_cfg.get("python_bin") or "").strip()
+        pipeline_path = str(self.worker_cfg.get("pipeline_path") or "").strip()
+        for path in (python_bin, pipeline_path):
+            if path and path not in required_paths:
+                required_paths.append(path)
+        path_checks = {path: self._path_exists(path) for path in required_paths}
+        seed_dir = str(self.controller_cfg.get("seed_county_dir") or "").strip()
+        seed_manifest = str(self.controller_cfg.get("seed_manifest_csv") or "").strip()
+        return {
+            "ready": bool(required_paths) and all(path_checks.values()) and bool(seed_dir) and self._path_exists(seed_dir),
+            "seed_county_dir": seed_dir,
+            "seed_county_dir_exists": bool(seed_dir and self._path_exists(seed_dir)),
+            "seed_manifest_csv": seed_manifest,
+            "seed_manifest_exists": bool(seed_manifest and self._path_exists(seed_manifest)),
+            "required_paths": path_checks,
         }
 
     def doctor(self, fips: str | None = None, fips_glob: str | None = None) -> dict[str, Any]:
@@ -801,6 +835,7 @@ class ControllerApp:
             "config_path": self.config_path.as_posix(),
             "checkpoints_glob": str(self.controller_cfg.get("checkpoints_glob") or ""),
             "county_count": len(rows),
+            "preflight": self._worker_preflight(),
             "rows": rows,
         }
 
@@ -841,6 +876,8 @@ class ControllerApp:
         git_remote_url = str(self.exec_env.get("git_remote_url") or self.worker_cfg.get("git_remote_url") or "").strip()
         pipeline_repo_root = str(self.worker_cfg.get("pipeline_repo_root") or "").strip()
         pipeline_git_remote_url = str(self.worker_cfg.get("pipeline_git_remote_url") or "").strip()
+        git_ref = str(self.worker_cfg.get("git_ref") or "").strip()
+        pipeline_git_ref = str(self.worker_cfg.get("pipeline_git_ref") or "").strip()
         if not repo_root or not python_bin:
             return {"prepared": False, "reason": "missing_repo_root_or_python_bin"}
         normalized_python_bin = python_bin.replace("\\", "/")
@@ -855,23 +892,37 @@ class ControllerApp:
             f"VENV_DIR={shlex.quote(venv_dir)}",
             f"PYTHON_BIN={shlex.quote(python_bin)}",
             f"GIT_REMOTE_URL={shlex.quote(git_remote_url)}",
+            f"GIT_REF={shlex.quote(git_ref)}",
             "update_repo() {",
             "  local repo=\"$1\"",
             "  local remote=\"$2\"",
-            "  if [ ! -d \"$repo/.git\" ]; then",
+            "  local ref=\"$3\"",
+            "  if ! git -C \"$repo\" rev-parse --is-inside-work-tree >/dev/null 2>&1; then",
             "    if [ -z \"$remote\" ]; then",
             "      echo \"missing git_remote_url and repo checkout: $repo\" >&2",
             "      exit 1",
             "    fi",
+            "    if [ -e \"$repo\" ] && [ -n \"$(ls -A \"$repo\" 2>/dev/null)\" ]; then",
+            "      echo \"repo path exists but is not a valid git checkout: $repo\" >&2",
+            "      exit 1",
+            "    fi",
             "    mkdir -p \"$(dirname \"$repo\")\"",
-            "    git clone \"$remote\" \"$repo\"",
+            "    if [ -n \"$ref\" ]; then",
+            "      git clone --branch \"$ref\" --single-branch \"$remote\" \"$repo\"",
+            "    else",
+            "      git clone \"$remote\" \"$repo\"",
+            "    fi",
             "    return 0",
             "  fi",
             "  if [ -n \"$remote\" ]; then",
-            "    (cd \"$repo\" && git fetch --all --prune && git pull --ff-only)",
+            "    if [ -n \"$ref\" ]; then",
+            "      (cd \"$repo\" && git fetch origin \"$ref\" && git checkout -B \"$ref\" \"origin/$ref\")",
+            "    else",
+            "      (cd \"$repo\" && git fetch --all --prune && git pull --ff-only)",
+            "    fi",
             "  fi",
             "}",
-            "update_repo \"$REPO_ROOT\" \"$GIT_REMOTE_URL\"",
+            "update_repo \"$REPO_ROOT\" \"$GIT_REMOTE_URL\" \"$GIT_REF\"",
             "if [ ! -x \"$PYTHON_BIN\" ]; then",
             "  if [ -z \"$VENV_DIR\" ]; then",
             "    echo \"could not derive venv dir from python_bin: $PYTHON_BIN\" >&2",
@@ -890,7 +941,8 @@ class ControllerApp:
                 [
                     f"PIPELINE_REPO_ROOT={shlex.quote(pipeline_repo_root)}",
                     f"PIPELINE_GIT_REMOTE_URL={shlex.quote(pipeline_git_remote_url)}",
-                    "update_repo \"$PIPELINE_REPO_ROOT\" \"$PIPELINE_GIT_REMOTE_URL\"",
+                    f"PIPELINE_GIT_REF={shlex.quote(pipeline_git_ref)}",
+                    "update_repo \"$PIPELINE_REPO_ROOT\" \"$PIPELINE_GIT_REMOTE_URL\" \"$PIPELINE_GIT_REF\"",
                 ]
             )
         self.transport.run_text("\n".join(lines), check=True)
@@ -968,10 +1020,12 @@ class ControllerApp:
         python_bin = str(self.worker_cfg.get("python_bin") or "python").strip()
         bootstrap_lines = [str(x) for x in list(self.worker_cfg.get("bootstrap_lines") or []) if str(x).strip()]
         lines = ["#!/bin/bash --login"]
-        if self.exec_env.get("partition"):
-            lines.append(f"#SBATCH -p {self.exec_env['partition']}")
-        if self.exec_env.get("account"):
-            lines.append(f"#SBATCH -A {self.exec_env['account']}")
+        partition = str(self.slurm_cfg.get("partition") or self.exec_env.get("partition") or "").strip()
+        account = str(self.slurm_cfg.get("account") or self.exec_env.get("account") or "").strip()
+        if partition:
+            lines.append(f"#SBATCH -p {partition}")
+        if account:
+            lines.append(f"#SBATCH -A {account}")
         lines.append(f"#SBATCH -t {time_limit}")
         lines.append(f"#SBATCH -c {cpus}")
         lines.append(f"#SBATCH --mem={mem}")
@@ -1013,6 +1067,9 @@ class ControllerApp:
         return manifest_path
 
     def run_once(self, fips_glob: str | None = None) -> dict[str, Any]:
+        preflight = self._worker_preflight()
+        if not preflight["ready"]:
+            raise RuntimeError(f"controller worker preflight failed: {json.dumps(preflight, sort_keys=True)}")
         state = self._load_state()
         eligible = self._eligible(fips_glob=fips_glob)
         if not eligible:
@@ -1072,6 +1129,9 @@ class ControllerApp:
         }
 
     def run_one(self, fips: str) -> dict[str, Any]:
+        preflight = self._worker_preflight()
+        if not preflight["ready"]:
+            raise RuntimeError(f"controller worker preflight failed: {json.dumps(preflight, sort_keys=True)}")
         county = _single_county_record(fips)
         wave_id = self._wave_id()
         row = {

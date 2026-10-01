@@ -500,3 +500,41 @@ steps:
 
 **Notes**
 - Quarantine is not a license to ignore data quality. Use it when the batch can still produce a useful dataset and the bad inputs remain visible for follow-up.
+
+---
+
+### Pattern: `stale_shared_runtime_lock`
+
+**Status**
+- `resolved`
+
+**Category**
+- `slurm-hpcc`
+
+**Symptom**
+- Many array tasks remain running with little CPU activity and no new output after reaching runtime setup, then fail only at their wall-clock limit.
+- A shared virtualenv has a neighboring `.lockdir` left by an earlier canceled or timed-out job.
+
+**Root Cause**
+- Shared virtualenv creation or a cached Git checkout was guarded by an unbounded directory-creation loop.
+- SLURM terminated the lock owner before it removed the directory, so later jobs treated a filesystem artifact as permanent lock ownership.
+
+**Preferred Fix**
+- Guard shared virtualenv creation/install, immutable source checkout mutation, asset checkout mutation, and shared asset-index updates with `flock`.
+- Put each lock file outside any directory that the protected operation may replace.
+- Put the lock root on a filesystem whose advisory locks coordinate across compute nodes. On MSU HPCC, use the NFS home filesystem rather than `/mnt/gs21` GPFS.
+- Use a bounded wait and print the lock pathname on timeout. Kernel-owned locks are released automatically when a process exits; the lock file itself does not need deletion.
+
+**Prompt Rule**
+- For shared HPCC caches, use a bounded `flock`; never implement ownership with an unbounded `mkdir .lockdir` loop.
+
+**Validator/Linter Opportunity**
+- `yes`
+- Flag generated or hand-written SLURM scripts containing a retry loop around `mkdir` for a lock directory without owner validation and a timeout.
+
+**Applies To**
+- SLURM setup jobs and high-cardinality arrays sharing Python environments or Git-backed caches on a cluster filesystem
+
+**Related Files**
+- [`environments/hpcc.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/environments/hpcc.md)
+- [`pipeline_failure_triage_checklist.md`](/C:/Joe%20Local%20Only/College/Research/etl/ai_prompts/pipeline_failure_triage_checklist.md)
